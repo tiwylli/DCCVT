@@ -47,4 +47,4 @@ def plot_perpendicular_bisector(p1, p2, ax, color='r', length=5):
     bisector_start = mid + np.array([perp_dx, perp_dy])
     bisector_end = mid - np.array([perp_dx, perp_dy])
     # Plot the perpendicular bisector
-    ax.plot([bisector_start[0], bisector_end[0]], [bisector_start[1], bisector_end[1]], color=color)
+    ax.plot([bisector_start[0], bisector_end[0]], [bisector_start[1], bisector_end[1]], linestyle='--' , color=color)
