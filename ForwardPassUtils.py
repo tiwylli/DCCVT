@@ -1,6 +1,7 @@
 # This file contains utility functions for the forward pass notebook
 import numpy as np
 from matplotlib import pyplot as plt
+from scipy.spatial import Delaunay, Voronoi, voronoi_plot_2d
 
 
 def computeMinMax(voronoi, buffer=1.2):
@@ -47,4 +48,59 @@ def plot_perpendicular_bisector(p1, p2, ax, color='r', length=5):
     bisector_start = mid + np.array([perp_dx, perp_dy])
     bisector_end = mid - np.array([perp_dx, perp_dy])
     # Plot the perpendicular bisector
-    ax.plot([bisector_start[0], bisector_end[0]], [bisector_start[1], bisector_end[1]], linestyle='--' , color=color)
+    ax.plot([bisector_start[0], bisector_end[0]], [bisector_start[1], bisector_end[1]], linestyle='--', color=color)
+
+
+def sdf_circle(x, y, radius):
+    return np.sqrt(x ** 2 + y ** 2) - radius
+
+
+def check_voronoi_sign_change(voronoi, sdf_func, radius=1):
+    # Initialize a list to store edges where SDF sign changes
+    sign_change_edges = []
+
+    # Iterate over the ridges in the Voronoi diagram
+    for ridge_points in voronoi.ridge_points:
+        p1 = voronoi.points[ridge_points[0]]
+        p2 = voronoi.points[ridge_points[1]]
+
+        sdf1 = sdf_func(p1[0], p1[1], radius)
+        sdf2 = sdf_func(p2[0], p2[1], radius)
+
+        # Check if the SDF signs are different
+        if np.sign(sdf1) != np.sign(sdf2):
+            sign_change_edges.append((p1, p2))
+
+    return sign_change_edges
+
+def check_voronoi_cells_sign_change(voronoi, sdf_func, radius=1):
+    # Initialize a list to store indices of sites where SDF sign changes
+    sign_change_cells = []
+
+    # Iterate over the Voronoi points
+    for i, point in enumerate(voronoi.points):
+        sdf_value = sdf_func(point[0], point[1], radius)
+
+        # Check if the SDF sign is negative (inside the shape)
+        if np.sign(sdf_value) < 0:
+            sign_change_cells.append(i)
+
+    return sign_change_cells
+
+
+def k_nearest_neighbors(points, k):
+    num_points = len(points)
+    neighbors = []
+
+    for i in range(num_points):
+        # Calculate the Euclidean distances from the current point to all other points
+        distances = np.linalg.norm(points - points[i], axis=1)
+
+        # Exclude the current point by setting its distance to infinity
+        distances[i] = np.inf
+
+        # Get the indices of the k smallest distances
+        nearest_neighbors_indices = np.argpartition(distances, k)[:k]
+        neighbors.append(nearest_neighbors_indices)
+
+    return neighbors
