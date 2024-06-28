@@ -73,6 +73,7 @@ def check_voronoi_sign_change(voronoi, sdf_func, radius=1):
 
     return sign_change_edges
 
+
 def check_voronoi_cells_sign_change(voronoi, sdf_func, radius=1):
     # Initialize a list to store indices of sites where SDF sign changes
     sign_change_cells = []
@@ -104,3 +105,57 @@ def k_nearest_neighbors(points, k):
         neighbors.append(nearest_neighbors_indices)
 
     return neighbors
+
+
+def find_bisector_intersections(points, neighbors):
+    intersections = []
+
+    for i, neighbor_indices in enumerate(neighbors):
+        for j, neighbor_index in enumerate(neighbor_indices):
+            for k, other_neighbor_index in enumerate(neighbor_indices):
+                if j < k:  # Ensure we only process each pair once
+                    # Midpoints of the segments
+                    midpoint1 = (points[i] + points[neighbor_index]) / 2
+                    midpoint2 = (points[i] + points[other_neighbor_index]) / 2
+
+                    # Slopes of the segments
+                    dx1 = points[neighbor_index][0] - points[i][0]
+                    dy1 = points[neighbor_index][1] - points[i][1]
+                    dx2 = points[other_neighbor_index][0] - points[i][0]
+                    dy2 = points[other_neighbor_index][1] - points[i][1]
+
+                    # Slopes of the perpendicular bisectors
+                    if dy1 != 0:
+                        perp_slope1 = -dx1 / dy1
+                    else:
+                        perp_slope1 = np.inf
+
+                    if dy2 != 0:
+                        perp_slope2 = -dx2 / dy2
+                    else:
+                        perp_slope2 = np.inf
+
+                    # Intercept of the perpendicular bisectors
+                    intercept1 = midpoint1[1] - perp_slope1 * midpoint1[0] if perp_slope1 != np.inf else midpoint1[0]
+                    intercept2 = midpoint2[1] - perp_slope2 * midpoint2[0] if perp_slope2 != np.inf else midpoint2[0]
+
+                    # Solve the system of equations to find the intersection
+                    if perp_slope1 != np.inf and perp_slope2 != np.inf:
+                        A = np.array([[perp_slope1, -1], [perp_slope2, -1]])
+                        b = np.array([-intercept1, -intercept2])
+                        try:
+                            intersection = np.linalg.solve(A, b)
+                            intersections.append(intersection)
+                        except np.linalg.LinAlgError:
+                            continue  # Skip if the lines are parallel
+                    else:
+                        if perp_slope1 == np.inf:
+                            x_intersect = intercept1
+                            y_intersect = perp_slope2 * x_intersect + intercept2
+                        else:
+                            x_intersect = intercept2
+                            y_intersect = perp_slope1 * x_intersect + intercept1
+                        intersection = np.array([x_intersect, y_intersect])
+                        intersections.append(intersection)
+
+    return intersections
