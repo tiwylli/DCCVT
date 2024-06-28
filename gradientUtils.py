@@ -20,8 +20,8 @@ def plot_and_save(epoch, s_i, s_j, s_k, X_g, Y_g,destination="images/"):
     plt.xlabel('X')
     plt.ylabel('Y')
     #check min and max values of sites
-    plt.ylim(min(0, y_i.item(), y_j.item(), y_k.item()), max(y_i.item(), y_j.item(), y_k.item())*1.1)
-    plt.xlim(min(0, x_i.item(), x_j.item(), x_k.item()), max(x_i.item(), x_j.item(), x_k.item())*1.1)
+    plt.ylim(min(0, y_i.item(), y_j.item(), y_k.item())*1.1, max(y_i.item(), y_j.item(), y_k.item())*1.1)
+    plt.xlim(min(0, x_i.item(), x_j.item(), x_k.item())*1.1, max(x_i.item(), x_j.item(), x_k.item())*1.1)
     plt.gca().set_aspect('equal', adjustable='box')
     plt.grid(True)
     plt.savefig(f'{destination}{epoch}.png')
