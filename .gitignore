@@ -10,3 +10,5 @@
 *.iml
 *.obj
 .idea
+/images/
+/__pycache__/
