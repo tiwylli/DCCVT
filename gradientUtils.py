@@ -5,15 +5,21 @@ import torch
 
 # Define a function to plot and save the figure
 def plot_and_save(
-    epoch, s_i, s_j, s_k, X_g, Y_g, circle_center, radius, destination="images/"
+    epoch, s_i, s_j, s_k, circle_center, radius, X_g=None, Y_g=None, destination="images/"
 ):
     # check destination and make folder if not exists
     if not os.path.exists(destination):
         os.makedirs(destination)
     X, Y = compute_vertex(s_i, s_j, s_k)
-    x_i, y_i = s_i.x, s_i.y
-    x_j, y_j = s_j.x, s_j.y
-    x_k, y_k = s_k.x, s_k.y
+    if isinstance(s_i, Site):
+        x_i, y_i = s_i.x, s_i.y
+        x_j, y_j = s_j.x, s_j.y
+        x_k, y_k = s_k.x, s_k.y
+    else:
+        x_i, y_i = s_i
+        x_j, y_j = s_j
+        x_k, y_k = s_k
+        
     # Calculate midpoints
     midpoint_ij_x, midpoint_ij_y = (x_i + x_j) / 2, (y_i + y_j) / 2
     midpoint_jk_x, midpoint_jk_y = (x_j + x_k) / 2, (y_j + y_k) / 2
@@ -30,9 +36,10 @@ def plot_and_save(
         color="blue",
         label="Sites",
     )
-    
+
     plt.scatter(X.item(), Y.item(), color="red", label="Computed Vertex")
-    plt.scatter(X_g.item(), Y_g.item(), color="green", label="Ground Truth Vertex = Closest Point on Circle")
+    if X_g and Y_g:
+        plt.scatter(X_g.item(), Y_g.item(), color="green", label="Ground Truth Vertex = Closest Point on Circle")
     # Plot midpoints
     plt.scatter([midpoint_ij_x.item(), midpoint_jk_x.item()], [midpoint_ij_y.item(), midpoint_jk_y.item()], color='purple', marker='x', label='Midpoints')
     
@@ -66,9 +73,14 @@ def plot_and_save(
 
 # Define a function to compute the vertex coordinates
 def compute_vertex(s_i, s_j, s_k):
-    x_i, y_i = s_i.x, s_i.y
-    x_j, y_j = s_j.x, s_j.y
-    x_k, y_k = s_k.x, s_k.y
+    if isinstance(s_i, Site):
+        x_i, y_i = s_i.x, s_i.y
+        x_j, y_j = s_j.x, s_j.y
+        x_k, y_k = s_k.x, s_k.y
+    else:
+        x_i, y_i = s_i
+        x_j, y_j = s_j
+        x_k, y_k = s_k
     N_X = (
         x_i**2 * (y_j - y_k)
         - x_j**2 * (y_i - y_k)
@@ -86,7 +98,9 @@ def compute_vertex(s_i, s_j, s_k):
     )
     Y = N_Y / D
 
+    #return torch.tensor([X, Y], requires_grad=True)
     return X, Y
+
 
 def midpoint_loss(s_i, s_j, s_k, circle_center, radius):
     # Calculate midpoints
@@ -105,6 +119,26 @@ def midpoint_loss(s_i, s_j, s_k, circle_center, radius):
     total_loss = loss_m_ij + loss_m_jk
     
     return total_loss
+
+def compute_closest_point_on_circle(x, y, circle_center=torch.tensor([5,5]), radius=3):
+    # Calculate direction vector from point to circle center
+    direction = torch.tensor([x - circle_center[0], y - circle_center[1]])
+    # Normalize the direction
+    norm_direction = direction / torch.norm(direction)
+    # Scale by the circle's radius and add to circle center to get closest point
+    closest_point = circle_center + norm_direction * radius
+    return closest_point[0], closest_point[1]
+
+
+def circle_sdf(x,y, circle_center=torch.tensor([5,5]), radius=3):
+    """Compute the signed distance function for a circle."""
+    return torch.sqrt((x-circle_center[0])**2 + (y-circle_center[1])**2) - radius
+
+# def approximate_gradient(x, y, circle_center, radius, delta=1e-5):
+#     """Approximate the gradient of the SDF at (x, y) using finite differences."""
+#     sdf_x = circle_sdf(x + delta, y, circle_center, radius ) - circle_sdf(x - delta, y, circle_center, radius )
+#     sdf_y = circle_sdf(x, y + delta, circle_center, radius ) - circle_sdf(x, y - delta, circle_center, radius )
+#     return sdf_x / (2 * delta), sdf_y / (2 * delta)
 
 # Define the Site class
 class Site:
