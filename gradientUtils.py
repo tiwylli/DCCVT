@@ -19,7 +19,7 @@ def plot_and_save(
         x_i, y_i = s_i
         x_j, y_j = s_j
         x_k, y_k = s_k
-        
+
     # Calculate midpoints
     midpoint_ij_x, midpoint_ij_y = (x_i + x_j) / 2, (y_i + y_j) / 2
     midpoint_jk_x, midpoint_jk_y = (x_j + x_k) / 2, (y_j + y_k) / 2
@@ -114,6 +114,28 @@ def midpoint_loss(s_i, s_j, s_k, circle_center, radius):
     # Loss for each midpoint to be on the circle
     loss_m_ij = ((m_ij[0] - h)**2 + (m_ij[1] - k)**2 - r**2)**2
     loss_m_jk = ((m_jk[0] - h)**2 + (m_jk[1] - k)**2 - r**2)**2
+    
+    # Total midpoint loss
+    total_loss = loss_m_ij + loss_m_jk
+    
+    return total_loss
+
+def midpoint_loss_sdf(s_i, s_j, s_k, circle_center, radius):
+    if isinstance(s_i, Site):
+        x_i, y_i = s_i.x, s_i.y
+        x_j, y_j = s_j.x, s_j.y
+        x_k, y_k = s_k.x, s_k.y
+    else:
+        x_i, y_i = s_i
+        x_j, y_j = s_j
+        x_k, y_k = s_k
+    # Calculate midpoints
+    m_ij = ((x_i + x_j) / 2, (y_i + y_j) / 2)
+    m_jk = ((x_j + x_k) / 2, (y_j + y_k) / 2)
+    
+    # Loss for each midpoint to be on the sdf
+    loss_m_ij = circle_sdf(m_ij[0], m_ij[1], circle_center, radius)**2
+    loss_m_jk = circle_sdf(m_jk[0], m_jk[1], circle_center, radius)**2
     
     # Total midpoint loss
     total_loss = loss_m_ij + loss_m_jk
