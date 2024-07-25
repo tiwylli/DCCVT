@@ -58,12 +58,12 @@ def plot_and_save(
     plt.ylabel("Y")
     # check min and max values of sites
     plt.ylim(
-        min(0, y_i.item(), y_j.item(), y_k.item()) * 1.1,
-        max(y_i.item(), y_j.item(), y_k.item()) * 1.1,
+        min(circle_center[1].item()-radius, y_i.item(), y_j.item(), y_k.item()) * 1.1,
+        max(circle_center[1].item()+radius,y_i.item(), y_j.item(), y_k.item()) * 1.1,
     )
     plt.xlim(
-        min(0, x_i.item(), x_j.item(), x_k.item()) * 1.1,
-        max(x_i.item(), x_j.item(), x_k.item()) * 1.1,
+        min(circle_center[0].item()-radius, x_i.item(), x_j.item(), x_k.item()) * 1.1,
+        max(circle_center[0].item()+radius,x_i.item(), x_j.item(), x_k.item()) * 1.1,
     )
     plt.gca().set_aspect("equal", adjustable="box")
     plt.grid(True)
@@ -161,6 +161,35 @@ def circle_sdf(x,y, circle_center=torch.tensor([5,5]), radius=3):
 #     sdf_x = circle_sdf(x + delta, y, circle_center, radius ) - circle_sdf(x - delta, y, circle_center, radius )
 #     sdf_y = circle_sdf(x, y + delta, circle_center, radius ) - circle_sdf(x, y - delta, circle_center, radius )
 #     return sdf_x / (2 * delta), sdf_y / (2 * delta)
+
+
+def midpoint_interpolation_sdf(sdfi,sdfj,sdfk):
+    return (sdfi+sdfj)/2+(sdfj+sdfk)/2
+
+def barycentric_coordinates(x,y, p1, p2, p3):
+    # Calculate the vectors relative to p1
+    p = torch.tensor([x, y])
+    v0 = p2 - p1
+    v1 = p3 - p1
+    v2 = p - p1
+    
+    # Calculate the dot products
+    d00 = torch.dot(v0, v0)
+    d01 = torch.dot(v0, v1)
+    d11 = torch.dot(v1, v1)
+    d20 = torch.dot(v2, v0)
+    d21 = torch.dot(v2, v1)
+    
+    # Calculate the denominator
+    denom = d00 * d11 - d01 * d01
+    
+    # Calculate the barycentric coordinates
+    v = (d11 * d20 - d01 * d21) / denom
+    w = (d00 * d21 - d01 * d20) / denom
+    u = 1 - v - w
+    
+    return u, v, w
+
 
 # Define the Site class
 class Site:
