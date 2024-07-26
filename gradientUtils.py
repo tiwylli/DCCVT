@@ -101,6 +101,35 @@ def compute_vertex(s_i, s_j, s_k):
     #return torch.tensor([X, Y], requires_grad=True)
     return X, Y
 
+# Define a function to compute the vertex coordinates
+def compute_vertex_p(s_i, s_j, s_k):
+    if isinstance(s_i, Site):
+        x_i, y_i = s_i.x, s_i.y
+        x_j, y_j = s_j.x, s_j.y
+        x_k, y_k = s_k.x, s_k.y
+    else:
+        x_i, y_i = s_i
+        x_j, y_j = s_j
+        x_k, y_k = s_k
+    n_x = (
+        x_i**2 * (y_j - y_k)
+        - x_j**2 * (y_i - y_k)
+        + (x_k**2 + (y_i - y_k) * (y_j - y_k)) * (y_i - y_j)
+    )
+    d = 2 * (x_i * (y_j - y_k) - x_j * (y_i - y_k) + x_k * (y_i - y_j))
+    x = n_x / d
+
+    n_y = -(
+        x_i**2 * (x_j - x_k)
+        - x_i * (x_j**2 - x_k**2 + y_j**2 - y_k**2)
+        + x_j**2 * x_k
+        - x_j * (x_k**2 - y_i**2 + y_k**2)
+        - x_k * (y_i**2 - y_j**2)
+    )
+    y = n_y / d
+
+    return torch.tensor([x, y], requires_grad=True)
+    #return X, Y
 
 def midpoint_loss(s_i, s_j, s_k, circle_center, radius):
     # Calculate midpoints
@@ -166,9 +195,9 @@ def circle_sdf(x,y, circle_center=torch.tensor([5,5]), radius=3):
 def midpoint_interpolation_sdf(sdfi,sdfj,sdfk):
     return (sdfi+sdfj)/2+(sdfj+sdfk)/2
 
-def barycentric_coordinates(x,y, p1, p2, p3):
+def barycentric_coordinates(p, p1, p2, p3):
     # Calculate the vectors relative to p1
-    p = torch.tensor([x, y])
+    #p = torch.tensor([x, y])
     v0 = p2 - p1
     v1 = p3 - p1
     v2 = p - p1
