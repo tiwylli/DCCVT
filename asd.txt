@@ -1,0 +1,495 @@
+#%%
+import torch
+import gradientUtils as gu
+# Define a threshold for early stopping
+threshold = 1e-10
+circle_center = torch.tensor([5.0, 5.0])  # Example circle center
+radius = 3.0  # Example radius
+alpha = 0.1  # Learning rate
+delta = 1e-5
+#%% md
+### TrueSDF
+#%%
+def truesdf_optimizer(p1, p2, p3, circle_center, radius, destination, true_loss_values):
+    prev_loss = float("inf")
+    # Define the optimizer
+    optimizer = torch.optim.Adam([p1, p2, p3], lr=0.01)
+
+    # Optimization loop
+    for step in range(100000):
+        optimizer.zero_grad()
+        
+        # Compute the point (x, y) from the source points and weights
+        x,y = gu.compute_vertex(p1, p2, p3)
+        
+        # Calculate the SDF value at the current point
+        vertex_loss = gu.circle_sdf(x,y, circle_center, radius)**2
+        print(f'Vertex Loss: {vertex_loss.item()}')
+        # Calculate the SDF values of the midpoints
+        midpoint_loss = gu.midpoint_loss_sdf(p1, p2, p3, circle_center, radius)
+        # Define the loss as the squared distance
+        loss = vertex_loss + 0.05 * midpoint_loss
+        
+        # Early stopping condition
+        if abs(prev_loss - loss.item()) < threshold:
+            print(f"Stopping early at epoch {step} due to minimal loss change")
+            gu.plot_and_save(
+                step, p1, p2, p3, circle_center, radius, destination=destination
+            )
+            break
+
+        prev_loss = loss.item()
+        # Backpropagation
+        loss.backward()
+        
+        # Optimization step
+        optimizer.step()
+        
+        # Print progress every 100 steps
+        if step % 100 == 0:
+            print(f'Step {step}, Point: {x.item(),y.item()}, Loss: {loss.item()}, distance: {vertex_loss.item()}')
+            gu.plot_and_save(step, p1, p2, p3,circle_center, radius, destination=destination)
+            true_loss_values.append(loss.item())
+#%%
+circle_center = torch.tensor([0.0, 0.0])  # Example circle center
+radius = 1.0  # Example radius
+true_loss_values = []
+
+# Initialize the source points (p1, p2, p3) as PyTorch tensors
+p1 = torch.tensor([1.0, 1.0], requires_grad=True)
+p2 = torch.tensor([3.0, 1.0], requires_grad=True)
+p3 = torch.tensor([3.0, 3.0], requires_grad=True)
+
+destination = "images/autograd/truesdf/"
+
+truesdf_optimizer(p1, p2, p3, circle_center, radius, destination, true_loss_values)
+# Final optimized point
+x,y = gu.compute_vertex(p1, p2, p3)
+print(f'Optimized Point: {x.item(),y.item()}')
+print(f'Optimized p1: {p1.detach().numpy()}')
+print(f'Optimized p2: {p2.detach().numpy()}')
+print(f'Optimized p3: {p3.detach().numpy()}')
+gu.plot_and_save(step, p1, p2, p3, circle_center, radius, destination=destination)
+#%%
+true_loss_values_2 = []
+
+# Initialize the source points (p1, p2, p3) as PyTorch tensors
+p1 = torch.tensor([1.0, 1.0], requires_grad=True)
+p2 = torch.tensor([3.0, 1.0], requires_grad=True)
+p3 = torch.tensor([2.0, 3.0], requires_grad=True)
+
+destination = "images/autograd/truesdf_2/"
+
+truesdf_optimizer(p1, p2, p3, circle_center, radius, destination, true_loss_values_2)
+# Final optimized point
+x,y = gu.compute_vertex(p1, p2, p3)
+print(f'Optimized Point: {x.item(),y.item()}')
+print(f'Optimized p1: {p1.detach().numpy()}')
+print(f'Optimized p2: {p2.detach().numpy()}')
+print(f'Optimized p3: {p3.detach().numpy()}')
+gu.plot_and_save(step, p1, p2, p3, circle_center, radius, destination=destination)
+#%% md
+### Barycentric_coordinates interpolation
+#%%
+
+#%%
+import torch
+import gradientUtils as gu
+circle_center = torch.tensor([0.0, 0.0])  # Example circle center
+radius = 1.0  # Example radius
+mp_lambda = 0.05
+threshold = 1e-10
+
+# Initialize the source points (p1, p2, p3) as PyTorch tensors
+p1 = torch.tensor([1.0, 1.0], requires_grad=True)
+p2 = torch.tensor([3.0, 1.0], requires_grad=True)
+#p3 = torch.tensor([3.0, 3.0], requires_grad=True)
+p3 = torch.tensor([2.0, 3.0], requires_grad=True)
+
+destination = "images/autograd/barycentric_interpolation/"
+prev_loss = float("inf")
+
+interpolated_vertex_values = []
+true_vertex_values = []
+interpolated_loss_values = []
+
+
+def bary_optimizer(p1, p2, p3, circle_center, radius, destination, mp_lambda, threshold):
+    # Define the optimizer
+    optimizer = torch.optim.Adam([p1, p2, p3], lr=0.1)
+
+    # Optimization loop
+    for step in range(100000):
+        optimizer.zero_grad()
+        
+        sdf_p1 = gu.circle_sdf(p1[0], p1[1], circle_center, radius)
+        sdf_p2 = gu.circle_sdf(p2[0], p2[1], circle_center, radius)
+        sdf_p3 = gu.circle_sdf(p3[0], p3[1], circle_center, radius)
+        # Compute the point (x, y) from the source points and weights
+        p = gu.compute_vertex_p(p1, p2, p3)
+        
+        # Calculate barycentric coordinates of the intersection point
+        u, v, w = gu.barycentric_coordinates(p, p1, p2, p3)
+
+        # Calculate the SDF value at the current point
+        vertex_loss = (u * sdf_p1 + v * sdf_p2 + w * sdf_p3) ** 2
+        print(f'Vertex Loss: {vertex_loss.item()}')
+        print(f'difference between interpole and true sdf: {torch.sqrt(vertex_loss) - gu.circle_sdf(x,y, circle_center, radius)}')
+
+        
+        # Calculate the SDF values of the midpoints
+        midpoint_loss = gu.midpoint_interpolation_sdf(sdf_p1, sdf_p2, sdf_p3)**2
+
+        # Define the loss as the squared distance
+        loss = vertex_loss + mp_lambda * midpoint_loss
+        
+        # Early stopping condition
+        if abs(prev_loss - loss.item()) < threshold:
+            print(f"Stopping early at epoch {step} due to minimal loss change")
+            gu.plot_and_save(
+                step, p1, p2, p3, circle_center, radius, destination=destination
+            )
+            break
+
+        prev_loss = loss.item()
+        # Backpropagation
+        loss.backward()
+        
+        # Optimization step
+        optimizer.step()
+        
+        # Print progress every 100 steps
+        if step % 100 == 0:
+            print(f'Step {step}, Point: {x.item(),y.item()}, Loss: {loss.item()}, distance: {vertex_loss.item()}')
+            gu.plot_and_save(step, p1, p2, p3,circle_center, radius, destination=destination)
+            interpolated_vertex_values.append(torch.sqrt(vertex_loss).item())
+            true_vertex_values.append(gu.circle_sdf(p[0].item(),p[1].item(), circle_center, radius).item())
+
+            interpolated_loss_values.append(loss.item())
+
+
+# Final optimized point
+x,y = gu.compute_vertex(p1, p2, p3)
+print(f'Optimized Point: {x.item(),y.item()}')
+print(f'Optimized p1: {p1.detach().numpy()}')
+print(f'Optimized p2: {p2.detach().numpy()}')
+print(f'Optimized p3: {p3.detach().numpy()}')
+gu.plot_and_save(step, p1, p2, p3, circle_center, radius, destination=destination)
+
+
+
+#%%
+import matplotlib.pyplot as plt
+
+def plot_values(list1, list2, title='Plot of Two Lists', xlabel='X-axis', ylabel='Y-axis', list1_label='List 1', list2_label='List 2'):
+    plt.figure()
+    
+    # Plot the first list
+    plt.plot(list1, label=list1_label, marker='o')
+    
+    # Plot the second list
+    plt.plot(list2, label=list2_label, marker='x')
+    
+    # Add title and labels
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    
+    # Add a legend
+    plt.legend()
+    #plt.ylim(-2,10)
+    # Show the plot
+    plt.grid(True)
+    plt.show()
+
+plot_values(true_vertex_values, interpolated_vertex_values, title='Comparison sdf values of vertex', xlabel='steps*100', ylabel='Value', list1_label='true', list2_label='interpolated')
+
+#%%
+plot_values(true_loss_values, interpolated_loss_values, title='Comparison of loss', xlabel='steps*100', ylabel='Loss', list1_label='true', list2_label='interpolated')
+
+#%% md
+### RBF best sigma param experience  
+#%%
+import torch
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import gradientUtils as gu
+from scipy.spatial import Voronoi
+
+np.random.seed(0)  # Pour la reproductibilité
+
+
+def estimate_best_sigma(sites, sigma_values):
+    best_sigma = None
+    best_error = float("inf")
+
+    # Create the Voronoi diagram
+    vor = Voronoi(sites)
+    # Extract the site points from the Voronoi diagram
+    points = torch.tensor(vor.points, dtype=torch.float32)
+
+    for sigma in sigma_values:
+        errors = []
+        for i in range(points.shape[0] - 2):
+            p1, p2, p3 = points[i], points[i + 1], points[i + 2]
+            p = gu.compute_vertex_p(p1, p2, p3)
+            # check if p is a vertice
+            if not any(
+                torch.allclose(p, torch.tensor(v, dtype=torch.float32), atol=1e-6)
+                for v in vor.vertices
+            ):
+                # print(f'p is not a vertice')
+                continue
+
+            sdf1 = gu.circle_sdf_p(p1)
+            sdf2 = gu.circle_sdf_p(p2)
+            sdf3 = gu.circle_sdf_p(p3)
+
+            predicted_sdf = gu.radial_basis_function(
+                p, p1, p2, p3, sdf1, sdf2, sdf3, sigma
+            )
+            actual_sdf = gu.circle_sdf_p(p)
+
+            errors.append(mean_squared_error([actual_sdf], [predicted_sdf.item()]))
+
+        if len(errors) == 0:
+            continue
+        avg_error = sum(errors) / len(errors)
+
+        if avg_error < best_error:
+            best_error = avg_error
+            best_sigma = sigma
+            print(f"New best sigma found: {best_sigma}, error: {best_error}")
+
+    return best_sigma
+
+
+# Generate random points to serve as the sites for the Voronoi diagram
+num_sites = 10
+sites = np.random.rand(num_sites, 2) * 40 - 20  # Random points in the range [-20, 20]
+
+# Example usage
+sigma_values = [
+    0.01,
+    0.05,
+    0.1,
+    0.5,
+    0.75,
+    1.0,
+    1.25,
+    2.5,
+    2.75,
+    2.0,
+    3.0,
+    3.3,
+    3.4,
+    3.45,
+    3.5,
+    3.51,
+    3.52,
+    3.55,
+    3.6,
+    3.7,
+    3.8,
+    4.0,
+    5.0,
+]
+
+best_sigma = estimate_best_sigma(sites, sigma_values)
+print(f"Best sigma value: {best_sigma}")
+
+points = [[1.0, 1.0], [3.0, 1.0], [3.0, 3.0]]
+best_sigma = estimate_best_sigma(points, sigma_values)
+print(f"Best sigma value for custom 3 sites: {best_sigma}")
+#%% md
+### RBF interpolation
+#%%
+import torch
+import gradientUtils as gu
+
+circle_center = torch.tensor([0.0, 0.0])  # Example circle center
+radius = 1.0  # Example radius
+mp_lambda = 0.5
+threshold = 1e-10
+sigma = 1.25
+learning_rate = 0.01
+max_steps = 10000
+# Initialize the source points (p1, p2, p3) as PyTorch tensors
+p1 = torch.tensor([1.0, 1.0], requires_grad=True)
+p2 = torch.tensor([3.0, 1.0], requires_grad=True)
+p3 = torch.tensor([3.0, 3.0], requires_grad=True)
+destination = "images/autograd/sdf_rbf/"
+prev_loss = float("inf")
+
+interpolated_vertex_values = []
+true_vertex_values = []
+interpolated_loss_values = []
+
+
+# Define the optimizer
+optimizer = torch.optim.Adam([p1, p2, p3], lr=learning_rate)
+
+# Optimization loop
+for step in range(max_steps):
+    optimizer.zero_grad()
+
+    sdf_p1 = gu.circle_sdf(p1[0], p1[1], circle_center, radius)
+    sdf_p2 = gu.circle_sdf(p2[0], p2[1], circle_center, radius)
+    sdf_p3 = gu.circle_sdf(p3[0], p3[1], circle_center, radius)
+    # Compute the point (x, y) from the source points and weights
+    p = gu.compute_vertex_p(p1, p2, p3)
+    # Calculate the SDF value at the current point
+    vertex_loss = gu.radial_basis_function(p, p1, p2, p3, sdf_p1, sdf_p2, sdf_p3, sigma)
+
+    print(f"Vertex Loss: {vertex_loss.item()}")
+    print(
+        f"difference between interpole and true sdf: {vertex_loss - gu.circle_sdf_p(p, circle_center, radius)}"
+    )
+
+    # Calculate the SDF values of the midpoints
+    midpoint_loss = gu.midpoint_interpolation_sdf(sdf_p1, sdf_p2, sdf_p3) ** 2
+
+    # Define the loss as the squared distance
+    loss = vertex_loss **2 + mp_lambda * midpoint_loss
+
+    # Early stopping condition
+    if abs(prev_loss - loss.item()) < threshold:
+        print(f"Stopping early at epoch {step} due to minimal loss change")
+        gu.plot_and_save(
+            step, p1, p2, p3, circle_center, radius, destination=destination
+        )
+        break
+
+    prev_loss = loss.item()
+    # Backpropagation
+    loss.backward()
+
+    # Optimization step
+    optimizer.step()
+
+    interpolated_vertex_values.append(vertex_loss.item())
+    true_vertex_values.append(
+        gu.circle_sdf(p[0].item(), p[1].item(), circle_center, radius).item()
+    )
+    interpolated_loss_values.append(loss.item())
+
+    # Print progress every 100 steps
+    if step % 100 == 0:
+        print(
+            f"Step {step}, Point: {p[0].item(),p[1].item()}, Loss: {loss.item()}, distance: {vertex_loss.item()}"
+        )
+        gu.plot_and_save(
+            step, p1, p2, p3, circle_center, radius, destination=destination
+        )
+
+
+# Final optimized point
+x, y = gu.compute_vertex(p1, p2, p3)
+print(f"Optimized Point: {x.item(),y.item()}")
+print(f"Optimized p1: {p1.detach().numpy()}")
+print(f"Optimized p2: {p2.detach().numpy()}")
+print(f"Optimized p3: {p3.detach().numpy()}")
+gu.plot_and_save(step, p1, p2, p3, circle_center, radius, destination=destination)
+#%%
+plot_values(true_vertex_values, interpolated_vertex_values, title='RBF: Comparison sdf values of vertex', xlabel='steps', ylabel='Value', list1_label='true', list2_label='interpolated')
+
+#%%
+plot_values(true_loss_values, interpolated_loss_values, title='RBF: Comparison of loss', xlabel='steps', ylabel='Loss', list1_label='true', list2_label='interpolated')
+
+#%% md
+### Barycentric and RDF interpolation
+#%%
+import torch
+import gradientUtils as gu
+
+circle_center = torch.tensor([0.0, 0.0])  # Example circle center
+radius = 1.0  # Example radius
+mp_lambda = 0.5
+threshold = 1e-10
+sigma = 3.4
+learning_rate = 0.01
+max_steps = 10000
+# Initialize the source points (p1, p2, p3) as PyTorch tensors
+p1 = torch.tensor([1.0, 1.0], requires_grad=True)
+p2 = torch.tensor([3.0, 1.0], requires_grad=True)
+p3 = torch.tensor([2.0, 3.0], requires_grad=True)
+destination = "images/autograd/bary_rbf/"
+prev_loss = float("inf")
+
+interpolated_vertex_values = []
+true_vertex_values = []
+interpolated_loss_values = []
+
+
+# Define the optimizer
+optimizer = torch.optim.Adam([p1, p2, p3], lr=learning_rate)
+
+# Optimization loop
+for step in range(max_steps):
+    optimizer.zero_grad()
+
+    sdf_p1 = gu.circle_sdf(p1[0], p1[1], circle_center, radius)
+    sdf_p2 = gu.circle_sdf(p2[0], p2[1], circle_center, radius)
+    sdf_p3 = gu.circle_sdf(p3[0], p3[1], circle_center, radius)
+    # Compute the point (x, y) from the source points and weights
+    p = gu.compute_vertex_p(p1, p2, p3)
+    # Calculate the SDF value at the current point
+    #vertex_loss = gu.radial_basis_function(p, p1, p2, p3, sdf_p1, sdf_p2, sdf_p3, sigma)
+    #vertex_loss = (u * sdf_p1 + v * sdf_p2 + w * sdf_p3) ** 2
+    vertex_loss = gu.bary_rbf(p, p1, p2, p3, sdf_p1, sdf_p2, sdf_p3, sigma)
+
+    print(f"Vertex Loss: {vertex_loss.item()}")
+    print(
+        f"difference between interpole and true sdf: {vertex_loss - gu.circle_sdf_p(p, circle_center, radius)}"
+    )
+
+    # Calculate the SDF values of the midpoints
+    midpoint_loss = gu.midpoint_interpolation_sdf(sdf_p1, sdf_p2, sdf_p3) ** 2
+
+    # Define the loss as the squared distance
+    loss = vertex_loss **2 + mp_lambda * midpoint_loss
+
+    # Early stopping condition
+    if abs(prev_loss - loss.item()) < threshold:
+        print(f"Stopping early at epoch {step} due to minimal loss change")
+        gu.plot_and_save(
+            step, p1, p2, p3, circle_center, radius, destination=destination
+        )
+        break
+
+    prev_loss = loss.item()
+    # Backpropagation
+    loss.backward()
+
+    # Optimization step
+    optimizer.step()
+
+    interpolated_vertex_values.append(vertex_loss.item())
+    true_vertex_values.append(
+        gu.circle_sdf(p[0].item(), p[1].item(), circle_center, radius).item()
+    )
+    interpolated_loss_values.append(loss.item())
+
+    # Print progress every 100 steps
+    if step % 100 == 0:
+        print(
+            f"Step {step}, Point: {p[0].item(),p[1].item()}, Loss: {loss.item()}, distance: {vertex_loss.item()}"
+        )
+        gu.plot_and_save(
+            step, p1, p2, p3, circle_center, radius, destination=destination
+        )
+
+
+# Final optimized point
+x, y = gu.compute_vertex(p1, p2, p3)
+print(f"Optimized Point: {x.item(),y.item()}")
+print(f"Optimized p1: {p1.detach().numpy()}")
+print(f"Optimized p2: {p2.detach().numpy()}")
+print(f"Optimized p3: {p3.detach().numpy()}")
+gu.plot_and_save(step, p1, p2, p3, circle_center, radius, destination=destination)
+#%%
+plot_values(true_vertex_values, interpolated_vertex_values, title='Comparison sdf values of vertex', xlabel='steps', ylabel='Value', list1_label='true', list2_label='interpolated')
+
+#%%
+plot_values(true_loss_values, interpolated_loss_values, title='Comparison of loss', xlabel='steps', ylabel='Loss', list1_label='true', list2_label='interpolated')
