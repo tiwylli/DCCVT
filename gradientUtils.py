@@ -259,17 +259,19 @@ def barycentric_coordinates(p, p1, p2, p3):
 
 def radial_basis_function(p, p1, p2, p3, sdf1, sdf2, sdf3, sigma=1):
     # Calculate the radial basis function
+    #probably a normalisation problem
     #https://en.wikipedia.org/wiki/Radial_basis_function
     sdf = (
         torch.exp(-((torch.norm(p1 - p) / sigma) ** 2)) * sdf1
         + torch.exp(-((torch.norm(p2 - p) / sigma) ** 2)) * sdf2
         + torch.exp(-((torch.norm(p3 - p) / sigma) ** 2)) * sdf3
-    )
+    )/(sdf1+sdf2+sdf3)
     return sdf
 
 def bary_rbf(p, p1, p2, p3, sdf1, sdf2, sdf3, sigma=1):
     u, v, w = barycentric_coordinates(p, p1, p2, p3)
     #if (u >= 0) and (v >= 0) and (w >= 0) and (u + v + w == 1):
+    #These masses can be zero or negative; they are all positive if and only if the point is inside the simplex.
     if (u > 0) and (v > 0) and (w > 0) and (u<1) and (v<1) and (w<1):
         return u * sdf1 + v * sdf2 + w * sdf3
     else:
