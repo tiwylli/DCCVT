@@ -1,6 +1,8 @@
 import os
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
 import torch
 
 
@@ -277,8 +279,46 @@ def bary_rbf(p, p1, p2, p3, sdf1, sdf2, sdf3, sigma=1):
     else:
         return radial_basis_function(p, p1, p2, p3, sdf1, sdf2, sdf3, sigma)
 
+def distance_to_bisector(site1, site2, test_point):
+    mid_point = (site1 + site2) / 2
+    vec = site2 - site1
+    vec_norm = np.linalg.norm(vec)
+    
+    # Check for zero-length vector (i.e., overlapping sites)
+    if vec_norm < 1e-9:
+        return np.inf  # Large value, indicating no valid bisector
 
+    # Calculate the perpendicular vector
+    perp_vec = np.array([-vec[1], vec[0]])  # Perpendicular vector
+    perp_vec /= vec_norm  # Normalize the perpendicular vector
+    return np.abs(np.dot(test_point - mid_point, perp_vec))
 
+# Function to check if two sites are adjacent by the bisector method
+def check_voronoi_adjacency(site1_idx, site2_idx, points, distances):
+    site1 = points[site1_idx]
+    site2 = points[site2_idx]
+    # Check if the minimum distance to the bisector is the same for both points
+    for i, point in enumerate(points):
+        if i != site1_idx and i != site2_idx:
+            d1 = distance_to_bisector(site1, site2, points[site1_idx])
+            d2 = distance_to_bisector(site1, site2, points[site2_idx])
+            # If a point exists closer to the bisector, they are not adjacent
+            if d1 != d2 or d1 > distances[site1_idx][1]:  # only nearest neighbor
+                return False
+    return True
+
+def get_adjacent_neighbors_list(points, k=10):
+    knn = NearestNeighbors(n_neighbors=k, algorithm='ball_tree').fit(points)
+    distances, indices = knn.kneighbors(points)
+    # Iterate over each point and its K nearest neighbors, checking adjacency
+    adjacent_neighbors = []
+    for i, neighbors in enumerate(indices):
+        valid_neighbors = []
+        for neighbor_idx in neighbors:
+            if check_voronoi_adjacency(i, neighbor_idx, points, distances):
+                valid_neighbors.append(neighbor_idx)
+        adjacent_neighbors.append(valid_neighbors)
+    return adjacent_neighbors
 
 
 
