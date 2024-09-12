@@ -12,3 +12,4 @@
 .idea
 /images/
 /__pycache__/
+*.png
