@@ -13,3 +13,6 @@
 /images/
 /__pycache__/
 *.png
+*.usd
+*.stl
+*.npz
