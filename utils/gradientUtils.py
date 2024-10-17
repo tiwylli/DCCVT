@@ -4,6 +4,8 @@ from matplotlib.patches import Circle
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 import torch
+from scipy.spatial import Delaunay
+
 
 
 # Define a function to plot and save the figure
@@ -319,6 +321,46 @@ def get_adjacent_neighbors_list(points, k=10):
                 valid_neighbors.append(neighbor_idx)
         adjacent_neighbors.append(valid_neighbors)
     return adjacent_neighbors
+
+
+def get_delaunay_neighbors_list(points):
+    # Compute the Delaunay triangulation
+    tri = Delaunay(points)
+
+    # Find the neighbors of each point
+    neighbors = {i: set() for i in range(len(points))}
+    for simplex in tri.simplices:
+        # Each simplex is a triangle of three points; each point is a neighbor of the other two
+        for i in range(3):
+            for j in range(i + 1, 3):
+                neighbors[simplex[i]].add(simplex[j])
+                neighbors[simplex[j]].add(simplex[i])
+
+    # Convert neighbor sets to lists for easier reading
+    neighbors = {key: list(value) for key, value in neighbors.items()}
+    return neighbors
+
+def compute_all_vertices(points, neighbors):
+    vertices = []
+    print("Neighbors of each Voronoi site:")
+    for site, adjacents in neighbors.items():
+        print(f"Site {site} ({points[site]}): Neighbors {adjacents}")
+        #print(len(adjacents))
+        for i in range(len(adjacents)-1):
+            si = points[adjacents[i]]
+            sj= points[site]
+            sk= points[adjacents[i+1]]
+            if adjacents[i] in neighbors[adjacents[i+1]]:
+                v = compute_vertex(si, sj, sk)
+                vertices.append(v)
+                
+            
+    vertices = np.array(vertices)
+
+    #print(vertices)
+    vertices = np.round(vertices, 3)
+    #vertices = np.unique(vertices, axis=0)  
+    return vertices
 
 
 
