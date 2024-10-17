@@ -5,7 +5,7 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors
 import torch
 from scipy.spatial import Delaunay
-
+import math
 
 
 # Define a function to plot and save the figure
@@ -340,29 +340,60 @@ def get_delaunay_neighbors_list(points):
     neighbors = {key: list(value) for key, value in neighbors.items()}
     return neighbors
 
-def compute_all_vertices(points, neighbors):
-    vertices = []
+def compute_vertices_index(points, neighbors):
+    vertices_index_to_compute = []
     print("Neighbors of each Voronoi site:")
     for site, adjacents in neighbors.items():
         print(f"Site {site} ({points[site]}): Neighbors {adjacents}")
-        #print(len(adjacents))
-        for i in range(len(adjacents)-1):
-            si = points[adjacents[i]]
-            sj= points[site]
-            sk= points[adjacents[i+1]]
-            if adjacents[i] in neighbors[adjacents[i+1]]:
-                v = compute_vertex(si, sj, sk)
-                vertices.append(v)
-                
-            
+        for i in adjacents:
+            for n in adjacents:
+                if n != site and n != i and n in neighbors[i]:
+                    vertices_index_to_compute.append([i,site,n])
+
+    # Dictionary to store seen pairs for each key
+    key_pairs = {}
+    # Filter triplets to remove reverse pairs
+    filtered_triplets = []
+    for triplet in vertices_index_to_compute:
+        first, key, third = triplet
+        # Initialize the set for the key if not already present
+        if key not in key_pairs:
+            key_pairs[key] = set()
+        
+        # Check if the reverse pair already exists
+        if (third, first) not in key_pairs[key]:
+            # Add the current pair to the set and include triplet in the filtered list
+            key_pairs[key].add((first, third))
+            filtered_triplets.append(triplet)
+
+    return filtered_triplets
+
+
+def compute_all_vertices(points,filtered_triplets):
+        # If the reverse pair exists, the triplet is not added to filtered_triplets
+    #########################
+    #compute all the vertices
+    vertices = []
+    for triplet in filtered_triplets:
+        si = points[triplet[0]]
+        sj = points[triplet[1]]
+        sk = points[triplet[2]]
+        v = compute_vertex(si, sj, sk)
+        vertices.append(v)
+
     vertices = np.array(vertices)
-
-    #print(vertices)
     vertices = np.round(vertices, 3)
-    #vertices = np.unique(vertices, axis=0)  
+    tolerance = 0.001
+        
+    # Remove points that are close to each other
+    filtered_points = []
+    for point in vertices:
+        if not any(math.isclose(point[0], p[0], abs_tol=tolerance) and math.isclose(point[1], p[1], abs_tol=tolerance) for p in filtered_points):
+            filtered_points.append(point)
+
+    filtered_points = np.array(filtered_points)
+    vertices = filtered_points
     return vertices
-
-
 
 
 # Define the Site class
