@@ -342,36 +342,36 @@ def get_delaunay_neighbors_list(points):
 
 def compute_vertices_index(points, neighbors):
     vertices_index_to_compute = []
-    print("Neighbors of each Voronoi site:")
+    #print("Neighbors of each Voronoi site:")
     for site, adjacents in neighbors.items():
-        print(f"Site {site} ({points[site]}): Neighbors {adjacents}")
+        #print(f"Site {site} ({points[site]}): Neighbors {adjacents}")
         for i in adjacents:
+            #sj = points[site]
             for n in adjacents:
                 if n != site and n != i and n in neighbors[i]:
+                    #si = points[i]
+                    #sk = points[n]                
                     vertices_index_to_compute.append([i,site,n])
-
-    # Dictionary to store seen pairs for each key
-    key_pairs = {}
-    # Filter triplets to remove reverse pairs
+            
+    # Set to store the canonical (sorted) version of each triplet
+    seen_triplets = set()
+    # Filtered list to store the unique triplets
     filtered_triplets = []
+    # Process each triplet and keep only one permutation
     for triplet in vertices_index_to_compute:
-        first, key, third = triplet
-        # Initialize the set for the key if not already present
-        if key not in key_pairs:
-            key_pairs[key] = set()
-        
-        # Check if the reverse pair already exists
-        if (third, first) not in key_pairs[key]:
-            # Add the current pair to the set and include triplet in the filtered list
-            key_pairs[key].add((first, third))
+        # Convert the triplet to a canonical form by sorting it
+        canonical_triplet = tuple(sorted(triplet, key=str))
+        # Check if this canonical triplet has been seen before
+        if canonical_triplet not in seen_triplets:
+            # If not seen, add it to the set and keep the triplet
+            seen_triplets.add(canonical_triplet)
             filtered_triplets.append(triplet)
+    #print("Filtered triplets without duplicate permutations:", filtered_triplets)
 
     return filtered_triplets
 
 
 def compute_all_vertices(points,filtered_triplets):
-        # If the reverse pair exists, the triplet is not added to filtered_triplets
-    #########################
     #compute all the vertices
     vertices = []
     for triplet in filtered_triplets:
@@ -380,19 +380,6 @@ def compute_all_vertices(points,filtered_triplets):
         sk = points[triplet[2]]
         v = compute_vertex(si, sj, sk)
         vertices.append(v)
-
-    vertices = np.array(vertices)
-    vertices = np.round(vertices, 3)
-    tolerance = 0.001
-        
-    # Remove points that are close to each other
-    filtered_points = []
-    for point in vertices:
-        if not any(math.isclose(point[0], p[0], abs_tol=tolerance) and math.isclose(point[1], p[1], abs_tol=tolerance) for p in filtered_points):
-            filtered_points.append(point)
-
-    filtered_points = np.array(filtered_points)
-    vertices = filtered_points
     return vertices
 
 
