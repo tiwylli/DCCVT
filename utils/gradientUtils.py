@@ -340,17 +340,12 @@ def get_delaunay_neighbors_list(points):
     neighbors = {key: list(value) for key, value in neighbors.items()}
     return neighbors
 
-def compute_vertices_index(points, neighbors):
+def compute_vertices_index(neighbors):
     vertices_index_to_compute = []
-    #print("Neighbors of each Voronoi site:")
     for site, adjacents in neighbors.items():
-        #print(f"Site {site} ({points[site]}): Neighbors {adjacents}")
         for i in adjacents:
-            #sj = points[site]
             for n in adjacents:
-                if n != site and n != i and n in neighbors[i]:
-                    #si = points[i]
-                    #sk = points[n]                
+                if n != site and n != i and n in neighbors[i]:              
                     vertices_index_to_compute.append([i,site,n])
             
     # Set to store the canonical (sorted) version of each triplet
@@ -366,7 +361,6 @@ def compute_vertices_index(points, neighbors):
             # If not seen, add it to the set and keep the triplet
             seen_triplets.add(canonical_triplet)
             filtered_triplets.append(triplet)
-    #print("Filtered triplets without duplicate permutations:", filtered_triplets)
 
     return filtered_triplets
 
