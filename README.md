@@ -1,3 +1,3 @@
-Main experiments on : 
-Test_SDFprediction.ipynb
+Main experiments on : \n
+Test_SDFprediction.ipynb & 
 Test_fitMultipleSites.ipynb
