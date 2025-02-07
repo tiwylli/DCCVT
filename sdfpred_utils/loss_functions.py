@@ -1,5 +1,9 @@
 import torch 
 from scipy.spatial import Voronoi
+import numpy as np
+
+device = torch.device("cuda:0")
+
 
 def compute_edge_smoothing_loss(edges, sites, model):
     """

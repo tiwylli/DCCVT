@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 
+device = torch.device("cuda:0")
+
 def plot_sdf(ax, model):
     # Generate a grid of points
     grid_size = 100
@@ -68,7 +70,7 @@ def generate_rectangle_points(num_points: int, width: float, height: float, scal
     
     return points
 
-def star_sdf(vertices, r=3.0, rf=0.5, origin=torch.tensor([0, 0])):
+def star_sdf(vertices, r=3.0, rf=0.5, origin=torch.tensor([0, 0],device=device)):
     """
     Compute the SDF of a five-pointed star with a custom origin.
 
@@ -85,8 +87,8 @@ def star_sdf(vertices, r=3.0, rf=0.5, origin=torch.tensor([0, 0])):
     p = vertices - origin
 
     # Define constants
-    k1 = torch.tensor([0.809016994375, -0.587785252292], device=p.device, dtype=p.dtype)  # Cosine and sine for 72 degrees
-    k2 = torch.tensor([-0.809016994375, -0.587785252292], device=p.device, dtype=p.dtype)  # Cosine and sine for -72 degrees
+    k1 = torch.tensor([0.809016994375, -0.587785252292], device=device, dtype=p.dtype)  # Cosine and sine for 72 degrees
+    k2 = torch.tensor([-0.809016994375, -0.587785252292], device=device, dtype=p.dtype)  # Cosine and sine for -72 degrees
 
     # Reflect and transform the points without in-place modification
     p_reflected_x = torch.abs(p[:, 0]).unsqueeze(1)  # Reflect across the y-axis
@@ -104,7 +106,7 @@ def star_sdf(vertices, r=3.0, rf=0.5, origin=torch.tensor([0, 0])):
     p_reflected = torch.cat((p_reflected[:, 0].unsqueeze(1), p_reflected_y_shift), dim=1)
 
     # Vector to the inner vertices
-    ba = rf * torch.tensor([-k1[1], k1[0]], device=p.device, dtype=p.dtype) - torch.tensor([0, 1], device=p.device, dtype=p.dtype)
+    ba = rf * torch.tensor([-k1[1], k1[0]], device=device, dtype=p.dtype) - torch.tensor([0, 1], device=device, dtype=p.dtype)
     
     # Projection along ba
     h = torch.clamp(torch.sum(p_reflected * ba, dim=1) / torch.sum(ba * ba), min=0.0, max=r)
@@ -115,7 +117,7 @@ def star_sdf(vertices, r=3.0, rf=0.5, origin=torch.tensor([0, 0])):
     
     return dist * sign
 
-def moon_sdf(vertices, d=0.5*3.0, ra=1.0*3.0, rb=0.8*3.0, origin=torch.tensor([0, 0])):
+def moon_sdf(vertices, d=0.5*3.0, ra=1.0*3.0, rb=0.8*3.0, origin=torch.tensor([0, 0], device=device)):
     """
     Compute the SDF of a croissant-like shape with a custom origin.
 
@@ -162,7 +164,7 @@ def moon_sdf(vertices, d=0.5*3.0, ra=1.0*3.0, rb=0.8*3.0, origin=torch.tensor([0
     
     return sdf_values
 
-def torus_sdf(vertices, r_inner=3.0/2, r_outer=3.0, origin=torch.tensor([0, 0])):
+def torus_sdf(vertices, r_inner=3.0/2, r_outer=3.0, origin=torch.tensor([0, 0], device=device)):
     """
     Compute the SDF loss for a 2D torus (ring) given a set of vertices.
 

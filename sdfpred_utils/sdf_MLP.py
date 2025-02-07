@@ -2,6 +2,7 @@
 
 import torch
 from tqdm import tqdm
+device = torch.device("cuda:0")
 
 # MLP + Positional Encoding
 class Decoder(torch.nn.Module):
