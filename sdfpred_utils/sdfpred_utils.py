@@ -7,18 +7,8 @@ device = torch.device("cuda:0")
 
 # Python code for creating a CVT
 # Vassilis Vassiliades - Inria, Nancy - April 2018
-def createCVTgrid():
-    # Default values
-    num_centroids = 128
-    dimensionality = 2
-    num_samples = 100000
-    num_replicates = 1
-    max_iterations = 100000
-    tolerance = 0.00001
-    verbose = True
-
+def createCVTgrid(num_centroids = 128, dimensionality = 2, num_samples = 100000, num_replicates = 1, max_iterations = 100000, tolerance = 0.00001):
     X = np.random.rand(num_samples,dimensionality)
-
     kmeans = KMeans(
         init='k-means++', 
         n_clusters=num_centroids, 
@@ -301,3 +291,54 @@ def get_sites_zero_crossing_edges(sites, model):
             edges.append((vertex1, vertex2))     
             
     return edges
+
+
+def adaptive_density_upsampling(sites, model, num_points_per_site=5, max_distance=1.0, sigma=1.0):
+    """
+    Upsample sites based on the SDF gradient and density map, placing new sites along the gradient direction.
+    """
+    
+    neighbors = get_delaunay_neighbors_list(sites)
+
+    sdf_values = model(sites) 
+
+    sites_to_upsample = []
+    # Find pairs of neighbors with opposing SDF values
+    for i, adjacents in neighbors.items():
+        for j in adjacents:
+            if i < j and i not in sites_to_upsample:  # Avoid duplicates
+                sdf_i, sdf_j = sdf_values[i].item(), sdf_values[j].item()
+                if sdf_i * sdf_j <= 0:  # Opposing signs or one is zero
+                    sites_to_upsample.append(i)
+    
+
+    # Step 1: Compute the gradient of the SDF at each site
+    grad_sdf = torch.autograd.grad(sdf_values[:,0], sites, torch.ones_like(sdf_values[:,0]), create_graph=True, retain_graph=True)[0]
+
+    # Step 2: Compute the density map based on the gradient magnitude
+    grad_mag = grad_sdf.norm(dim=1)  # Compute the magnitude of the gradient
+    density_map = 1 / (1 + grad_mag**sigma)  # Inverse relation, higher gradients = higher density
+
+    # Step 3 & 4: Generate new sites along the gradient direction
+    new_sites = []
+    for i in range(len(sites_to_upsample)):
+        site = sites[sites_to_upsample[i]]
+        gradient = grad_sdf[sites_to_upsample[i]]
+        density = density_map[sites_to_upsample[i]]
+        
+        # Normalize the gradient direction
+        grad_norm = gradient / (gradient.norm() + 1e-6)  # Avoid division by zero
+        
+        # Generate points along the gradient direction, scaled by density
+        num_new_points = int(density * num_points_per_site)  # Number of new points based on density
+        
+        for j in range(num_new_points):
+            displacement = grad_norm * (max_distance * (j + 1) / num_new_points)
+            new_site = site + displacement
+            new_sites.append(new_site)
+
+    # Return the new sites as a tensor
+    return new_sites
+
+
+                

@@ -10,7 +10,7 @@ class Decoder(torch.nn.Module):
         super().__init__()
         self.embed_fn = None
         if multires > 0:
-            embed_fn, input_ch = get_embedder(multires)
+            embed_fn, input_ch = get_embedder(multires, input_dims=input_dims)
             self.embed_fn = embed_fn
             input_dims = input_ch
 
@@ -118,11 +118,11 @@ class Embedder:
     def embed(self, inputs):
         return torch.cat([fn(inputs) for fn in self.embed_fns], -1)
 
-def get_embedder(multires):
+def get_embedder(multires, input_dims):
     embed_kwargs = {
                 'include_input' : True,
                 #'input_dims' : 3,
-                'input_dims' : 2,
+                'input_dims' : input_dims,
                 'max_freq_log2' : multires-1,
                 'num_freqs' : multires,
                 'log_sampling' : True,
