@@ -135,10 +135,10 @@ def chamfer_distance(true_point_cloud, vertices):
     chamfer_dist = torch.mean(dist1) + torch.mean(dist2)
     return chamfer_dist
 
-def eikonal(model, p=[]):
+def eikonal(model, input_dimensions, p=[]):
     if len(p) == 0:
         # Generate random points in the 2D plane (x, y)
-        p = torch.rand((128*128, 2), device=device, requires_grad=True) - 0.5
+        p = torch.rand((128*128, input_dimensions), device=device, requires_grad=True) - 0.5
         p = p*20
     # Compute gradients for Eikonal loss
     grads = torch.autograd.grad(

@@ -26,14 +26,15 @@ class Decoder(torch.nn.Module):
         out = self.net(p)
         return out
 
-    def pre_train_sphere(self, iter):
+    def pre_train_sphere(self, iter, radius = 2.0):
         print ("Initialize SDF to sphere")
         loss_fn = torch.nn.MSELoss()
         optimizer = torch.optim.Adam(list(self.parameters()), lr=1e-4)
 
         for i in tqdm(range(iter)):
-            p = torch.rand((1024,3), device='cuda') - 0.5
-            ref_value  = torch.sqrt((p**2).sum(-1)) - 0.3
+            p = torch.rand((128*128,3), device='cuda') - 0.5
+            p = p*20
+            ref_value  = torch.sqrt((p**2).sum(-1)) - radius
             output = self(p) # sdf 0 , deform 1-3
             loss = loss_fn(output[...,0], ref_value)
             optimizer.zero_grad()

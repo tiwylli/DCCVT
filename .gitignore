@@ -12,6 +12,7 @@
 .idea
 /images/
 /__pycache__/
+*.pyc
 *.png
 *.usd
 *.stl
@@ -20,3 +21,5 @@
 *.gif
 *.pt
 *.pth
+*.ini
+/sdfpred_utils/__pycache__/
