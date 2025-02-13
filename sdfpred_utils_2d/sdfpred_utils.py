@@ -279,7 +279,7 @@ def get_sites_zero_crossing_edges(sites, model):
     # Compute SDF values for each site
     sdf_values = model(sites)[:,0]
     sdf_values = sdf_values.detach().cpu().numpy()
-
+    
     edges = []
     for (point1, point2), (vertex1, vertex2) in zip(vor.ridge_points, vor.ridge_vertices):
         # Check if vertices are valid (not -1, which indicates infinity)
