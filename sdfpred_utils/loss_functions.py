@@ -52,7 +52,6 @@ def compute_edge_smoothing_loss(edges, sites, model):
     return smoothing_loss
 
 def compute_cvt_loss(sites):
-
     # Convert sites to NumPy for Voronoi computation
     sites_np = sites.detach().cpu().numpy()
     vor = Voronoi(sites_np)
