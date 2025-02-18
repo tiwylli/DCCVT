@@ -172,6 +172,7 @@ def compute_zero_crossing_vertices_3d(sites, model):
     mask_zero_crossing_sites = (sdf_i * sdf_j <= 0).squeeze()
     zero_crossing_pairs = neighbors[mask_zero_crossing_sites]
 
+    # Check if vertices has a pair of zero crossing sites
     sdf_0 = sdf_values[all_tetrahedra[:, 0]]  # First site in each pair
     sdf_1 = sdf_values[all_tetrahedra[:, 1]]  # Second site in each pair
     sdf_2 = sdf_values[all_tetrahedra[:, 2]]  # Third site in each pair
@@ -523,4 +524,31 @@ def adaptive_density_upsampling(sites, model, num_points_per_site=5, max_distanc
     return new_sites
 
 
-                
+#TODO PROBLEM ARISES IN 2D, might be a reason for bad meshes in 3d
+def get_zero_crossing_mesh_3d(sites, model):
+    sites_np = sites.detach().cpu().numpy()
+    vor = Voronoi(sites_np)  # Compute 3D Voronoi diagram
+
+    sdf_values = model(sites)[:, 0].detach().cpu().numpy()  # Compute SDF values
+
+    valid_faces = []  # List of polygonal faces
+    used_vertices = set()  # Set of indices for valid vertices
+
+    for (point1, point2), ridge_vertices in zip(vor.ridge_points, vor.ridge_vertices):
+        if -1 in ridge_vertices:
+            continue  # Skip infinite ridges
+
+        # Check if SDF changes sign across this ridge
+        if np.sign(sdf_values[point1]) != np.sign(sdf_values[point2]):
+            valid_faces.append(ridge_vertices)
+            used_vertices.update(ridge_vertices)
+
+    # **Filter Voronoi vertices**
+    used_vertices = sorted(used_vertices)  # Keep unique, sorted indices
+    vertex_map = {old_idx: new_idx for new_idx, old_idx in enumerate(used_vertices)}
+    filtered_vertices = vor.vertices[used_vertices]
+
+    # **Re-index faces to match the new filtered vertex list**
+    filtered_faces = [[vertex_map[v] for v in face] for face in valid_faces]
+
+    return filtered_vertices, filtered_faces
