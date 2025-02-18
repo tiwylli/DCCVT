@@ -180,58 +180,58 @@ def compute_zero_crossing_vertices_3d(sites, model):
     zero_crossing_vertices_index = all_tetrahedra[mask_zero_crossing_faces]
     return zero_crossing_vertices_index, zero_crossing_pairs
 
-# def compute_vertex(s_i, s_j, s_k):
-#     # Unpack coordinates for each site
-#     x_i, y_i = s_i[0], s_i[1]
-#     x_j, y_j = s_j[0], s_j[1]
-#     x_k, y_k = s_k[0], s_k[1]
+def compute_vertex(s_i, s_j, s_k):
+    # Unpack coordinates for each site
+    x_i, y_i = s_i[0], s_i[1]
+    x_j, y_j = s_j[0], s_j[1]
+    x_k, y_k = s_k[0], s_k[1]
     
-#     # Calculate numerator and  for x coordinate
-#     n_x = (
-#         x_i**2 * (y_j - y_k)
-#         - x_j**2 * (y_i - y_k)
-#         + (x_k**2 + (y_i - y_k) * (y_j - y_k)) * (y_i - y_j)
-#     )
+    # Calculate numerator and  for x coordinate
+    n_x = (
+        x_i**2 * (y_j - y_k)
+        - x_j**2 * (y_i - y_k)
+        + (x_k**2 + (y_i - y_k) * (y_j - y_k)) * (y_i - y_j)
+    )
 
-#     # Calculate numerator for y coordinate
-#     n_y = -(
-#         x_i**2 * (x_j - x_k)
-#         - x_i * (x_j**2 - x_k**2 + y_j**2 - y_k**2)
-#         + x_j**2 * x_k
-#         - x_j * (x_k**2 - y_i**2 + y_k**2)
-#         - x_k * (y_i**2 - y_j**2)
-#     )
+    # Calculate numerator for y coordinate
+    n_y = -(
+        x_i**2 * (x_j - x_k)
+        - x_i * (x_j**2 - x_k**2 + y_j**2 - y_k**2)
+        + x_j**2 * x_k
+        - x_j * (x_k**2 - y_i**2 + y_k**2)
+        - x_k * (y_i**2 - y_j**2)
+    )
     
-#     # Calculate denominator 
-#     d = 2 * (x_i * (y_j - y_k) - x_j * (y_i - y_k) + x_k * (y_i - y_j))
+    # Calculate denominator 
+    d = 2 * (x_i * (y_j - y_k) - x_j * (y_i - y_k) + x_k * (y_i - y_j))
     
-#     # Calculate x and y coordinates
-#     x = n_x / d
-#     y = n_y / d
+    # Calculate x and y coordinates
+    x = n_x / d
+    y = n_y / d
 
-#     # Return x, y as a tensor to maintain the computational graph
-#     return torch.stack([x, y])
+    # Return x, y as a tensor to maintain the computational graph
+    return torch.stack([x, y])
 
-# def compute_all_vertices(sites, vertices_to_compute):
-#     # Initialize an empty tensor for storing vertices
-#     vertices = []
+def compute_all_vertices(sites, vertices_to_compute):
+    # Initialize an empty tensor for storing vertices
+    vertices = []
     
-#     for triplet in vertices_to_compute:
-#         si = sites[triplet[0]]
-#         sj = sites[triplet[1]]
-#         sk = sites[triplet[2]]
+    for triplet in vertices_to_compute:
+        si = sites[triplet[0]]
+        sj = sites[triplet[1]]
+        sk = sites[triplet[2]]
         
-#         # Compute vertex for the triplet (si, sj, sk)
-#         v = compute_vertex(si, sj, sk)
+        # Compute vertex for the triplet (si, sj, sk)
+        v = compute_vertex(si, sj, sk)
         
-#         # Append to the list
-#         vertices.append(v)
+        # Append to the list
+        vertices.append(v)
     
-#     # Stack the list of vertices into a single tensor for easier gradient tracking
-#     vertices = torch.stack(vertices)
-#     return vertices
+    # Stack the list of vertices into a single tensor for easier gradient tracking
+    vertices = torch.stack(vertices)
+    return vertices
 
-def compute_vertices_vectorized(sites, vertices_to_compute):    
+def compute_vertices_2d_vectorized(sites, vertices_to_compute):    
     # Extract coordinates using advanced indexing
     s_i, s_j, s_k = sites[vertices_to_compute[:, 0]], sites[vertices_to_compute[:, 1]], sites[vertices_to_compute[:, 2]]
     
