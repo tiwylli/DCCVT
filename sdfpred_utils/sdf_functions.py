@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import os
 
 device = torch.device("cuda:0")
 
@@ -190,7 +191,7 @@ def torus_sdf(vertices, r_inner=3.0/2, r_outer=3.0, origin=torch.tensor([0, 0], 
 
 def bunny_sdf(points):
     gridsize = 1024
-    sdf_grid_path = f"sdf_grid_{gridsize}_centered.pt"
+    sdf_grid_path = os.path.join(os.path.dirname(__file__), f"../models_resources/sdf_grid_{gridsize}_centered.pt")
     grid = torch.load(sdf_grid_path).to(device)
     
     x_min, y_min, x_max, y_max = 0.0, 0.0, 7.78495, 7.7166999999999994

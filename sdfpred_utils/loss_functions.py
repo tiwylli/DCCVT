@@ -83,7 +83,9 @@ def compute_cvt_loss(sites):
     valid_sites = sites[valid_indices]
 
     # Compute Mean Squared Error (MSE) loss
-    cvt_loss = torch.mean(torch.norm(valid_sites - centroids, p=2, dim=1) ** 2)
+    #cvt_loss = torch.mean(torch.norm(valid_sites - centroids, p=2, dim=1) ** 2)
+    penalties = torch.where(abs(valid_sites - centroids) < 10, valid_sites - centroids, torch.tensor(0.0, device=sites.device))
+    cvt_loss = torch.mean(penalties**2)
 
     return cvt_loss
 
@@ -93,6 +95,7 @@ def compute_cvt_loss_vectorized(sites, model):
     sites_np = sites.detach().cpu().numpy()
     vor = Voronoi(sites_np)
         
+    #Todo C++ loop for this
     # create a nested list of vertices for each site
     centroids = [vor.vertices[vor.regions[vor.point_region[i]]].mean(axis=0) for i in range(len(sites_np)) if vor.regions[vor.point_region[i]] and -1 not in vor.regions[vor.point_region[i]]]
     centroids = torch.tensor(np.array(centroids), device=sites.device, dtype=sites.dtype)
@@ -101,7 +104,7 @@ def compute_cvt_loss_vectorized(sites, model):
     valid_sites = sites[valid_indices]
     sdf_weights = 1 / (1 + torch.abs(sdf_values[valid_indices]))
     
-    penalties = torch.where(valid_sites - centroids < 10, valid_sites - centroids, torch.tensor(0.0, device=sites.device))
+    penalties = torch.where(abs(valid_sites - centroids) < 10, valid_sites - centroids, torch.tensor(0.0, device=sites.device))
     
     cvt_loss = torch.mean(((penalties)*sdf_weights)**2)
     
