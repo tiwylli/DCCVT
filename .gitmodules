@@ -1,0 +1,3 @@
+[submodule "3rdparty/tinycudann"]
+	path = 3rdparty/tinycudann
+	url = https://github.com/NVlabs/tiny-cuda-nn
