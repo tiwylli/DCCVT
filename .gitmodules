@@ -1,3 +1,6 @@
 [submodule "3rdparty/tinycudann"]
 	path = 3rdparty/tinycudann
 	url = https://github.com/NVlabs/tiny-cuda-nn
+[submodule "3rdparty/pytorch_cluster"]
+	path = 3rdparty/pytorch_cluster
+	url = git@github.com:rusty1s/pytorch_cluster.git

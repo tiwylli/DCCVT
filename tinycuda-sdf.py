@@ -53,35 +53,6 @@ from common import read_image, write_image, ROOT_DIR
 DATA_DIR = "."
 IMAGES_DIR = "."
 
-class Image(torch.nn.Module):
-    def __init__(self, filename, device):
-        super(Image, self).__init__()
-        self.data = read_image(filename)
-        self.shape = self.data.shape
-        self.data = torch.from_numpy(self.data).float().to(device)
-
-    def forward(self, xs):
-        with torch.no_grad():
-            # Bilinearly filtered lookup from the image. Not super fast,
-            # but less than ~20% of the overall runtime of this example.
-            shape = self.shape
-
-            xs = xs * torch.tensor([shape[1], shape[0]], device=xs.device).float()
-            indices = xs.long()
-            lerp_weights = xs - indices.float()
-
-            x0 = indices[:, 0].clamp(min=0, max=shape[1]-1)
-            y0 = indices[:, 1].clamp(min=0, max=shape[0]-1)
-            x1 = (x0 + 1).clamp(max=shape[1]-1)
-            y1 = (y0 + 1).clamp(max=shape[0]-1)
-
-            return (
-                self.data[y0, x0] * (1.0 - lerp_weights[:,0:1]) * (1.0 - lerp_weights[:,1:2]) +
-                self.data[y0, x1] * lerp_weights[:,0:1] * (1.0 - lerp_weights[:,1:2]) +
-                self.data[y1, x0] * (1.0 - lerp_weights[:,0:1]) * lerp_weights[:,1:2] +
-                self.data[y1, x1] * lerp_weights[:,0:1] * lerp_weights[:,1:2]
-            )
-
 def get_args():
     parser = argparse.ArgumentParser(description="Image benchmark using PyTorch bindings.")
 
@@ -114,7 +85,7 @@ def polyscope_sdf(model):
     # Render the SDF as an implicit surface (zero-level set)
     def model_sdf(pts):
         pts_tensor = torch.tensor(pts * 0.1, dtype=torch.float64, device=device)
-        print(pts_tensor.min(), pts_tensor.max())
+        # print(pts_tensor.min(), pts_tensor.max())
         sdf_values = model(pts_tensor)
         sdf_values_np = sdf_values.detach().cpu().numpy().flatten()  # Convert to NumPy
         
@@ -137,8 +108,40 @@ def polyscope_sdf_ref(points):
 
     ps.render_implicit_surface("SDF Surface", model_sdf, mode="sphere_march", enabled=True)
 
+import drjit as dr
+from drjit.cuda import Float, Array3f, TensorXf
+
+# Better version: use loop obj in drjit
+@dr.syntax
+def trace(o: Array3f, d: Array3f, sdf) -> Array3f:
+    i = 0
+    o = o + d*1.5 # Advance of 1 unit (the camera is at 0.5, 0.5, -2)
+    while i < 256:
+        # Ray marching
+        o = dr.select(Float(sdf(o.torch().permute(1, 0)).squeeze(-1)) > 0.04, o + 0.01*d, o)
+        
+        # SDF Sphere tracing
+        # o = dr.fma(d, Float(sdf(o.torch().permute(1, 0)).squeeze(-1) * 0.1), o)
+        i += 1
+        
+    # Assuming that we are inside the [0, 0, 0] to [1, 1, 1] box
+    o = dr.clip(o, 0, 1)
+    return o
+
+def render(sdf, resolution) -> TensorXf:
+    x = dr.linspace(Float, 0, 1, resolution[0])
+    y = dr.linspace(Float, 0, 1, resolution[1])
+    x, y = dr.meshgrid(x, y)
+    
+    o = Array3f(0.5, 0.5, -2)
+    d = dr.normalize(Array3f(x, y, 3)) # Perspective camera
+
+    p = trace(o, d, sdf)
+    dist = dr.norm(p - o) - 2
+    return dist
 
 
+import torch_cluster as pc
 if __name__ == "__main__":
     ps.init()
     
@@ -162,26 +165,26 @@ if __name__ == "__main__":
     print(model)
 
     # Load the mesh
-    # mesh = trimesh.load_mesh(args.obj)
+    mesh = trimesh.load_mesh(args.obj)
     
-    # # Sample points on the mesh, this will be to approximate the SDF
-    # points, face_indices = trimesh.sample.sample_surface(mesh, 100000)
-    # points = points.astype(np.float32)
-    # points = torch.from_numpy(points).to(device)
+    # Sample points on the mesh, this will be to approximate the SDF
+    points, face_indices = trimesh.sample.sample_surface(mesh, 100000)
+    points = points.astype(np.float32)
+    points = torch.from_numpy(points).to(device)
 
-    # # Normalize the points to [0, 1]   
-    # points -= points.min(dim=0).values
-    # points /= points.max(dim=0).values
+    # Normalize the points to [0, 1]   
+    points -= points.min(dim=0).values
+    points /= points.max(dim=0).values
     
     # Scale = 0.5 and translate = 0.5
-    # points = points * 0.5 + 0.5
+    points = points * 0.5 + 0.5
     
     # Sample a sphere centered in [0.5, 0.5, 0.5] with radius 0.3
-    points = torch.rand([100000, 3], device=device, dtype=torch.float32)
-    points -= 0.5
-    points /= points.norm(dim=1).max()
-    points *= 0.3
-    points += 0.5
+    # points = torch.rand([100000, 3], device=device, dtype=torch.float32)
+    # points -= 0.5
+    # points /= torch.sum(points**2, dim=1, keepdim=True).sqrt()
+    # points *= 0.3
+    # points += 0.5
     
     
     #===================================================================================================
@@ -214,10 +217,14 @@ if __name__ == "__main__":
     with torch.no_grad():
         path = f"reference.jpg"
         print(f"Writing '{path}'... ", end="")
-        dist = torch.cdist(xyz, points, p=2)
-        targets = dist.min(dim=1).values
         
-        ref_img = targets.reshape(img_shape).detach().cpu().numpy()
+        # Compute the minimal distance between batch and the mesh sampled points
+        xyz_batch = torch.zeros((n_pixels), device=device, dtype=torch.int64)
+        points_batch = torch.zeros((points.shape[0]), device=device, dtype=torch.int64)
+        indices_points = pc.nearest(xyz, points, xyz_batch, points_batch)
+        target = torch.sqrt(((xyz - points[indices_points])**2).sum(dim=1, keepdim=True))
+        
+        ref_img = target.reshape(img_shape).detach().cpu().numpy()
         write_image(path, ref_img)
         pyexr.write("reference.exr", ref_img)   
         
@@ -228,25 +235,25 @@ if __name__ == "__main__":
 
     prev_time = time.perf_counter()
 
-    batch_size = 2**12
+    batch_size = 2**15
     interval = 10
 
     print(f"Beginning optimization with {args.n_steps} training steps.")
     
-    
-    for i in range(args.n_steps):
-        batch = torch.rand([batch_size, 3], device=device, dtype=torch.float32)
+    for i in range(args.n_steps):            
+        x_rand = torch.rand([batch_size, 3], device=device, dtype=torch.float32)
         
         # Circle target centered in [0.5, 0.5, 0.5] with radius 0.3
-        # targets = torch.sqrt(((batch - 0.5)**2).sum(dim=1, keepdim=True)) - 0.3
+        # targets = torch.abs(torch.sqrt(((batch - 0.5)**2).sum(dim=1, keepdim=True)) - 0.3)
         
         # Compute the minimal distance between batch and the mesh sampled points
-        dist = torch.cdist(batch.detach(), points.detach(), p=2) 
-        targets = dist.min(dim=1).values
-        print(targets.min(), targets.max())
+        x_rand_batch = torch.zeros((batch_size), device=device, dtype=torch.int64)
+        indices_points = pc.nearest(x_rand, points, x_rand_batch, points_batch)
+        target = torch.sqrt((x_rand - points[indices_points])**2).sum(dim=1, keepdim=True)
         
-        output = model(batch)
-        relative_l2_error = (output - targets.to(output.dtype))**2 #/ (output.detach()**2 + 0.01)
+        output = model(x_rand.detach())
+        # print(output[0])
+        relative_l2_error = (output - target.to(output.dtype))**2 / (output.detach()**2 + 0.01)
         loss = relative_l2_error.mean()
 
         optimizer.zero_grad()
@@ -266,6 +273,13 @@ if __name__ == "__main__":
                 img_out = model(xyz).reshape(img_shape).detach().cpu().numpy()
                 write_image(path, img_out)
                 pyexr.write(f"{i}.exr", img_out)
+                
+                # Compute the drjit sphere tracing
+                dist = render(model, resolution).numpy()
+                print(dist, dist.shape)
+                write_image(f"sdf_{i}.jpg",dist.reshape(img_shape))
+                pyexr.write(f"sdf_{i}.exr", dist.reshape(img_shape))
+            
                 # polyscope_sdf(model)
                 # ps.show()
             print("done.")
