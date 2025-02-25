@@ -11,3 +11,6 @@ todo 3d implementation of Test_ChamferVertex_SDF
 
 for 3d :
 https://github.com/BrunoLevy/geogram/wiki/Delaunay3D
+
+for a better SDF MLP : 
+https://github.com/NVlabs/tiny-cuda-nn?tab=readme-ov-file

@@ -1,7 +1,10 @@
 #DMTET network with small adjustments
 
 import torch
+import trimesh
+from mesh_to_sdf import sample_sdf_near_surface
 from tqdm import tqdm
+
 device = torch.device("cuda:0")
 
 # MLP + Positional Encoding
@@ -37,11 +40,164 @@ class Decoder(torch.nn.Module):
             ref_value  = torch.sqrt((p**2).sum(-1)) - radius
             output = self(p) # sdf 0 , deform 1-3
             loss = loss_fn(output[...,0], ref_value)
+                                                           
+            # # Compute gradients for Eikonal loss
+            # grads = torch.autograd.grad(
+            #     outputs=output[..., 0],  # Network output
+            #     inputs=p,                # Input coordinates
+            #     grad_outputs=torch.ones_like(output[..., 0]),  # Gradient w.r.t. output
+            #     create_graph=True,
+            #     retain_graph=True
+            # )[0]
+
+            # # Eikonal loss: Enforce gradient norm to be 1
+            # loss += ((grads.norm(2, dim=1) - 1) ** 2).mean()
+            
+            
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
         print("Pre-trained MLP", loss.item())
+        
+    # def pre_train_target_pc(self, iter, target_points):
+    #     print ("Initialize SDF to target point cloud")
+    #     loss_fn = torch.nn.MSELoss()
+    #     optimizer = torch.optim.Adam(list(self.parameters()), lr=1e-4)
+
+    #     for i in tqdm(range(iter)):
+    #         p = torch.rand((100000, 3), device='cuda', requires_grad=True) - 0.5  # x and y values in the range [-0.5, 0.5]
+    #         p = p*20
+    #         ref_value  = ((abs(target_points) - abs(p))**2).sum(-1)
+    #         output = self(p) # sdf 0 , deform 1-3
+    #         loss = loss_fn(output[...,0], ref_value)
+      
+    #         # p2 = target_points
+    #         # ref_value2  = torch.zeros((len(target_points)), device=device)
+    #         # output2 = self(p2) # sdf 0 , deform 1-3
+    #         # loss += loss_fn(output2[...,0], ref_value2)
+  
+
+    #         # Compute gradients for Eikonal loss
+    #         output3 = self(p)
+    #         grads = torch.autograd.grad(
+    #             outputs = output3[..., 0],  # Network output
+    #             inputs=p,                # Input coordinates
+    #             grad_outputs=torch.ones_like(output3[..., 0]),  # Gradient w.r.t. output
+    #             create_graph=True,
+    #             retain_graph=True
+    #         )[0]
+
+    #         # Eikonal loss: Enforce gradient norm to be 1
+    #         loss += ((grads.norm(2, dim=1) - 1) ** 2).mean()
+            
+    #         optimizer.zero_grad()
+    #         loss.backward()
+    #         optimizer.step()
+
+    #     print("Pre-trained MLP", loss.item())
+        
+    def train_GT_mesh(self, iter, mesh, target_points):
+        #TODO: pretrain sphere first ?
+        
+        print("Train MLP with GT mesh")
+        loss_fn = torch.nn.MSELoss()
+        optimizer = torch.optim.Adam(list(self.parameters()), lr=1e-4)
+        bunny = trimesh.load(mesh[1])
+        min_target = target_points.min(0)[0]
+        max_target = target_points.max(0)[0]
+        grid_points, grid_sdf = sample_sdf_near_surface(bunny, number_of_points=2500000)
+        grid_points = torch.tensor(grid_points, device=device, dtype=torch.float64)
+        grid_sdf = torch.tensor(grid_sdf, device=device, dtype=torch.float64)
+        min_grid = grid_points.min(0)[0]
+        max_grid = grid_points.max(0)[0]
+
+        scale = torch.max((max_target - min_target) / (max_grid - min_grid))
+        print("scale", scale)
+        grid_points = grid_points * scale
+        grid_sdf = grid_sdf * scale
+                
+        for i in tqdm(range(iter)):
+            p1 = grid_points
+            ref_value1 = grid_sdf
+            output1 = self(p1) # sdf 0 , deform 1-3
+            loss = loss_fn(output1[...,0], ref_value1)
+            
+            p2 = target_points
+            ref_value2  = torch.zeros((len(target_points)), device=device)
+            output2 = self(p2) # sdf 0 , deform 1-3
+            loss += loss_fn(output2[...,0], ref_value2)
+  
+            # # Compute gradients for Eikonal loss
+            #TODO: sample uniformly 
+            p3 = torch.rand((10000, 3), device='cuda', requires_grad=True) - 0.5  # x and y values in the range [-0.5, 0.5]
+            p3 = p3*scale*2
+            output3 = self(p3)
+            grads = torch.autograd.grad(
+                outputs = output3[..., 0],  # Network output
+                inputs=p3,                # Input coordinates
+                grad_outputs=torch.ones_like(output3[..., 0]),  # Gradient w.r.t. output
+                create_graph=True,
+                retain_graph=True
+            )[0]
+
+            # Eikonal loss: Enforce gradient norm to be 1
+            loss += ((grads.norm(2, dim=1) - 1) ** 2).mean()
+            
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        print("GT Trained MLP", loss.item())
+        
+    # def train_GT_grid(self, iter):
+    #     print("Train MLP with GT grid")
+    #     loss_fn = torch.nn.MSELoss()
+    #     optimizer = torch.optim.Adam(list(self.parameters()), lr=1e-4)
+    #     import numpy as np
+    #     filename = "/home/wylliam/dev/Kyushu_experiments/Resources/stanford-bunny.obj"
+    #     sdf = np.load(filename[:-4] + '.npy')
+    #     #sdf is 128x128x128
+    #     #sdf is linked to stanford bunny fixed mesh with min max vertices
+    #     grid_sdf = torch.tensor(sdf, device=device, dtype=torch.float64)
+    #     grid_sdf = grid_sdf.reshape(-1)
+        
+    #     for i in tqdm(range(iter)):
+    #         #create a unifrorm grid of res
+    #         res = 32
+    #         x = torch.linspace(-1, 1, res, device=device, dtype=torch.float64)
+    #         y = torch.linspace(-1, 1, res, device=device, dtype=torch.float64)
+    #         z = torch.linspace(-1, 1, res, device=device, dtype=torch.float64)
+    #         xv, yv, zv = torch.meshgrid(x,y,z, indexing='ij')
+    #         grid_points = torch.stack((xv, yv, zv), dim=-1).reshape(-1, 3)  # Shape: [res³, 3]
+
+    #         p1 = grid_points
+    #         ref_value1 = grid_sdf
+    #         output1 = self(p1) # sdf 0 , deform 1-3
+    #         loss = loss_fn(output1[...,0], ref_value1)
+            
+    #         # # Compute gradients for Eikonal loss
+    #         p3 = torch.rand((1000, 3), device='cuda', requires_grad=True) - 0.5  # x and y values in the range [-0.5, 0.5]
+    #         p3 = p3*2
+    #         output3 = self(p3)
+    #         grads = torch.autograd.grad(
+    #             outputs = output3[..., 0],  # Network output
+    #             inputs=p3,                # Input coordinates
+    #             grad_outputs=torch.ones_like(output3[..., 0]),  # Gradient w.r.t. output
+    #             create_graph=True,
+    #             retain_graph=True
+    #         )[0]
+            
+    #         # Eikonal loss: Enforce gradient norm to be 1
+    #         loss += ((grads.norm(2, dim=1) - 1) ** 2).mean()
+            
+            
+    #         optimizer.zero_grad()
+    #         loss.backward()
+    #         optimizer.step()
+
+    #     print("GT Trained MLP", loss.item())
 
     def pre_train_circle(self, iter, radius=2.0):
         print("Initialize SDF to circle")
