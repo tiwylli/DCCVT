@@ -166,8 +166,16 @@ def eikonal(model, input_dimensions, p=[]):
         # Generate random points in the 2D plane (x, y)
         #p = torch.rand((128**input_dimensions, input_dimensions), device=device, requires_grad=True) - 0.5
         p = torch.rand((100000, input_dimensions), device=device, requires_grad=True) - 0.5
-        
         p = p*20
+        
+        #Todo: experimental
+        #instead of p, i want a uniform grid of points in 3d
+        p = torch.linspace(-10, 10, 50)
+        p = torch.meshgrid(p, p, p)
+        p = torch.stack((p[0].flatten(), p[1].flatten(), p[2].flatten()), dim=1)
+      
+        
+        
     # Compute gradients for Eikonal loss
     grads = torch.autograd.grad(
         outputs=model(p)[:, 0],  # Network output
