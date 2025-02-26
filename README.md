@@ -4,7 +4,7 @@ Test_ChamferVertex_SDF and Test_fit2TrueSDF notebooks
 
 Conda env.yml
 
-todo 3d implementation of Test_ChamferVertex_SDF
+3d implementation of Test_ChamferVertex_SDF
 
 
 
