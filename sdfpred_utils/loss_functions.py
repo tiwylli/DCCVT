@@ -173,6 +173,9 @@ def eikonal(model, input_dimensions, p=[]):
         p = torch.linspace(-10, 10, 50)
         p = torch.meshgrid(p, p, p)
         p = torch.stack((p[0].flatten(), p[1].flatten(), p[2].flatten()), dim=1)
+        p = p.to(device)
+        p.requires_grad = True
+        
       
         
         
@@ -186,7 +189,7 @@ def eikonal(model, input_dimensions, p=[]):
     )[0]
 
     # Eikonal loss: Enforce gradient norm to be 1
-    eikonal_loss = ((grads.norm(2, dim=1) - 1) ** 2).mean()
+    eikonal_loss = ((grads.norm(2, dim=1) - 1)).mean()
 
     return eikonal_loss
  
@@ -233,3 +236,19 @@ def domain_restriction(target_point_cloud, model, num_points=500, buffer_scale =
     domain_loss = torch.relu(-sdf_values).mean()
     
     return domain_loss
+
+
+
+def point_cloud_loss(points,model):
+    batch_size = 2**15
+    
+    # Compute the minimal distance between batch and the mesh sampled points
+    x_rand = torch.rand([batch_size, 3], device=device, dtype=torch.float64)
+    x_rand_batch = torch.zeros((batch_size), device=device, dtype=torch.int64)
+    points_batch = torch.zeros((points.shape[0]), device=device, dtype=torch.int64)
+    indices_points = pc.nearest(x_rand, points, x_rand_batch, points_batch)    
+    target = torch.sqrt((x_rand - points[indices_points])**2).sum(dim=1, keepdim=True)
+    output = model(x_rand.detach())
+    relative_l2_error = (output - target.to(output.dtype))**2 #/ (output.detach()**2 + 0.01)
+    loss = relative_l2_error.mean()
+    return loss

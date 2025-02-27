@@ -269,13 +269,14 @@ if __name__ == "__main__":
     print(f"Beginning optimization with {args.n_steps} training steps.")
     
     for i in range(args.n_steps):            
-        # x_rand = torch.rand([batch_size, 3], device=device, dtype=torch.float32)
         
         # # Circle target centered in [0.5, 0.5, 0.5] with radius 0.3
         # # targets = torch.abs(torch.sqrt(((batch - 0.5)**2).sum(dim=1, keepdim=True)) - 0.3)
         
         # # Compute the minimal distance between batch and the mesh sampled points
+        # x_rand = torch.rand([batch_size, 3], device=device, dtype=torch.float32)
         # x_rand_batch = torch.zeros((batch_size), device=device, dtype=torch.int64)
+        # points_batch = torch.zeros((points.shape[0]), device=device, dtype=torch.int64)
         # indices_points = pc.nearest(x_rand, points, x_rand_batch, points_batch)
         # target = torch.sqrt((x_rand - points[indices_points])**2).sum(dim=1, keepdim=True)
         # output = model(x_rand.detach())
