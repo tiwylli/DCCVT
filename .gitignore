@@ -25,4 +25,4 @@
 /*.jpg
 /*.exr
 /sdfpred_utils/__pycache__/
-/*.npy
+*/*.npy
