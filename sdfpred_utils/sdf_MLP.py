@@ -4,7 +4,6 @@ import torch
 import trimesh
 from mesh_to_sdf import sample_sdf_near_surface
 from tqdm import tqdm
-import torch_cluster as pc
 
 
 device = torch.device("cuda:0")
@@ -60,37 +59,16 @@ class Decoder(torch.nn.Module):
             p = p*20
             # Calculate the reference value (SDF for circle)
             ref_value = torch.sqrt((p**2).sum(-1)) - radius  # Distance from origin (0, 0) minus the circle radius (2)
-
             # Get the network output
             output = self(p)
-            
             # Compute the loss
-            sdf_loss = loss_fn(output[..., 0], ref_value)
-            
-            
-            
-            # Compute gradients for Eikonal loss
-            grads = torch.autograd.grad(
-                outputs=output[..., 0],  # Network output
-                inputs=p,                # Input coordinates
-                grad_outputs=torch.ones_like(output[..., 0]),  # Gradient w.r.t. output
-                create_graph=True,
-                retain_graph=True
-            )[0]
-
-            # Eikonal loss: Enforce gradient norm to be 1
-            eikonal_loss = ((grads.norm(2, dim=1) - 1) ** 2).mean()
-            
-
-            # Total loss: Combine SDF and Eikonal losses
-            total_loss = sdf_loss #+ 1.0 * eikonal_loss  # Adjust the weight (0.1) as necessary
-
+            loss = loss_fn(output[..., 0], ref_value)
             # Perform backpropagation
             optimizer.zero_grad()
-            total_loss.backward()
+            loss.backward()
             optimizer.step()
 
-        print("Pre-trained MLP", total_loss.item())
+        print("Pre-trained MLP", loss.item())
             
         
 

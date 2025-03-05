@@ -170,12 +170,13 @@ def eikonal(model, input_dimensions, p=[]):
         
         #Todo: experimental
         #instead of p, i want a uniform grid of points in 3d
-        p = torch.linspace(-10, 10, 50)
-        p = torch.meshgrid(p, p, p)
-        p = torch.stack((p[0].flatten(), p[1].flatten(), p[2].flatten()), dim=1)
-        p = p.to(device)
-        p.requires_grad = True
-        
+        if input_dimensions == 3:
+            p = torch.linspace(-10, 10, 50)
+            p = torch.meshgrid(p, p, p)
+            p = torch.stack((p[0].flatten(), p[1].flatten(), p[2].flatten()), dim=1)
+            p = p.to(device)
+            p.requires_grad = True
+            
       
         
         
@@ -189,13 +190,15 @@ def eikonal(model, input_dimensions, p=[]):
     )[0]
 
     # Eikonal loss: Enforce gradient norm to be 1
-    eikonal_loss = ((grads.norm(2, dim=1) - 1)).mean()
+    eikonal_loss = ((grads.norm(2, dim=1) - 1).abs()).mean()
 
     return eikonal_loss
- 
+
 def domain_restriction(target_point_cloud, model, num_points=500, buffer_scale = 0.2):
-    min_x, min_y = target_point_cloud[:,0].min(), target_point_cloud[:,1].min()
-    max_x, max_y = target_point_cloud[:,0].max(), target_point_cloud[:,1].max()
+    min_x, min_y = target_point_cloud[:,0].min().item(), target_point_cloud[:,1].min().item()
+    max_x, max_y = target_point_cloud[:,0].max().item(), target_point_cloud[:,1].max().item()
+
+
     
     # Calculate the width and height of the bounding box
     bbox_width = max_x - min_x
