@@ -240,8 +240,35 @@ def domain_restriction(target_point_cloud, model, num_points=500, buffer_scale =
     
     return domain_loss
 
+def directional_div(points, grads):
+    dot_grad = (grads * grads).sum(dim=-1, keepdim=True)
+    hvp = torch.ones_like(dot_grad)
+    hvp = 0.5 * torch.autograd.grad(dot_grad, points, hvp, retain_graph=True, create_graph=True)[0]
+    div = (grads * hvp).sum(dim=-1) / (torch.sum(grads ** 2, dim=-1) + 1e-5)
+    return div
 
+def eikonal_loss(nonmnfld_grad, mnfld_grad, eikonal_type='abs'):
+    # Compute the eikonal loss that penalises when ||grad(f)|| != 1 for points on and off the manifold
+    # shape is (bs, num_points, dim=3) for both grads
+    # Eikonal 
+    if nonmnfld_grad is not None and mnfld_grad is not None:
+        all_grads = torch.cat([nonmnfld_grad, mnfld_grad], dim=-2)
+    elif nonmnfld_grad is not None:
+        all_grads = nonmnfld_grad
+    elif mnfld_grad is not None:
+        all_grads = mnfld_grad
+    
+    if eikonal_type == 'abs':
+        if len(all_grads.shape) == 3:
+            eikonal_term = ((all_grads.norm(2, dim=2) - 1).abs()).mean()
+        else:
+            eikonal_term = ((all_grads.norm(2, dim=1) - 1).abs()).mean()
+    else:
+        eikonal_term = ((all_grads.norm(2, dim=2) - 1).square()).mean()
+    
+    return eikonal_term
 
+#suggestion christian 
 def point_cloud_loss(points,model):
     batch_size = 2**15
     
@@ -255,3 +282,46 @@ def point_cloud_loss(points,model):
     relative_l2_error = (output - target.to(output.dtype))**2 #/ (output.detach()**2 + 0.01)
     loss = relative_l2_error.mean()
     return loss
+
+
+def update_div_weight(current_iteration, n_iterations, lambda_div, divdecay='linear', params=[]):
+    # `params`` should be (start_weight, *optional middle, end_weight) where optional middle is of the form [percent, value]*
+    # Thus (1e2, 0.5, 1e2 0.7 0.0, 0.0) means that the weight at [0, 0.5, 0.75, 1] of the training process, the weight should 
+    #   be [1e2,1e2,0.0,0.0]. Between these points, the weights change as per the div_decay parameter, e.g. linearly, quintic, step etc.
+    #   Thus the weight stays at 1e2 from 0-0.5, decay from 1e2 to 0.0 from 0.5-0.75, and then stays at 0.0 from 0.75-1.
+    
+    # self.weights = weights #sdf, intern, normal, eikonal, div
+
+    assert len(params) >= 2, params
+    assert len(params[1:-1]) % 2 == 0
+    decay_params_list = list(zip([params[0], *params[1:-1][1::2], params[-1]],[0, *params[1:-1][::2], 1]))
+    
+    curr = current_iteration / n_iterations
+    we, e = min([tup for tup in decay_params_list if tup[1]>= curr], key=lambda tup: tup[1])
+    w0, s = max([tup for tup in decay_params_list if tup[1]<= curr], key=lambda tup: tup[1])
+
+    # Divergence term anealing functions
+    if divdecay == 'linear': # linearly decrease weight from iter s to iter e
+        if current_iteration < s*n_iterations:
+            lambda_div = w0
+        elif  current_iteration >= s*n_iterations and current_iteration < e*n_iterations:
+            lambda_div = w0 + (we - w0) * (current_iteration/n_iterations - s) / (e - s)
+        else:
+            lambda_div = we
+    elif divdecay == 'quintic': # linearly decrease weight from iter s to iter e
+        if current_iteration < s*n_iterations:
+            lambda_div = w0
+        elif  current_iteration >= s*n_iterations and current_iteration < e*n_iterations:
+            lambda_div = w0 + (we - w0) * (1 - (1 -(current_iteration/n_iterations - s) / (e - s))**5)
+        else:
+            lambda_div = we
+    elif divdecay == 'step': # change weight at s
+        if current_iteration < s*n_iterations:
+            lambda_div = w0
+        else:
+            lambda_div = we
+    elif divdecay == 'none':
+        pass
+    else:
+        raise Warning("unsupported div decay value")
+    return lambda_div

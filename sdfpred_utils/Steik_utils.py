@@ -1,13 +1,13 @@
 # This file is borrowed from DiGS: https://github.com/Chumbyte/DiGS
 import os
-from tensorboardX import SummaryWriter
+#from tensorboardX import SummaryWriter
 import io
 from PIL import Image
 import numpy as np
 import torch
 from torch.autograd import grad
 import warnings
-from plyfile import PlyData
+#from plyfile import PlyData
 from scipy.spatial import cKDTree as KDTree
 from tqdm import tqdm
 from skimage import measure
