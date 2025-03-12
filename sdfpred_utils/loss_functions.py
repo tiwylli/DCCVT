@@ -194,12 +194,10 @@ def eikonal(model, input_dimensions, p=[]):
 
     return eikonal_loss
 
-def domain_restriction(target_point_cloud, model, num_points=500, buffer_scale = 0.2):
+def domain_restriction_box(target_point_cloud, model, num_points=500, buffer_scale = 0.2):
     min_x, min_y = target_point_cloud[:,0].min().item(), target_point_cloud[:,1].min().item()
     max_x, max_y = target_point_cloud[:,0].max().item(), target_point_cloud[:,1].max().item()
 
-
-    
     # Calculate the width and height of the bounding box
     bbox_width = max_x - min_x
     bbox_height = max_y - min_y
@@ -240,6 +238,46 @@ def domain_restriction(target_point_cloud, model, num_points=500, buffer_scale =
     
     return domain_loss
 
+def domain_restriction_sphere(target_point_cloud, model, buffer_scale=0.2, input_dim=2, num_shells=10):
+    assert input_dim in [2, 3], "input_dim must be either 2 or 3"
+    
+    # Compute the centroid of the point cloud
+    centroid = target_point_cloud.mean(dim=0)
+
+    # Compute the maximum distance from the centroid (bounding sphere radius)
+    distances = torch.norm(target_point_cloud - centroid, dim=1)
+    max_radius = distances.max().item()
+
+    # Expand the sphere slightly with a buffer
+    sphere_radius = max_radius * (1 + buffer_scale)
+
+    # Define multiple shells with increasing radii
+    shell_radii = torch.linspace(sphere_radius * 1.1, sphere_radius * 3, num_shells)
+
+    # Generate random points on each shell
+    points = []
+    num_per_shell = 100 * input_dim
+    
+    for radius in shell_radii:
+        # Sample random directions
+        rand_dirs = torch.randn((num_per_shell, input_dim))  
+        rand_dirs = rand_dirs / torch.norm(rand_dirs, dim=1, keepdim=True)  # Normalize to unit vectors
+        
+        # Scale by shell radius
+        shell_points = centroid[:input_dim] + rand_dirs * radius
+        points.append(shell_points)
+
+    # Combine all sampled points
+    points = torch.cat(points, dim=0)
+
+    # Compute the SDF values and apply domain loss
+    sdf_values = model(points)[:, 0]
+    domain_loss = torch.relu(-sdf_values).mean()
+
+    return domain_loss
+
+
+
 def directional_div(points, grads):
     dot_grad = (grads * grads).sum(dim=-1, keepdim=True)
     hvp = torch.ones_like(dot_grad)
@@ -268,7 +306,7 @@ def eikonal_loss(nonmnfld_grad, mnfld_grad, eikonal_type='abs'):
     
     return eikonal_term
 
-#suggestion christian 
+#suggestion christian doesnt work with current implementation
 def point_cloud_loss(points,model):
     batch_size = 2**15
     
