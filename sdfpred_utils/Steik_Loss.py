@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import Steik_utils as utils
+import sdfpred_utils.Steik_utils as utils
 
 def eikonal_loss(nonmnfld_grad, mnfld_grad, eikonal_type='abs'):
     # Compute the eikonal loss that penalises when ||grad(f)|| != 1 for points on and off the manifold
@@ -71,8 +71,8 @@ class Loss(nn.Module):
 
         non_manifold_pred = output_pred["nonmanifold_pnts_pred"]
         manifold_pred = output_pred["manifold_pnts_pred"]
-        latent_reg = output_pred["latent_reg"]
-        latent = output_pred["latent"]
+        #latent_reg = output_pred["latent_reg"]
+        #latent = output_pred["latent"]
 
         div_loss = torch.tensor([0.0], device=mnfld_points.device)
 
@@ -108,7 +108,7 @@ class Loss(nn.Module):
         eikonal_term = eikonal_loss(nonmnfld_grad, mnfld_grad=mnfld_grad, eikonal_type='abs')
 
         # latent regulariation for multiple shape learning
-        latent_reg_term = latent_rg_loss(latent_reg, device)
+        #latent_reg_term = latent_rg_loss(latent_reg, device)
         
         # normal term
         if mnfld_n_gt is not None:
@@ -151,12 +151,14 @@ class Loss(nn.Module):
         else:
             raise Warning("unrecognized loss type")
         
-        # If multiple surface reconstruction, then latent and latent_reg are defined so reg_term need to be used
-        if latent is not None and latent_reg is not None:
-            loss += self.weights[5] * latent_reg_term
+        # # If multiple surface reconstruction, then latent and latent_reg are defined so reg_term need to be used
+        # if latent is not None and latent_reg is not None:
+        #     loss += self.weights[5] * latent_reg_term
         
-        return {"loss": loss, 'sdf_term': sdf_term, 'inter_term': inter_term, 'latent_reg_term': latent_reg_term,
-                'eikonal_term': eikonal_term, 'normals_loss': normal_term, 'div_loss': div_loss
+        # return {"loss": loss, 'sdf_term': sdf_term, 'inter_term': inter_term, 'latent_reg_term': latent_reg_term,
+        #         'eikonal_term': eikonal_term, 'normals_loss': normal_term, 'div_loss': div_loss
+        #         }, mnfld_grad
+        return {"loss": loss, 'sdf_term': sdf_term, 'inter_term': inter_term, 'eikonal_term': eikonal_term, 'normals_loss': normal_term, 'div_loss': div_loss
                 }, mnfld_grad
 
     def update_div_weight(self, current_iteration, n_iterations, params=None):
