@@ -5,26 +5,70 @@ import numpy as np
 device = torch.device("cuda:0")
 
 
-def compute_edge_smoothing_loss(edges, sites, model):
+# def compute_edge_smoothing_loss(edges, sites, model):
+#     """
+#     Computes the loss to smooth edges by minimizing the dot product between the 
+#     edge orientation and the gradient of the SDF at the midpoint of the edge, without a loop.
+    
+#     Args:
+#         edges: Tensor of edges, each defined as [v1_idx, v2_idx, site1_idx, site2_idx].
+#         sites: Tensor of site positions.
+#         model
+    
+#     Returns:
+#         smoothing_loss: The computed edge smoothing loss.
+#     """
+#     # Extract indices for vertices and sites
+#     v1_idx, v2_idx, site1_idx, site2_idx = edges[:, 0], edges[:, 1], edges[:, 2], edges[:, 3]
+    
+#     # Extract positions of site1 and site2
+#     site1 = sites[site1_idx]  # Shape: (M, D)
+#     site2 = sites[site2_idx]  # Shape: (M, D)
+    
+#     # Compute site direction and edge orientation
+#     site_direction = site2 - site1  # Shape: (M, D)
+#     site_direction = site_direction / torch.norm(site_direction, dim=1, keepdim=True)  # Normalize
+    
+#     # Perpendicular orientation (2D case)
+#     edge_orientation = torch.stack([-site_direction[:, 1], site_direction[:, 0]], dim=1)  # Shape: (M, 2)
+    
+#     # Compute midpoints of edges
+#     midpoints = (site1 + site2) / 2.0  # Shape: (M, D)
+#     midpoints.requires_grad_(True)  # Enable gradient tracking for midpoints
+    
+#     # Compute SDF values at midpoints
+#     sdf_values = model(midpoints)[:,0]
+    
+#     # Compute SDF gradients at midpoints
+#     torch.autograd.set_detect_anomaly(True)
+#     gradients_sdf = torch.autograd.grad(sdf_values, midpoints, grad_outputs=torch.ones_like(sdf_values), create_graph=True)[0]  # Shape: (M, D)
+    
+#     # Dot product between edge orientation and SDF gradient
+#     dot_products = torch.sum(edge_orientation * gradients_sdf, dim=1)  # Shape: (M,)
+    
+#     # Compute smoothing loss
+#     smoothing_loss = torch.mean(dot_products**2)  # Scalar
+
+#     return smoothing_loss
+
+def compute_edge_smoothing_loss(bisectors_to_compute, sites, model):
     """
     Computes the loss to smooth edges by minimizing the dot product between the 
     edge orientation and the gradient of the SDF at the midpoint of the edge, without a loop.
     
     Args:
-        edges: Tensor of edges, each defined as [v1_idx, v2_idx, site1_idx, site2_idx].
+        bisectors_to_compute: Tensor of sites index pairs, each defined as [site1_idx, site2_idx].
         sites: Tensor of site positions.
         model
     
     Returns:
         smoothing_loss: The computed edge smoothing loss.
     """
-    # Extract indices for vertices and sites
-    v1_idx, v2_idx, site1_idx, site2_idx = edges[:, 0], edges[:, 1], edges[:, 2], edges[:, 3]
-    
     # Extract positions of site1 and site2
-    site1 = sites[site1_idx]  # Shape: (M, D)
-    site2 = sites[site2_idx]  # Shape: (M, D)
+    site1 = sites[bisectors_to_compute[:, 0]]  # Shape: (M, D)
+    site2 = sites[bisectors_to_compute[:, 1]]  # Shape: (M, D)
     
+   
     # Compute site direction and edge orientation
     site_direction = site2 - site1  # Shape: (M, D)
     site_direction = site_direction / torch.norm(site_direction, dim=1, keepdim=True)  # Normalize
@@ -50,6 +94,79 @@ def compute_edge_smoothing_loss(edges, sites, model):
     smoothing_loss = torch.mean(dot_products**2)  # Scalar
 
     return smoothing_loss
+
+
+# def compute_edge_smoothing_loss_3d(bisectors_to_compute, sites, model):
+#     """
+#     Computes the loss to smooth edges by minimizing the dot product between the 
+#     edge direction and the gradient of the SDF at the midpoint of the edge (3D version).
+    
+#     Args:
+#         bisectors_to_compute: Tensor of site index pairs, each row is [site1_idx, site2_idx].
+#         sites: Tensor of site positions (N, 3).
+#         model: Function or neural network that returns the SDF values.
+    
+#     Returns:
+#         smoothing_loss: Scalar loss value encouraging smoother edges.
+#     """
+#     # Extract positions of site1 and site2
+#     site1 = sites[bisectors_to_compute[:, 0]]  # Shape: (M, 3)
+#     site2 = sites[bisectors_to_compute[:, 1]]  # Shape: (M, 3)
+    
+#     # Compute site direction (edge vector)
+#     site_direction = site2 - site1  # Shape: (M, 3)
+#     site_direction = site_direction / torch.norm(site_direction, dim=1, keepdim=True)  # Normalize
+
+#     # Compute midpoints of edges
+#     midpoints = (site1 + site2) / 2.0  # Shape: (M, 3)
+#     midpoints.requires_grad_(True)  # Enable gradient tracking for midpoints
+    
+#     # Compute SDF values at midpoints
+#     sdf_values = model(midpoints)[:, 0]
+    
+#     # Compute SDF gradients at midpoints
+#     gradients_sdf = torch.autograd.grad(
+#         sdf_values, midpoints, grad_outputs=torch.ones_like(sdf_values), create_graph=True
+#     )[0]  # Shape: (M, 3)
+    
+#     # Dot product between edge direction and SDF gradient
+#     dot_products = torch.sum(site_direction * gradients_sdf, dim=1)  # Shape: (M,)
+    
+#     # Compute smoothing loss
+#     smoothing_loss = torch.mean(dot_products**2)  # Scalar
+
+#     return smoothing_loss
+
+
+
+# def mean_curvature_loss(vertices, adjacency_list):
+#     """
+#     Computes the mean curvature loss for a given set of vertices and their adjacency list.
+
+#     Args:
+#         vertices (torch.Tensor): Tensor of shape (N, 3), where N is the number of vertices.
+#         adjacency_list (list of lists): adjacency_list[i] contains indices of neighbors of vertex i.
+
+#     Returns:
+#         torch.Tensor: Scalar loss value encouraging smoother geometry.
+#     """
+#     device = vertices.device
+#     loss = torch.tensor(0.0, device=device)
+
+#     for i, neighbors in enumerate(adjacency_list):
+#         if len(neighbors) == 0:
+#             continue  # Skip isolated points
+        
+#         # Compute the mean of the neighboring vertices
+#         neighbor_vertices = vertices[neighbors]  # Shape (num_neighbors, 3)
+#         mean_neighbor = neighbor_vertices.mean(dim=0)  # Shape (3,)
+
+#         # Mean curvature flow loss (squared distance to neighborhood mean)
+#         loss += torch.norm(vertices[i] - mean_neighbor, p=2) ** 2
+
+#     return loss / len(adjacency_list)  # Normalize by number of vertices
+
+
 
 #Todo vectorize
 def compute_cvt_loss(sites):
