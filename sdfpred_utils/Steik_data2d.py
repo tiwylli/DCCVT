@@ -328,7 +328,7 @@ def get_bunny_points():
     bunny = bunny / np.max(np.abs(bunny))
     return bunny
 
-def get2D_dataset(*args, shape_type='circle'):
+def get2D_dataset(*args, shape_type='circle', other_vertices=None):
 
     if shape_type == 'circle':
         out_shape = Circle(*args)
@@ -340,6 +340,12 @@ def get2D_dataset(*args, shape_type='circle'):
     elif shape_type == 'bunny':
         vertices = get_bunny_points()
         out_shape = Polygon(*args, vertices=vertices)
+    elif shape_type == 'other':
+        vertices = other_vertices
+        vertices = vertices - np.mean(vertices, axis=0)
+        vertices = vertices / np.max(np.abs(vertices))
+        out_shape = Polygon(*args, vertices=vertices)
+    
     else:
         raise Warning("Unsupportaed shape")
 

@@ -47,6 +47,23 @@ class Decoder(torch.nn.Module):
             optimizer.step()
 
         print("Pre-trained MLP", loss.item())
+        
+    def pre_train_pc(self, iter, pointcloud):
+        print("Initialize SDF to zero level set")
+        loss_fn = torch.nn.MSELoss()
+        optimizer = torch.optim.Adam(list(self.parameters()), lr=0.00005*2)
+        
+        for i in tqdm(range(iter)):
+            p = pointcloud
+            ref_value = torch.zeros((p.shape[0], 1), device='cuda')
+            output = self(p)
+            loss = loss_fn(output[..., 0], ref_value)
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        
+        print("Pre-trained MLP", loss.item())
 
     def pre_train_circle(self, iter, radius=2.0):
         print("Initialize SDF to circle")
