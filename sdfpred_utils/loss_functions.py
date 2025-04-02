@@ -177,11 +177,12 @@ def compute_cvt_loss(sites):
 
     return cvt_loss
 
-def compute_cvt_loss_vectorized(sites, model):
+def compute_cvt_loss_vectorized_voronoi(sites, vor=None, model=None):
     # Convert sites to NumPy for Voronoi computation
-    sdf_values = model(sites)
+    #sdf_values = model(sites)
     sites_np = sites.detach().cpu().numpy()
-    vor = Voronoi(sites_np)
+    if vor is None:
+        vor = Voronoi(sites_np)
 
     #Todo C++ loop for this
     # create a nested list of vertices for each site
@@ -189,10 +190,69 @@ def compute_cvt_loss_vectorized(sites, model):
     centroids = torch.tensor(np.array(centroids), device=sites.device, dtype=sites.dtype)
     valid_indices = torch.tensor([i for i in range(len(sites_np)) if vor.regions[vor.point_region[i]] and -1 not in vor.regions[vor.point_region[i]]], device=sites.device)
     valid_sites = sites[valid_indices]
-    sdf_weights = 1 / (1 + torch.abs(sdf_values[valid_indices]))
+    # sdf_weights = 1 / (1 + torch.abs(sdf_values[valid_indices]))
     penalties = torch.where(abs(valid_sites - centroids) < 10, valid_sites - centroids, torch.tensor(0.0, device=sites.device))
-    cvt_loss = torch.mean(((penalties)*sdf_weights)**2)
+    # cvt_loss = torch.mean(((penalties)*sdf_weights)**2)
+    cvt_loss = torch.mean(penalties**2)
     return cvt_loss
+
+def compute_cvt_loss_vectorized_delaunay(sites, delaunay):
+    def circumcenter_torch(points, simplices):
+        """Compute the circumcenters for 2D triangles or 3D tetrahedra in a vectorized manner using PyTorch."""
+        p1, p2, p3 = points[simplices[:, 0]], points[simplices[:, 1]], points[simplices[:, 2]]
+        
+        if points.shape[1] == 2:  # **2D Case (Triangles)**
+            # Compute determinant (D)
+            D = 2 * (p1[:, 0] * (p2[:, 1] - p3[:, 1]) +
+                    p2[:, 0] * (p3[:, 1] - p1[:, 1]) +
+                    p3[:, 0] * (p1[:, 1] - p2[:, 1]))
+
+            # Compute circumcenter coordinates
+            ux = ((p1[:, 0]**2 + p1[:, 1]**2) * (p2[:, 1] - p3[:, 1]) +
+                (p2[:, 0]**2 + p2[:, 1]**2) * (p3[:, 1] - p1[:, 1]) +
+                (p3[:, 0]**2 + p3[:, 1]**2) * (p1[:, 1] - p2[:, 1])) / D
+
+            uy = ((p1[:, 0]**2 + p1[:, 1]**2) * (p3[:, 0] - p2[:, 0]) +
+                (p2[:, 0]**2 + p2[:, 1]**2) * (p1[:, 0] - p3[:, 0]) +
+                (p3[:, 0]**2 + p3[:, 1]**2) * (p2[:, 0] - p1[:, 0])) / D
+
+            return torch.stack((ux, uy), dim=1)
+        
+        elif points.shape[1] == 3:  # **3D Case (Tetrahedra)**
+            #TODO: find the solution to compute voronoi cells centroids in 3d from delaunay only
+            print("TODO")
+        else:
+            raise ValueError("Only 2D (triangles) and 3D (tetrahedra) are supported.")
+        
+    def compute_voronoi_cell_centers_index_based_torch(delaunay):
+        """Compute Voronoi cell centers (circumcenters) for 2D or 3D Delaunay triangulation in PyTorch."""
+        simplices = torch.tensor(delaunay.simplices, dtype=torch.long)
+        points = torch.tensor(delaunay.points, dtype=torch.float32)
+
+        # Compute all circumcenters at once (supports both 2D & 3D)
+        circumcenters_arr = circumcenter_torch(points, simplices)
+
+        # Flatten simplices and repeat circumcenters to map them to the points
+        indices = simplices.flatten()  # Flatten simplex indices
+        centers = circumcenters_arr.repeat_interleave(simplices.shape[1], dim=0)  # Repeat for each vertex in simplex
+
+        # Group circumcenters per point
+        result = [centers[indices == i] for i in range(len(points))]
+        centroids = torch.stack([torch.mean(c, dim=0) for c in result])
+
+        return centroids
+
+    
+    if sites[0].shape[0] == 2:
+        centroids = compute_voronoi_cell_centers_index_based_torch(delaunay)
+        penalties = torch.where(abs(sites - centroids) < 10, sites - centroids, torch.tensor(0.0, device=sites.device))
+        cvt_loss = torch.mean(penalties**2)
+    else:
+        cvt_loss = compute_cvt_loss_vectorized_voronoi(sites)
+        
+    return cvt_loss
+
+
 
 
 def sdf_weighted_min_distance_loss(model, sites):
@@ -235,6 +295,8 @@ def sdf_weighted_min_distance_loss(model, sites):
     return regularization_loss
 
 def chamfer_distance(true_point_cloud, vertices):
+    true_point_cloud = true_point_cloud.half().detach()
+    vertices = vertices.half()
     # Compute pairwise distances
     # From point cloud to mesh edge points
     dist1 = torch.cdist(true_point_cloud, vertices).min(dim=1)[0]
@@ -335,7 +397,7 @@ def domain_restriction_sphere(target_point_cloud, model, buffer_scale=0.2, input
     sphere_radius = max_radius * (1 + buffer_scale)
 
     # Define multiple shells with increasing radii
-    shell_radii = torch.linspace(sphere_radius * 1.1, sphere_radius * 3, num_shells)
+    shell_radii = torch.linspace(sphere_radius, sphere_radius * 10, num_shells)
 
     # Generate random points on each shell
     points = []

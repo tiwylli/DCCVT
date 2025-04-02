@@ -61,15 +61,19 @@ class ReconDataset(data.Dataset):
     def get_mnfld_points(self):
         # Returns points on the manifold
         points = np.asarray(self.o3d_point_cloud.points, dtype=np.float32)
-        print("points shape: ", points.shape)
+        #print("points shape: ", points.shape)
         
         if self.o3d_point_cloud.has_normals():
             normals = np.asarray(self.o3d_point_cloud.normals, dtype=np.float32)
-            print("has normals, normals shape: ", normals.shape)
+            #print("has normals, normals shape: ", normals.shape)
         else:
-            self.o3d_point_cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+            # Estimate normals
+            #self.o3d_point_cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+            self.o3d_point_cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
+            # Flip normals towards a common viewpoint (optional)
+            self.o3d_point_cloud.orient_normals_consistent_tangent_plane(k=30)
             normals = np.asarray(self.o3d_point_cloud.normals, dtype=np.float32)
-            print("estimated normals shape: ", normals.shape)
+            #print("estimated normals shape: ", normals.shape)
         # center and scale point cloud
         self.cp = points.mean(axis=0)
         points = points - self.cp[None, :]

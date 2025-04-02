@@ -140,7 +140,7 @@ def compute_zero_crossing_vertices(sites, model):
     
     return zero_crossing_vertices_index, zero_crossing_pairs
 
-def compute_zero_crossing_vertices_3d(sites, model):
+def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, model=None):
     """
     Computes the indices of the sites composing vertices where neighboring sites have opposite or zero SDF values.
 
@@ -151,19 +151,36 @@ def compute_zero_crossing_vertices_3d(sites, model):
     Returns:
         zero_crossing_vertices_index (list of triplets): List of sites indices (si, sj, sk) where atleast 2 sites have opposing SDF signs.
     """
-    # Compute Delaunay neighbors
-    # Detach and convert to NumPy for Delaunay triangulation
-    points_np = sites.detach().cpu().numpy()
+    # # # Compute Delaunay neighbors
+    # # # Detach and convert to NumPy for Delaunay triangulation
+    # points_np = sites.detach().cpu().numpy()
     
-    # Compute the Delaunay tessellation
-    tri = Delaunay(points_np)
-    vor = Voronoi(points_np)
+    # # # Compute the Delaunay tessellation
+    # tri = Delaunay(points_np)
+    # vor = Voronoi(points_np)
     
     # Compute SDF values for all sites
-    sdf_values = model(sites)  # Assuming model outputs (N, 1) or (N,) tensor
-
-    neighbors = torch.tensor(np.array(vor.ridge_points), device=device)
+    sdf_values = model(sites).detach()  # Assuming model outputs (N, 1) or (N,) tensor
     all_tetrahedra = torch.tensor(np.array(tri.simplices), device=device)
+
+    if vor is not None:
+        neighbors = torch.tensor(np.array(vor.ridge_points), device=device)
+    # could compute neighbors without the voronoi diagram
+    else:
+        #neighbors = torch.tensor(np.vstack(list({tuple(sorted(edge)) for tetra in tri.simplices for edge in zip(tetra, np.roll(tetra, -1))})), device=device)
+        tetra_edges = torch.cat([
+        all_tetrahedra[:, [0, 1]],
+        all_tetrahedra[:, [1, 2]],
+        all_tetrahedra[:, [2, 3]],
+        all_tetrahedra[:, [3, 0]],
+        all_tetrahedra[:, [0, 2]],
+        all_tetrahedra[:, [1, 3]]
+                                ], dim=0).to(device)
+        # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
+        tetra_edges, _ = torch.sort(tetra_edges, dim=1)
+        # Get unique edges
+        neighbors = torch.unique(tetra_edges, dim=0)
+    
     
     # Extract the SDF values for each site in the pair
     sdf_i = sdf_values[neighbors[:, 0]]  # First site in each pair
@@ -179,6 +196,7 @@ def compute_zero_crossing_vertices_3d(sites, model):
     sdf_3 = sdf_values[all_tetrahedra[:, 3]]  # Fourth site in each pair
     mask_zero_crossing_faces = (sdf_0*sdf_1<=0).squeeze() | (sdf_0*sdf_2<=0).squeeze() | (sdf_0*sdf_3<=0).squeeze() | (sdf_1*sdf_2<=0).squeeze() | (sdf_1*sdf_3<=0).squeeze() | (sdf_2*sdf_3<=0).squeeze()
     zero_crossing_vertices_index = all_tetrahedra[mask_zero_crossing_faces]
+    
     return zero_crossing_vertices_index, zero_crossing_pairs
 
 def compute_vertex(s_i, s_j, s_k):

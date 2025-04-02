@@ -4,6 +4,9 @@ import torch
 import trimesh
 from mesh_to_sdf import sample_sdf_near_surface
 from tqdm import tqdm
+import open3d as o3d
+import numpy as np
+import polyscope as ps
 
 
 device = torch.device("cuda:0")
@@ -47,33 +50,14 @@ class Decoder(torch.nn.Module):
             optimizer.step()
 
         print("Pre-trained MLP", loss.item())
-        
-    # def pre_train_pc(self, iter, pointcloud):
-    #     print("Initialize SDF to zero level set")
-    #     loss_fn = torch.nn.MSELoss()
-    #     optimizer = torch.optim.Adam(list(self.parameters()), lr=0.00005*2)
-        
-    #     for i in tqdm(range(iter)):
-    #         p = pointcloud
-    #         ref_value = torch.zeros((p.shape[0]), device='cuda')
-    #         output = self(p)
-    #         loss = loss_fn(output[..., 0], ref_value)
-            
-    #         optimizer.zero_grad()
-    #         loss.backward()
-    #         optimizer.step()
-        
-    #     print("Pre-trained MLP", loss.item())
-        
-        
-    def pre_train_pc(self, iter, pointcloud):
-        #TODO: works with 10k, but might be good to reduce the lr towards the end 
+    
+    def pre_train_pc_scaling(self, iter, pointcloud, lr=0.0001):
         print("Initialize SDF with inside, outside, and surface points")
         loss_fn = torch.nn.MSELoss()
-        optimizer = torch.optim.Adam(list(self.parameters()), lr=0.00005*2)
-
+        optimizer = torch.optim.Adam(list(self.parameters()), lr=lr)
+        
         for i in tqdm(range(iter)):
-            # Create additional points
+            # Add noise to points
             noise_std = 0.01 * torch.std(pointcloud, dim=0)  # Adaptive noise
             noise = torch.randn_like(pointcloud) * noise_std
             inside_points = pointcloud * 0.9 + noise
@@ -82,7 +66,86 @@ class Decoder(torch.nn.Module):
             # Compute bounding sphere and generate points outside of it
             center = torch.mean(pointcloud, dim=0)
             max_dist = torch.max(torch.norm(pointcloud - center, dim=1))
-            scale = 3 * max_dist
+            scale = 10 * max_dist
+            far_points = scale * torch.randn_like(pointcloud)
+            
+            
+            ps.register_point_cloud("pointcloud", pointcloud.detach().cpu().numpy())
+            ps.register_point_cloud("inside_points", inside_points.detach().cpu().numpy())
+            ps.register_point_cloud("outside_points", outside_points.detach().cpu().numpy())
+            #ps.register_point_cloud("far_points", far_points.detach().cpu().numpy())
+            
+            # ps.show()
+            
+            # Concatenate all points            
+            p = torch.cat([pointcloud, inside_points, outside_points, far_points], dim=0)
+            
+            # Reference values: 0 for surface, negative inside, positive outside
+            ref_value = torch.cat([
+                torch.zeros(pointcloud.shape[0], device=p.device),  # Surface (SDF = 0)
+                -torch.ones(inside_points.shape[0], device=p.device),  # Inside (SDF < 0)
+                torch.ones(outside_points.shape[0], device=p.device),  # Outside (SDF > 0)
+                scale * torch.ones(far_points.shape[0], device=p.device)  # Far points (SDF > 0)
+                
+            ])
+            output = self(p)
+            loss = loss_fn(output[..., 0], ref_value)
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        
+        print("Pre-trained MLP", loss.item())
+     
+    def pre_train_pc(self, iter, filename="/home/wylliam/dev/Kyushu_experiments/Resources/stanford-bunny.obj",
+                     n_points=32**3, lr=0.0001):
+        print("Initialize SDF with inside, outside, and surface points")
+        loss_fn = torch.nn.MSELoss()
+        optimizer = torch.optim.Adam(list(self.parameters()), lr=lr)
+        
+        # Load point cloud
+        mesh = o3d.io.read_triangle_mesh(filename)
+        pcd = mesh.sample_points_uniformly(n_points)
+        points = np.asarray(pcd.points, dtype=np.float32)
+        # center and scale point cloud
+        center = points.mean(axis=0)
+        points = points - center[None, :]
+        points = points / np.abs(points).max()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
+        pcd.orient_normals_consistent_tangent_plane(k=30)
+        # Convert point cloud to numpy
+        points = np.asarray(pcd.points)
+        normals = np.asarray(pcd.normals)
+        # Define offset distance
+        d = 0.003  # Adjust as needed
+        # Create outer and inner point clouds
+        points_outer = points + d * normals
+        points_inner = points - d * normals
+        
+        # Convert to torch tensors
+        pointcloud = torch.tensor(points, device='cuda')
+        
+        # Compute bounding sphere and generate points outside of it
+        bs_center = torch.mean(pointcloud, dim=0)
+        max_dist = torch.max(torch.norm(pointcloud - bs_center, dim=1))
+        scale = 10 * max_dist
+        # ps.register_point_cloud("pointcloud", pointcloud.detach().cpu().numpy())
+        # ps.register_point_cloud("inside_points", points_inner)
+        # ps.register_point_cloud("outside_points", points_outer)
+        # ps.show()
+
+        for i in tqdm(range(iter)):
+            # SubSample uniformely points
+
+            # inside_points = torch.tensor(points_inner[torch.randperm(points.shape[0])[:24**3].cpu().numpy()])  # (N^3, 3)
+            # outside_points = torch.tensor(points_outer[torch.randperm(points.shape[0])[:24**3].cpu().numpy()])  # (N^3, 3)
+            inside_points = torch.tensor(points_inner)
+            outside_points = torch.tensor(points_outer)
+            
+            inside_points += torch.randn_like(inside_points) * d * torch.std(inside_points, dim=0)
+            outside_points += torch.randn_like(outside_points) * d * torch.std(outside_points, dim=0)
+
             far_points = scale * torch.randn_like(pointcloud)
             
             # Concatenate all points
@@ -91,15 +154,23 @@ class Decoder(torch.nn.Module):
             # Reference values: 0 for surface, negative inside, positive outside
             ref_value = torch.cat([
                 torch.zeros(pointcloud.shape[0], device=p.device),  # Surface (SDF = 0)
-                -torch.ones(inside_points.shape[0], device=p.device),  # Inside (SDF < 0)
-                torch.ones(outside_points.shape[0], device=p.device),  # Outside (SDF > 0)
+                -d*torch.ones(inside_points.shape[0], device=p.device),  # Inside (SDF < 0)
+                d*torch.ones(outside_points.shape[0], device=p.device),  # Outside (SDF > 0)
                 scale*torch.ones(far_points.shape[0], device=p.device)  # Far points (SDF > 0)
             ])
             output = self(p)
             loss = loss_fn(output[..., 0], ref_value)
+  
+            # zero_level = pointcloud
+            # zero_level_ref_value = torch.zeros((zero_level.shape[0]), device=p.device)
+            # zero_level_output = self(zero_level)
+            # zero_level_loss = loss_fn(zero_level_output[..., 0], zero_level_ref_value)
+            
+            # Combine losses
+            total_loss = loss #+ 100*zero_level_loss
             
             optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             optimizer.step()
         
         print("Pre-trained MLP", loss.item())
