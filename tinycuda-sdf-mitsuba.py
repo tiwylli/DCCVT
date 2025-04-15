@@ -35,8 +35,6 @@ import sys
 import torch
 import time
 import trimesh
-from mesh_to_sdf import sample_sdf_near_surface
-
 
 try:
     import tinycudann as tcnn
@@ -58,7 +56,7 @@ IMAGES_DIR = "."
 def get_args():
     parser = argparse.ArgumentParser(description="Image benchmark using PyTorch bindings.")
 
-    parser.add_argument("obj", nargs="?", default="Ressources/stanford-bunny.obj", help="Image to match")
+    parser.add_argument("obj", nargs="?", default="data/albert.jpg", help="Image to match")
     parser.add_argument("config", nargs="?", default="data/config_hash.json", help="JSON config for tiny-cuda-nn")
     parser.add_argument("n_steps", nargs="?", type=int, default=10000000, help="Number of training steps")
     parser.add_argument("result_filename", nargs="?", default="", help="Number of training steps")
@@ -70,7 +68,6 @@ def get_args():
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 cmap = plt.get_cmap("coolwarm")
-
 def sdf_to_image(sdf, resolution, range=0.5):
     print(sdf.shape, np.min(sdf), np.max(sdf))    
     # norm = mcolors.Normalize(vmin=-range, vmax=range)
@@ -115,6 +112,7 @@ import drjit as dr
 from drjit.cuda import Float, Array3f, TensorXf
 
 # Better version: use loop obj in drjit
+# sdf = tinycuda network
 @dr.syntax
 def trace(o: Array3f, d: Array3f, sdf) -> Array3f:
     i = 0
@@ -124,7 +122,7 @@ def trace(o: Array3f, d: Array3f, sdf) -> Array3f:
         o = dr.select(Float(sdf(o.torch().permute(1, 0)).squeeze(-1)) > 0.04, o + 0.01*d, o)
         
         # SDF Sphere tracing
-        # o = dr.fma(d, Float(sdf(o.torch().permute(1, 0)).squeeze(-1)), o)
+        # o = dr.fma(d, Float(sdf(o.torch().permute(1, 0)).squeeze(-1) * 0.1), o)
         i += 1
         
     # Assuming that we are inside the [0, 0, 0] to [1, 1, 1] box
@@ -144,7 +142,7 @@ def render(sdf, resolution) -> TensorXf:
     return dist
 
 
-#import torch_cluster as pc
+import torch_cluster as pc
 if __name__ == "__main__":
     ps.init()
     
@@ -171,41 +169,16 @@ if __name__ == "__main__":
     mesh = trimesh.load_mesh(args.obj)
     
     # Sample points on the mesh, this will be to approximate the SDF
-    # points, face_indices = trimesh.sample.sample_surface(mesh, 100000)
-    # points = points.astype(np.float32)
-    # points = torch.from_numpy(points).to(device)
+    points, face_indices = trimesh.sample.sample_surface(mesh, 100000)
+    points = points.astype(np.float32)
+    points = torch.from_numpy(points).to(device)
 
-    # # Normalize the points to [0, 1]   
-    # points -= points.min(dim=0).values
-    # points /= points.max(dim=0).values
+    # Normalize the points to [0, 1]   
+    points -= points.min(dim=0).values
+    points /= points.max(dim=0).values
     
-    # # Scale = 0.5 and translate = 0.5
-    # points = points * 0.5 + 0.5
-    
-    # # shift points between [-0.5, 0.5]
-    # points -= 0.5
-    # # Scale points between [-1, 1]
-    # points *= 2 
-    
-        
-    grid_points, grid_sdf = sample_sdf_near_surface(mesh, number_of_points=30000)
-    grid_points = torch.tensor(grid_points, device=device, dtype=torch.float16)
-    grid_sdf = torch.tensor(grid_sdf, device=device, dtype=torch.float16)
-    
-    # Normalize the points to [0, 1]
-    grid_points /= 2
-    grid_points += 0.5
-    print(grid_points.min(), grid_points.max())
-    
-    grid_sdf /= 2
-    print(grid_sdf.min(), grid_sdf.max())   
-    
-    print(grid_points.shape, grid_sdf.shape)
-    
-    # Show point with values in polyscope
-    ps_cloud = ps.register_point_cloud("points", grid_points.cpu().numpy())
-    ps_cloud.add_scalar_quantity("sdf", grid_sdf.cpu().numpy())
-    ps.show()
+    # Scale = 0.5 and translate = 0.5
+    points = points * 0.5 + 0.5
     
     # Sample a sphere centered in [0.5, 0.5, 0.5] with radius 0.3
     # points = torch.rand([100000, 3], device=device, dtype=torch.float32)
@@ -242,25 +215,24 @@ if __name__ == "__main__":
     xyz = torch.cat((xy, torch.ones_like(xy[:,0:1]) * 0.5), dim=1)
 
     # Torch no grad
-    # with torch.no_grad():
-    #     path = f"reference.jpg"
-    #     print(f"Writing '{path}'... ", end="")
+    with torch.no_grad():
+        path = f"reference.jpg"
+        print(f"Writing '{path}'... ", end="")
         
-    #     # Compute the minimal distance between batch and the mesh sampled points
-    #     xyz_batch = torch.zeros((n_pixels), device=device, dtype=torch.int64)
-    #     points_batch = torch.zeros((points.shape[0]), device=device, dtype=torch.int64)
+        # Compute the minimal distance between batch and the mesh sampled points
+        xyz_batch = torch.zeros((n_pixels), device=device, dtype=torch.int64)
+        points_batch = torch.zeros((points.shape[0]), device=device, dtype=torch.int64)
+        indices_points = pc.nearest(xyz, points, xyz_batch, points_batch)
+        target = torch.sqrt(((xyz - points[indices_points])**2).sum(dim=1, keepdim=True))
         
-    #     indices_points = pc.nearest(xyz, points, xyz_batch, points_batch)
-    #     target = torch.sqrt(((xyz - points[indices_points])**2).sum(dim=1, keepdim=True))
+        ref_img = target.reshape(img_shape).detach().cpu().numpy()
+        write_image(path, ref_img)
+        pyexr.write("reference.exr", ref_img)   
         
-    #     ref_img = target.reshape(img_shape).detach().cpu().numpy()
-    #     write_image(path, ref_img)
-    #     pyexr.write("reference.exr", ref_img)   
+        # polyscope_sdf_ref(points)
+        # ps.show()
         
-    #     # polyscope_sdf_ref(points)
-    #     # ps.show()
-        
-    #     print("done.")
+        print("done.")
 
     prev_time = time.perf_counter()
 
@@ -270,28 +242,19 @@ if __name__ == "__main__":
     print(f"Beginning optimization with {args.n_steps} training steps.")
     
     for i in range(args.n_steps):            
+        x_rand = torch.rand([batch_size, 3], device=device, dtype=torch.float32)
         
-        # # Circle target centered in [0.5, 0.5, 0.5] with radius 0.3
-        # # targets = torch.abs(torch.sqrt(((batch - 0.5)**2).sum(dim=1, keepdim=True)) - 0.3)
+        # Circle target centered in [0.5, 0.5, 0.5] with radius 0.3
+        # targets = torch.abs(torch.sqrt(((batch - 0.5)**2).sum(dim=1, keepdim=True)) - 0.3)
         
-        # # Compute the minimal distance between batch and the mesh sampled points
-        # x_rand = torch.rand([batch_size, 3], device=device, dtype=torch.float32)
-        # x_rand_batch = torch.zeros((batch_size), device=device, dtype=torch.int64)
-        # points_batch = torch.zeros((points.shape[0]), device=device, dtype=torch.int64)
-        # indices_points = pc.nearest(x_rand, points, x_rand_batch, points_batch)
-        # target = torch.sqrt((x_rand - points[indices_points])**2).sum(dim=1, keepdim=True)
-        # output = model(x_rand.detach())
-    
-        loss = 0
-        p1 = grid_points.detach()
-        target = grid_sdf.detach()
-        output = model(p1) # sdf 0 , deform 1-3
-        #loss = loss_fn(output1[...,0], ref_value1)
+        # Compute the minimal distance between batch and the mesh sampled points
+        x_rand_batch = torch.zeros((batch_size), device=device, dtype=torch.int64)
+        indices_points = pc.nearest(x_rand, points, x_rand_batch, points_batch)
+        target = torch.sqrt((x_rand - points[indices_points])**2).sum(dim=1, keepdim=True)
         
-        
-        
+        output = model(x_rand.detach())
         # print(output[0])
-        relative_l2_error = (output - target.to(output.dtype))**2 #/ (output.detach()**2 + 0.01)
+        relative_l2_error = (output - target.to(output.dtype))**2 / (output.detach()**2 + 0.01)
         loss = relative_l2_error.mean()
 
         optimizer.zero_grad()
@@ -317,10 +280,6 @@ if __name__ == "__main__":
                 print(dist, dist.shape)
                 write_image(f"sdf_{i}.jpg",dist.reshape(img_shape))
                 pyexr.write(f"sdf_{i}.exr", dist.reshape(img_shape))
-                
-                output = output.squeeze(-1)
-                ps_cloud.add_scalar_quantity(f"sdf_{i}", output.cpu().numpy())
-                ps.show()
             
                 # polyscope_sdf(model)
                 # ps.show()

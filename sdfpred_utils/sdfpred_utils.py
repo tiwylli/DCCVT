@@ -140,7 +140,7 @@ def compute_zero_crossing_vertices(sites, model):
     
     return zero_crossing_vertices_index, zero_crossing_pairs
 
-def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, model=None):
+def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None, model=None):
     """
     Computes the indices of the sites composing vertices where neighboring sites have opposite or zero SDF values.
 
@@ -160,8 +160,16 @@ def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, model=None):
     # vor = Voronoi(points_np)
     
     # Compute SDF values for all sites
-    sdf_values = model(sites).detach()  # Assuming model outputs (N, 1) or (N,) tensor
-    all_tetrahedra = torch.tensor(np.array(tri.simplices), device=device)
+    #model might be a true sdf grid of class SDFGrid
+    if model.__class__.__name__ == "SDFGrid":
+        sdf_values = model.sdf(sites)
+    else:
+        sdf_values = model(sites).detach()  # Assuming model outputs (N, 1) or (N,) tensor
+    
+    if tri is not None:
+        all_tetrahedra = torch.tensor(np.array(tri.simplices), device=device)
+    else:
+        all_tetrahedra = torch.tensor(np.array(simplices), device=device)
 
     if vor is not None:
         neighbors = torch.tensor(np.array(vor.ridge_points), device=device)
@@ -570,3 +578,77 @@ def get_zero_crossing_mesh_3d(sites, model):
     filtered_faces = [[vertex_map[v] for v in face] for face in valid_faces]
 
     return filtered_vertices, filtered_faces
+
+def upsampling_vectorized(sites, tri=None, vor=None, simplices=None, model=None):
+    if model.__class__.__name__ == "SDFGrid":
+        sdf_values = model.sdf(sites)
+    else:
+        sdf_values = model(sites).detach()
+        
+    #sites_np = sites.detach().cpu().numpy()
+    
+    if tri is not None:
+        all_tetrahedra = torch.tensor(np.array(tri.simplices), device=device)
+    else:
+        all_tetrahedra = torch.tensor(np.array(simplices), device=device)
+
+    
+    if vor is not None:
+        neighbors = torch.tensor(np.array(vor.ridge_points), device=device)
+    # could compute neighbors without the voronoi diagram
+    else:
+        #neighbors = torch.tensor(np.vstack(list({tuple(sorted(edge)) for tetra in tri.simplices for edge in zip(tetra, np.roll(tetra, -1))})), device=device)
+        tetra_edges = torch.cat([
+        all_tetrahedra[:, [0, 1]],
+        all_tetrahedra[:, [1, 2]],
+        all_tetrahedra[:, [2, 3]],
+        all_tetrahedra[:, [3, 0]],
+        all_tetrahedra[:, [0, 2]],
+        all_tetrahedra[:, [1, 3]]
+                                ], dim=0).to(device)
+        # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
+        tetra_edges, _ = torch.sort(tetra_edges, dim=1)
+        # Get unique edges
+        neighbors = torch.unique(tetra_edges, dim=0)
+    
+    
+    # Extract the SDF values for each site in the pair
+    sdf_i = sdf_values[neighbors[:, 0]]  # First site in each pair
+    sdf_j = sdf_values[neighbors[:, 1]]  # Second site in each pair
+    # Find the indices where SDF values have opposing signs or one is zero
+    mask_zero_crossing_sites = (sdf_i * sdf_j <= 0).squeeze()
+    sites_to_upsample = torch.unique(neighbors[mask_zero_crossing_sites].view(-1))
+    
+    print("Sites to upsample ",sites_to_upsample.shape)
+    
+    tet_centroids = sites[sites_to_upsample]
+
+    # Tetrahedron relative positions (unit tetrahedron)
+    basic_tet_1 = torch.tensor([[1, 1, 1]], device=device, dtype=torch.float64)
+    basic_tet_1 = basic_tet_1.repeat(len(tet_centroids), 1)
+    basic_tet_2 = torch.tensor([-1, -1, 1], device=device, dtype=torch.float64)    
+    basic_tet_2 = basic_tet_2.repeat(len(tet_centroids), 1)
+    basic_tet_3 = torch.tensor([-1, 1, -1], device=device, dtype=torch.float64)    
+    basic_tet_3 = basic_tet_3.repeat(len(tet_centroids), 1)
+    basic_tet_4 = torch.tensor([1, -1, -1], device=device, dtype=torch.float64)
+    basic_tet_4 = basic_tet_4.repeat(len(tet_centroids), 1)
+
+    # Compute distances for each neighbor pair in a vectorized way
+    pair_dists = torch.norm(sites[neighbors[:, 0]] - sites[neighbors[:, 1]], dim=1)
+    # Create a combined index tensor for both endpoints of each pair
+    all_indices = torch.cat([neighbors[:, 0], neighbors[:, 1]]).long()
+    all_dists = torch.cat([pair_dists, pair_dists])
+
+    # Initialize a tensor for each site with a large value (infinity)
+    min_dists = torch.full((sites.shape[0],), float('inf'), device=device, dtype=sites.dtype)
+
+    min_dists = min_dists.scatter_reduce(0, all_indices, all_dists, reduce='amin')
+    
+    # Extract the minimal distances for the sites that need upsampling, and use one-quarter as scale.
+    scale = (min_dists[sites_to_upsample] / 4).unsqueeze(1)  # shape: (num_upsampled, 1)
+    
+    new_sites = torch.cat((tet_centroids + basic_tet_1 * scale, tet_centroids + basic_tet_2 * scale, tet_centroids + basic_tet_3 * scale, tet_centroids + basic_tet_4 * scale), dim=0)
+
+    updated_sites = torch.cat((sites, new_sites), dim=0)
+    
+    return updated_sites

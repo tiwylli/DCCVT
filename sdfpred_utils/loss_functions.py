@@ -277,12 +277,14 @@ def circumcenter_torch(points, simplices):
     else:
         raise ValueError("Only 2D (triangles) and 3D (tetrahedra) are supported.")
 
-def compute_voronoi_cell_centers_index_based_torch(delau):
+def compute_voronoi_cell_centers_index_based_torch(points, delau, simplices=None):
     """Compute Voronoi cell centers (circumcenters) for 2D or 3D Delaunay triangulation in PyTorch."""
     #simplices = torch.tensor(delaunay.simplices, dtype=torch.long)
-    simplices = delau.simplices
+    if simplices is None:
+        simplices = delau.simplices
+        
     #points = torch.tensor(delaunay.points, dtype=torch.float32)
-    points = delau.points
+    points = points.detach().cpu().numpy()
     
     # Compute all circumcenters at once (supports both 2D & 3D)
     circumcenters_arr = circumcenter_torch(points, simplices)
@@ -308,8 +310,8 @@ def compute_voronoi_cell_centers_index_based_torch(delau):
     return centroids
 
 
-def compute_cvt_loss_vectorized_delaunay(sites, delaunay):
-    centroids = compute_voronoi_cell_centers_index_based_torch(delaunay)
+def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None):
+    centroids = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices)
     penalties = torch.where(abs(sites - centroids) < 10, sites - centroids, torch.tensor(0.0, device=sites.device))
     cvt_loss = torch.mean(penalties**2)
     return cvt_loss
@@ -467,7 +469,7 @@ def domain_restriction_sphere(target_point_cloud, model, buffer_scale=0.2, input
     
     for radius in shell_radii:
         # Sample random directions
-        rand_dirs = torch.randn((num_per_shell, input_dim))  
+        rand_dirs = torch.randn((num_per_shell, input_dim), device=device)  
         rand_dirs = rand_dirs / torch.norm(rand_dirs, dim=1, keepdim=True)  # Normalize to unit vectors
         
         # Scale by shell radius
