@@ -42,10 +42,6 @@ def get_args():
     return args
 
 def sample_directions(n_rays):
-    """
-    Sample n_rays directions uniformly on the unit sphere.
-    This uses the Fibonacci sphere algorithm.
-    """
     indices = np.arange(0, n_rays, dtype=float) + 0.5
     phi = np.arccos(1 - 2*indices/n_rays)
     theta = np.pi * (1 + 5**0.5) * indices
@@ -55,43 +51,21 @@ def sample_directions(n_rays):
     return np.vstack((x, y, z)).T  # shape (n_rays, 3)
 
 def sign_distances(mesh, query_points, n_rays=32, offset=1e-6):
-    """
-    For each query point, cast n_rays stab rays. If any ray 
-    escapes (i.e. produces no intersection) then mark that point as outside.
-    
-    Returns an array of signed distances based on a preliminary 
-    unsigned distance computation (for example, using a nearest-point query).
-    You would combine the sign with the unsigned distance to obtain the final value.
-    """
-    # Create an array to hold the sign for each query point:
-    # +1 for outside, -1 for inside.
     signs = np.empty(len(query_points), dtype=int)
-    
-    # Precompute the stab directions (uniformly on the sphere)
     directions = sample_directions(n_rays)
-    
-    # For each query point, cast rays in the chosen directions
     for i, point in enumerate(query_points):
         outside_detected = False
-        
         for d in directions:
-            # Offset the ray origin a tiny bit in the direction d to avoid self-intersections:
             origin = point + offset * d
-            # Cast a single ray from the origin along direction d.
-            # The intersect_location call returns the intersections along the ray.
             locations = mesh.ray.intersects_location(ray_origins=[origin],
                                                       ray_directions=[d])
-            # Check if this stab ray did *not* hit the object.
             if len(locations[0]) == 0:
                 outside_detected = True
                 break
-        
-        # If any ray escapes, mark the sign as +1 (outside), else -1 (inside)
         signs[i] = 1 if outside_detected else -1
     
     return signs
 
-#import torch_cluster as pc
 if __name__ == "__main__":
     ps.init()
     
@@ -191,7 +165,7 @@ if __name__ == "__main__":
         # Compute the loss using the relative L2 error
         relative_l2_error = (output - targets.to(output.dtype))**2 / (output.detach()**2 + 0.01)
         loss = relative_l2_error.mean()
-
+        print(f"Step#{i}: loss={loss.item()}")
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -214,6 +188,7 @@ if __name__ == "__main__":
                 pc.add_scalar_quantity("signed_distances model", output.reshape(-1).cpu().numpy())
                 
                 ps.show()
+                
                 print("done.")
 
             # Ignore the time spent saving the image
