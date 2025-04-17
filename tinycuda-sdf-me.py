@@ -34,8 +34,9 @@ def get_args():
     parser = argparse.ArgumentParser(description="Image benchmark using PyTorch bindings.")
 
     parser.add_argument("obj", nargs="?", default="./Resources/chair_low.obj", help="Image to match")
+    parser.add_argument("n_points", nargs="?", default=128**3, help="Number of points to sample in the unit cube (1/8), on the surface (1/2) and perturbed from the surface (3/8)")
     parser.add_argument("config", nargs="?", default="data/sdf_frequency.json", help="JSON config for tiny-cuda-nn")
-    parser.add_argument("n_steps", nargs="?", type=int, default=10000000, help="Number of training steps")
+    parser.add_argument("n_steps", nargs="?", type=int, default=100000, help="Number of training steps")
     parser.add_argument("result_filename", nargs="?", default="", help="Number of training steps")
 
     args = parser.parse_args()
@@ -66,6 +67,131 @@ def sign_distances(mesh, query_points, n_rays=32, offset=1e-6):
     
     return signs
 
+def output_image(path, resolution=128):
+    # create an image of the sdf values on a 3d grid
+    img_shape = (resolution, resolution)
+    x = torch.linspace(0, 1, img_shape[0], device=device)
+    y = torch.linspace(0, 1, img_shape[1], device=device)
+    xx, yy = torch.meshgrid(x, y)
+    grid_points = torch.stack((xx.flatten(), yy.flatten(), torch.zeros_like(xx.flatten())), dim=1).to(device)
+    img = model(grid_points).reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy()
+    img = np.stack([img]*3, axis=-1)  # Make it 3-channel RGB
+    write_image(path, img)
+    
+    #Ref image 
+        # create an image of the sdf values on a 3d grid
+    img_shape = (resolution, resolution)
+    x = torch.linspace(0, 1, img_shape[0], device=device)
+    y = torch.linspace(0, 1, img_shape[1], device=device)
+    xx, yy = torch.meshgrid(x, y)
+    grid_points = torch.stack((xx.flatten(), yy.flatten(), torch.zeros_like(xx.flatten())), dim=1).to(device)
+    
+    query_points = grid_points
+    _, unsigned_distances, _ = pq.on_surface(query_points.cpu().numpy())
+    ray_signs = sign_distances(mesh, query_points.cpu().numpy(), n_rays=32, offset=1e-6)
+    
+    signed_distances = unsigned_distances * ray_signs
+    signed_distances = torch.tensor(signed_distances, device=device)
+    img = signed_distances.reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy()
+    img = np.stack([img]*3, axis=-1)  # Make it 3-channel RGB
+    path = f"ref_{path}"
+    write_image(path, img)
+    
+    
+    
+    print("done.")
+    
+def batch_ray_triangle_intersection(O, D, triangles, eps=1e-6):
+    """
+    Compute intersections of many rays with many triangles.
+    
+    Args:
+        O: Tensor of ray origins, shape [R, 3].
+        D: Tensor of ray directions, shape [R, 3].
+        triangles: Tensor of triangles, shape [N, 3, 3] (each triangle as three vertices).
+        eps: Small epsilon for numerical stability.
+        
+    Returns:
+        valid: Boolean tensor of shape [R, N] indicating if a ray intersected a triangle.
+    """
+    R = O.shape[0]
+    N = triangles.shape[0]
+
+    # Triangle vertices and edges
+    v0 = triangles[:, 0]               # [N, 3]
+    e1 = triangles[:, 1] - v0          # [N, 3]
+    e2 = triangles[:, 2] - v0          # [N, 3]
+    
+    # Reshape for broadcasting: O and D become [R, 1, 3]; triangles become [1, N, 3]
+    O_expand = O.unsqueeze(1)          # [R, 1, 3]
+    D_expand = D.unsqueeze(1)          # [R, 1, 3]
+    v0_expand = v0.unsqueeze(0)        # [1, N, 3]
+    e1_expand = e1.unsqueeze(0)        # [1, N, 3]
+    e2_expand = e2.unsqueeze(0)        # [1, N, 3]
+
+    # Calculate the determinant components
+    h = torch.cross(D_expand, e2_expand, dim=2)  # [R, N, 3]
+    a = torch.sum(e1_expand * h, dim=2)           # [R, N]
+    
+    # Avoid division by zero; mark nearly parallel rays as invalid
+    mask_parallel = (a.abs() < eps)
+    f = torch.where(~mask_parallel, 1.0 / a, torch.zeros_like(a))
+    
+    s = O_expand - v0_expand                      # [R, N, 3]
+    u = f * torch.sum(s * h, dim=2)                # [R, N]
+    mask_u = (u < 0) | (u > 1)
+    
+    q = torch.cross(s, e1_expand, dim=2)           # [R, N, 3]
+    v = f * torch.sum(D_expand * q, dim=2)         # [R, N]
+    mask_v = (v < 0) | ((u + v) > 1)
+    
+    t = f * torch.sum(e2_expand * q, dim=2)        # [R, N]
+    mask_t = (t < eps)
+    
+    # Valid intersections must not be parallel and must satisfy the barycentric conditions
+    valid = (~mask_parallel) & (~mask_u) & (~mask_v) & (~mask_t)
+    return valid
+
+def sign_distances_pt(triangles, query_points, directions, offset=1e-6, eps=1e-6):
+    """
+    Compute inside/outside signs for many query points using vectorized ray intersections in PyTorch.
+    
+    Args:
+        triangles: Tensor of mesh triangles, shape [N, 3, 3].
+        query_points: Tensor of query points, shape [M, 3].
+        directions: Tensor of ray directions, shape [K, 3]. Typically pre-sampled uniformly on the sphere.
+        offset: A small value to offset the origin along the ray direction.
+        eps: Epsilon for intersection computations.
+    
+    Returns:
+        signs: Tensor of shape [M] with values 1 for outside and -1 for inside.
+    """
+    M = query_points.shape[0]
+    K = directions.shape[0]
+    
+    # Offset each query point along every direction: result shape [M, K, 3]
+    origins = query_points.unsqueeze(1) + offset * directions.unsqueeze(0)
+    
+    # Flatten the rays: [M * K, 3]
+    origins_flat = origins.reshape(-1, 3)
+    # Repeat the directions for each query point: shape [M * K, 3]
+    directions_repeated = directions.repeat(M, 1)
+    
+    # Compute intersections for every ray with the full set of triangles
+    intersections = batch_ray_triangle_intersection(origins_flat, directions_repeated, triangles, eps=eps)
+    
+    # For each ray, check if it intersects any triangle
+    hit_any = intersections.any(dim=1)   # Shape: [M*K]
+    
+    # Reshape to [M, K] to associate each ray with its query point
+    hit_any = hit_any.reshape(M, K)
+    
+    # A point is considered outside if any one of its rays misses the mesh.
+    outside = (~hit_any).any(dim=1)
+    signs = torch.where(outside, torch.tensor(1, dtype=torch.int32), torch.tensor(-1, dtype=torch.int32))
+    return signs
+
+
 if __name__ == "__main__":
     ps.init()
     
@@ -95,77 +221,100 @@ if __name__ == "__main__":
     mesh.vertices -= mesh.center_mass
     mesh.vertices /= mesh.scale
     mesh.apply_translation([0.5, 0.5, 0.5])
+    
+    triangles = mesh.triangles
+    triangles = torch.tensor(triangles, device=device)
+    print(triangles.shape)
     center = mesh.vertices.mean(axis=0)
     radius = np.linalg.norm(mesh.vertices - center, axis=1).max()
     #bvh = trimesh.collision.mesh_to_BVH(mesh)
     # Create a ProximityQuery object
     pq = trimesh.proximity.ProximityQuery(mesh)
     
-    # nb_points = 10000    
-    # #sample 3d points uniformly in the unit 
-    # ucp = np.random.uniform(0, 1, size=(int(nb_points/8), 3))
-    # #sample 3d points uniformly on the mesh
-    # sp = mesh.sample(int(nb_points/2))
-    # #sample 3d points perturbed from the surface
-    # sigma = radius/1024.0
-    # logistic_scale = sigma * np.sqrt(3) / np.pi
-    # pp = mesh.sample(int(3*nb_points/8))
-    # noise = np.random.logistic(loc=0.0, scale=logistic_scale, size=pp.shape)
-    # pp += noise
+    nb_points = int(args.n_points)
+    #sample 3d points uniformly in the unit 
+    ucp = np.random.uniform(0, 1, size=(int(nb_points/8), 3))
+    #sample 3d points uniformly on the mesh
+    sp = mesh.sample(int(nb_points/2))
+    #sample 3d points perturbed from the surface
+    sigma = radius/1024.0
+    logistic_scale = sigma * np.sqrt(3) / np.pi
+    pp = mesh.sample(int(3*nb_points/8))
+    noise = np.random.logistic(loc=0.0, scale=logistic_scale, size=pp.shape)
+    pp += noise
     
-    # query_points = np.concatenate((ucp, sp, pp), axis=0)
-
-    # # Compute the closest points on the surface and the distances
-    # _, unsigned_distances, _ = pq.on_surface(query_points)
-
-    # # Determine the sign for each query point using stab rays:
-    # ray_signs = sign_distances(mesh, query_points, n_rays=32, offset=1e-6)
-
-    # # Combine sign and unsigned distances:
-    # signed_distances = unsigned_distances * ray_signs
-
-    #print("Query Points:\n", query_points)
-    #print("Unsigned Distances:\n", unsigned_distances)
-    #print("Ray-based Signs (1: outside, -1: inside):\n", ray_signs)
-    #print("Signed Distances:\n", signed_distances)
-    
-    #pc = ps.register_point_cloud("query_points", query_points, radius=0.01)
-    #pc.add_scalar_quantity("signed_distances", signed_distances)
-    #ps.show()
-    
+    # Compute the closest points on the surface and the distances
+    # batchin query points by 1000 to process the entire mesh
+    # query_points = torch.concatenate((torch.tensor(ucp), torch.tensor(sp), torch.tensor(pp)), axis=0).to(device)
+    # directions = torch.tensor(sample_directions(32)).to(device)
+    # signed_distances_pt_batched = []
+    # for i in range(0, len(query_points), 1000):
+    #     batch = query_points[i:i+1000]
+    #     batch = torch.tensor(batch, device=device)
+    #     # Compute the closest points on the surface and the distances
+    #     _, unsigned_distances, _ = pq.on_surface(batch.cpu().numpy())
+    #     # Determine the sign for each query point using stab rays:
+    #     signs = sign_distances_pt(triangles, batch, directions)
+    #     # Combine sign and unsigned distances:
+    #     signed_distances_pt_batched.append(torch.tensor(unsigned_distances).to(device) * signs)
+    # signed_distances_pt_batched = torch.cat(signed_distances_pt_batched, dim=0)
     
 
+
+    #pc = ps.register_point_cloud("query_points", query_points.cpu().numpy(), radius=0.01)
+    #pc.add_scalar_quantity("signed_distances slow", signed_distances)
+    #pc.add_scalar_quantity("signed_distances fast", signed_distances_pt_batched.cpu().numpy())
+    #ps.show()    
 
     print(f"Beginning optimization with {args.n_steps} training steps.")
     
     for i in range(args.n_steps):       
-             
-        nb_points = 1000
-        #sample 3d points uniformly in the unit 1/8*nb_points
-        ucp = torch.rand((int(nb_points/8), 3), device=device)
-        #sample 3d points uniformly on the mesh 1/2*nb_points
-        sp = torch.tensor(mesh.sample(int(nb_points/2)), device=device)
-        #sample 3d points perturbed from the surface 3/8*nb_points
+        nb_points = int(args.n_points)
+        #sample 3d points uniformly in the unit 
+        ucp = np.random.uniform(0, 1, size=(int(nb_points/8), 3))
+        #sample 3d points uniformly on the mesh
+        sp = mesh.sample(int(nb_points/2))
+        #sample 3d points perturbed from the surface
         sigma = radius/1024.0
-        logistic_scale = sigma * torch.sqrt(torch.tensor(3.)) / torch.pi
-        pp = torch.tensor(mesh.sample(int(3*nb_points/8)), device=device)
-        noise = torch.tensor(np.random.logistic(loc=0.0, scale=logistic_scale, size=pp.shape), device=device)
+        logistic_scale = sigma * np.sqrt(3) / np.pi
+        pp = mesh.sample(int(3*nb_points/8))
+        noise = np.random.logistic(loc=0.0, scale=logistic_scale, size=pp.shape)
         pp += noise
-        query_points = torch.concatenate((ucp, sp, pp), axis=0).to(device)
+        query_points = np.concatenate((ucp, sp, pp), axis=0)
+        query_points = torch.concatenate((torch.tensor(ucp), torch.tensor(sp), torch.tensor(pp)), axis=0).to(device)
+        directions = torch.tensor(sample_directions(32)).to(device)
 
-        _, unsigned_distances, _ = pq.on_surface(query_points.cpu().numpy())
-
-        ray_signs = sign_distances(mesh, query_points.cpu().numpy(), n_rays=32, offset=1e-6)
-
-        signed_distances = unsigned_distances * ray_signs
-        signed_distances = torch.tensor(signed_distances, device=device)
-
-        targets = signed_distances
+        # batchin query points by 1000 to process the entire mesh
+        signed_distances_pt_batched = []
+        loss = []
+        for b in range(0, len(query_points), 1000):
+            batch = query_points[b:b+1000]
+            batch = torch.tensor(batch, device=device)
+            # Compute the closest points on the surface and the distances
+            _, unsigned_distances, _ = pq.on_surface(batch.cpu().numpy())
+            # Determine the sign for each query point using stab rays:
+            signs = sign_distances_pt(triangles, batch, directions)
+            sd = torch.tensor(unsigned_distances).to(device) * signs
+            signed_distances_pt_batched.append(sd)
+            outputbatch = model(batch)
+            relative_l2_error_batch = (outputbatch - sd.to(outputbatch.dtype))**2 / (outputbatch.detach()**2 + 0.01)
+            loss_batch = relative_l2_error_batch.mean()
+            loss.append(loss_batch)
+        
+        loss = torch.mean(torch.stack(loss))
+        print(f"Step#{i}: batch loss={loss.item()}")
+        
+        signed_distances_pt_batched = torch.cat(signed_distances_pt_batched, dim=0)
+        # targets = signed_distances_pt_batched
         output = model(query_points)
-        # Compute the loss using the relative L2 error
-        relative_l2_error = (output - targets.to(output.dtype))**2 / (output.detach()**2 + 0.01)
-        loss = relative_l2_error.mean()
-        print(f"Step#{i}: loss={loss.item()}")
+        # # Compute the loss using the relative L2 error
+        # relative_l2_error = (output - targets.to(output.dtype))**2 / (output.detach()**2 + 0.01)
+        # loss = relative_l2_error.mean()
+        # print(f"Step#{i}: loss={loss.item()}")
+        
+        
+
+        
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -179,15 +328,16 @@ if __name__ == "__main__":
             path = f"{i}.jpg"
             print(f"Writing '{path}'... ", end="")
             with torch.no_grad():
-                # write_image(path, sdf_to_image(model(xyz).detach().cpu().numpy(), resolution))
+                #output_image(path)
+                
                 pc = ps.register_point_cloud("query_points", query_points.cpu().numpy(), radius=0.01)
-                pc.add_scalar_quantity("signed_distances true", signed_distances.cpu().numpy())
+                pc.add_scalar_quantity("signed_distances true", signed_distances_pt_batched.cpu().numpy())
                 print(output.shape)
                 print(output.reshape(-1).shape)
                 
                 pc.add_scalar_quantity("signed_distances model", output.reshape(-1).cpu().numpy())
                 
-                ps.show()
+                #ps.show()
                 
                 print("done.")
 
