@@ -4,3 +4,6 @@
 [submodule "3rdparty/pytorch_cluster"]
 	path = 3rdparty/pytorch_cluster
 	url = git@github.com:rusty1s/pytorch_cluster.git
+[submodule "3rdparty/HotSpot"]
+	path = 3rdparty/HotSpot
+	url = https://github.com/Galaxeaaa/HotSpot.git
