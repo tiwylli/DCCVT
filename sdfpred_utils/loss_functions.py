@@ -311,7 +311,7 @@ def compute_voronoi_cell_centers_index_based_torch(points, delau, simplices=None
 
 
 def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None):
-    centroids = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices)
+    centroids = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices).to(device)
     penalties = torch.where(abs(sites - centroids) < 10, sites - centroids, torch.tensor(0.0, device=sites.device))
     cvt_loss = torch.mean(penalties**2)
     return cvt_loss

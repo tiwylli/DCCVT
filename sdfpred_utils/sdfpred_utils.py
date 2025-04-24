@@ -624,13 +624,13 @@ def upsampling_vectorized(sites, tri=None, vor=None, simplices=None, model=None)
     tet_centroids = sites[sites_to_upsample]
 
     # Tetrahedron relative positions (unit tetrahedron)
-    basic_tet_1 = torch.tensor([[1, 1, 1]], device=device, dtype=torch.float64)
+    basic_tet_1 = torch.tensor([[1, 1, 1]], device=device, dtype=torch.float32)
     basic_tet_1 = basic_tet_1.repeat(len(tet_centroids), 1)
-    basic_tet_2 = torch.tensor([-1, -1, 1], device=device, dtype=torch.float64)    
+    basic_tet_2 = torch.tensor([-1, -1, 1], device=device, dtype=torch.float32)    
     basic_tet_2 = basic_tet_2.repeat(len(tet_centroids), 1)
-    basic_tet_3 = torch.tensor([-1, 1, -1], device=device, dtype=torch.float64)    
+    basic_tet_3 = torch.tensor([-1, 1, -1], device=device, dtype=torch.float32)    
     basic_tet_3 = basic_tet_3.repeat(len(tet_centroids), 1)
-    basic_tet_4 = torch.tensor([1, -1, -1], device=device, dtype=torch.float64)
+    basic_tet_4 = torch.tensor([1, -1, -1], device=device, dtype=torch.float32)
     basic_tet_4 = basic_tet_4.repeat(len(tet_centroids), 1)
 
     # Compute distances for each neighbor pair in a vectorized way
