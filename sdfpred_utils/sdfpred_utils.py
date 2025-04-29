@@ -175,27 +175,29 @@ def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None,
         neighbors = torch.tensor(np.array(vor.ridge_points), device=device)
     # could compute neighbors without the voronoi diagram
     else:
-        #neighbors = torch.tensor(np.vstack(list({tuple(sorted(edge)) for tetra in tri.simplices for edge in zip(tetra, np.roll(tetra, -1))})), device=device)
-        tetra_edges = torch.cat([
-        all_tetrahedra[:, [0, 1]],
-        all_tetrahedra[:, [1, 2]],
-        all_tetrahedra[:, [2, 3]],
-        all_tetrahedra[:, [3, 0]],
-        all_tetrahedra[:, [0, 2]],
-        all_tetrahedra[:, [1, 3]]
-                                ], dim=0).to(device)
-        # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
-        tetra_edges, _ = torch.sort(tetra_edges, dim=1)
-        # Get unique edges
-        neighbors = torch.unique(tetra_edges, dim=0)
+    #     #neighbors = torch.tensor(np.vstack(list({tuple(sorted(edge)) for tetra in tri.simplices for edge in zip(tetra, np.roll(tetra, -1))})), device=device)
+    #     tetra_edges = torch.cat([
+    #     all_tetrahedra[:, [0, 1]],
+    #     all_tetrahedra[:, [1, 2]],
+    #     all_tetrahedra[:, [2, 3]],
+    #     all_tetrahedra[:, [3, 0]],
+    #     all_tetrahedra[:, [0, 2]],
+    #     all_tetrahedra[:, [1, 3]]
+    #                             ], dim=0).to(device)
+    #     # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
+    #     tetra_edges, _ = torch.sort(tetra_edges, dim=1)
+    #     # Get unique edges
+    #     neighbors = torch.unique(tetra_edges, dim=0)
     
     
-    # Extract the SDF values for each site in the pair
-    sdf_i = sdf_values[neighbors[:, 0]]  # First site in each pair
-    sdf_j = sdf_values[neighbors[:, 1]]  # Second site in each pair
-    # Find the indices where SDF values have opposing signs or one is zero
-    mask_zero_crossing_sites = (sdf_i * sdf_j <= 0).squeeze()
-    zero_crossing_pairs = neighbors[mask_zero_crossing_sites]
+    # # Extract the SDF values for each site in the pair
+    # sdf_i = sdf_values[neighbors[:, 0]]  # First site in each pair
+    # sdf_j = sdf_values[neighbors[:, 1]]  # Second site in each pair
+    # # Find the indices where SDF values have opposing signs or one is zero
+    # mask_zero_crossing_sites = (sdf_i * sdf_j <= 0).squeeze()
+    # zero_crossing_pairs = neighbors[mask_zero_crossing_sites]
+
+        zero_crossing_pairs = compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values)
 
     # Check if vertices has a pair of zero crossing sites
     sdf_0 = sdf_values[all_tetrahedra[:, 0]]  # First site in each pair
@@ -206,6 +208,30 @@ def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None,
     zero_crossing_vertices_index = all_tetrahedra[mask_zero_crossing_faces]
     
     return zero_crossing_vertices_index, zero_crossing_pairs
+
+
+def compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values):
+    tetra_edges = torch.cat([
+        all_tetrahedra[:, [0, 1]],
+        all_tetrahedra[:, [1, 2]],
+        all_tetrahedra[:, [2, 3]],
+        all_tetrahedra[:, [3, 0]],
+        all_tetrahedra[:, [0, 2]],
+        all_tetrahedra[:, [1, 3]]
+                                ], dim=0).to(device)
+    # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
+    tetra_edges, _ = torch.sort(tetra_edges, dim=1)
+    # Get unique edges
+    neighbors = torch.unique(tetra_edges, dim=0)
+    
+    
+    # Extract the SDF values for each site in the pair
+    sdf_i = sdf_values[neighbors[:, 0]]  # First site in each pair
+    sdf_j = sdf_values[neighbors[:, 1]]  # Second site in each pair
+    # Find the indices where SDF values have opposing signs or one is zero
+    mask_zero_crossing_sites = (sdf_i * sdf_j <= 0).squeeze()
+    zero_crossing_pairs = neighbors[mask_zero_crossing_sites]
+    return zero_crossing_pairs
 
 def compute_vertex(s_i, s_j, s_k):
     # Unpack coordinates for each site
@@ -550,7 +576,6 @@ def adaptive_density_upsampling(sites, model, num_points_per_site=5, max_distanc
     return new_sites
 
 
-#TODO PROBLEM ARISES IN 2D, might be a reason for bad meshes in 3d
 def get_zero_crossing_mesh_3d(sites, model):
     sites_np = sites.detach().cpu().numpy()
     vor = Voronoi(sites_np)  # Compute 3D Voronoi diagram
