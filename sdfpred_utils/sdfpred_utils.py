@@ -2,6 +2,8 @@ from scipy.spatial import Delaunay, Voronoi
 import numpy as np
 from sklearn.cluster import KMeans
 import torch
+import diffvoronoi #delaunay3d bindings
+import math
 
 device = torch.device("cuda:0")
 
@@ -677,3 +679,175 @@ def upsampling_vectorized(sites, tri=None, vor=None, simplices=None, model=None)
     updated_sites = torch.cat((sites, new_sites), dim=0)
     
     return updated_sites
+
+def batch_sort_face_loops_from_mask(vertices, face_mask):
+    """
+    vertices:  (M,3)  circumcenters
+    face_mask: (R,N)  bool tensor where face_mask[r,n]=True iff simplex n contributed to face r
+    returns: Python list of R sorted faces (each a list of vertex-indices into `vertices`)
+    """
+    R, N = face_mask.shape
+    device = vertices.device
+
+    # how many verts per face, and pad to the max
+    counts = face_mask.sum(dim=1)            # (R,)
+    print("counts", counts.shape)
+    Kmax   = int(counts.max().item())
+    print("Kmax", Kmax)
+
+    # flatten mask → get (ridge_idx, simplex_idx)
+    ridge_idx, simp_idx = face_mask.nonzero(as_tuple=True)  # both (S,)
+
+    # offsets to compute “position within each group”:
+    offsets = torch.cat((torch.tensor([0], device=device),
+                         counts.cumsum(0)[:-1]))               # (R,)
+    # expand offsets to length S by repeating each offset counts[r] times
+    offs_exp = torch.repeat_interleave(offsets, counts)    # (S,)
+    group_pos = torch.arange(ridge_idx.size(0), device=device) - offs_exp  # (S,)
+
+    # build a padded index tensor and mask
+    idxs = torch.full((R, Kmax), -1, dtype=torch.long, device=device)
+    idxs[ridge_idx, group_pos] = simp_idx
+    valid = idxs >= 0   # (R, Kmax)
+
+    # gather all points, compute per-face centroids
+    pts = vertices[idxs.clamp(min=0)]                   # (R, Kmax, 3)
+    ctr = (pts * valid.unsqueeze(-1)).sum(dim=1, keepdim=True) / \
+          counts.unsqueeze(-1).unsqueeze(-1)            # (R,1,3)
+
+    # batched SVD → normals
+    U, S, Vh = torch.linalg.svd(pts - ctr)              # Vh: (R,3,3)
+    normals  = Vh[:, -1, :]                             # (R,3)
+
+    # reference axis in each plane
+    ref = pts[:, 0, :] - ctr.squeeze(1)                 # (R,3)
+    ref = ref - normals * (normals * ref).sum(dim=1, keepdim=True)
+
+    # project into plane
+    vecs = pts - ctr                                    # (R,Kmax,3)
+    dotn = (vecs * normals.unsqueeze(1)).sum(dim=2, keepdim=True)
+    vecs = vecs - normals.unsqueeze(1)*dotn
+
+    # angles = atan2(||ref×v||, ref·v), with sign
+    cross   = torch.cross(ref.unsqueeze(1).expand_as(vecs), vecs, dim=2)
+    norms   = torch.linalg.norm(cross, dim=2)
+    dots    = (vecs * ref.unsqueeze(1)).sum(dim=2)
+    ang     = torch.atan2(norms, dots)
+    sign_m  = ((normals.unsqueeze(1)*cross).sum(dim=2) < 0)
+    ang[sign_m] = 2*math.pi - ang[sign_m]
+
+    # force padded slots to sort last
+    ang[~valid] = float('inf')
+
+    # per-face sort
+    order = torch.argsort(ang, dim=1)                   # (R,Kmax)
+
+    # unpack back into Python lists
+    faces = []
+    for r in range(R):
+        k = counts[r].item()
+        picks = order[r, :k]
+        faces.append( idxs[r, picks].tolist() )
+    return faces
+
+
+def get_clipped_mesh_torch(sites, model, d3dsimplices, batch_size=1024):
+    """
+    sites:           (N,3) torch tensor (requires_grad)
+    model:           SDF model: sites -> (N,1) tensor of signed distances
+    d3dsimplices:    torch.LongTensor of shape (M,4) from Delaunay
+    """
+    device = sites.device
+    if d3dsimplices is None:
+        sites_np = sites.detach().cpu().numpy()
+        d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1]*sites_np.shape[0]))
+        d3dsimplices = np.array(d3dsimplices)
+    d3d = torch.tensor(d3dsimplices).to(device)              # (M,4)
+
+    # 1) Compute per‐simplex circumcenters (Voronoi vertices)
+    vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
+
+    # 2) Generate all edges of each simplex
+    #    torch.combinations gives the 6 index‐pairs within a 4‐long row
+    comb = torch.combinations(torch.arange(d3d.shape[1], device=device), r=2)  # (6,2)
+    print("comb", comb.shape)
+    edges = d3d[:, comb]                    # (M,6,2)
+    edges = edges.reshape(-1,2)             # (M*6,2)
+    edges, _ = torch.sort(edges, dim=1)     # sort each row so (a,b) == (b,a)
+
+    # 3) Unique ridges across all simplices
+    ridges, inverse = torch.unique(edges, dim=0, return_inverse=True)  # (R,2)
+
+    # 4) Evaluate SDF at each site
+    sdf = model(sites).view(-1)             # (N,)
+    sdf_i = sdf[ridges[:,0]]
+    sdf_j = sdf[ridges[:,1]]
+    zero_cross = (sdf_i * sdf_j <= 0)       # (R,)
+
+    # 5) Keep only the zero-crossing ridges
+    ridges = ridges[zero_cross]             # (R0,2)
+
+    # # 6) For each kept ridge, find the simplices that share both its sites
+    # #    Build a (R0, M) mask of membership
+    # #    mask_a[r,s] = True if simplex s contains ridges[r,0]
+    # mask_a = (d3d.unsqueeze(0) == ridges[:,0].unsqueeze(1).unsqueeze(2)).any(dim=2)
+    # print("mask_a", mask_a.shape)
+    # print("mask_a", mask_a[0])
+    # mask_b = (d3d.unsqueeze(0) == ridges[:,1].unsqueeze(1).unsqueeze(2)).any(dim=2)
+    # face_mask = mask_a & mask_b             # (R0, M)
+    # print("face_mask", face_mask.shape)
+    # print("face_mask", face_mask[0])
+
+    # # 7) Extract and sort each face’s loop of vertices
+    # # faces = []
+    # # for r in range(ridges.shape[0]):
+    # #     simplex_idxs = torch.nonzero(face_mask[r], as_tuple=False).squeeze(1)
+    # #     faces.append(sort_face_loop_torch(vor_vertices, simplex_idxs))
+
+    # faces = batch_sort_face_loops_from_mask(vor_vertices, face_mask)
+    
+    faces = []
+    R0 = ridges.shape[0]
+    for start in range(0, R0, batch_size):
+        end = min(start + batch_size, R0)
+        ridges_chunk = ridges[start:end]
+        a0 = ridges_chunk[:,0].view(-1,1,1)
+        b0 = ridges_chunk[:,1].view(-1,1,1)
+        mask_a = (d3d.unsqueeze(0) == a0).any(dim=2)
+        mask_b = (d3d.unsqueeze(0) == b0).any(dim=2)
+        face_mask = mask_a & mask_b             # (R0, M)
+        print("face_mask", face_mask.shape)
+        faces_chunk = batch_sort_face_loops_from_mask(vor_vertices, face_mask)
+        faces.extend(faces_chunk)
+
+    print("faces", len(faces))
+    
+    # 8) Compact the vertex list
+    used = {idx for face in faces for idx in face}
+    old2new = {old: new for new, old in enumerate(sorted(used))}
+    new_vertices = vor_vertices[sorted(used)]
+    new_faces = [[old2new[i] for i in face] for face in faces]
+
+
+    # 9) clip the vertices of the faces to the zero-crossing of the sdf
+    # 1) eval SDF at each vertex
+    sdf_verts = model(new_vertices).view(-1)           # (M,)
+
+    # 2) compute gradients ∇f(v)  — note create_graph=True if you
+    #    want second-order gradients to flow back into the model
+    grads = torch.autograd.grad(
+        outputs=sdf_verts,
+        inputs=new_vertices,
+        grad_outputs=torch.ones_like(sdf_verts),
+        create_graph=True,
+    )[0]                                               # (M,3)
+
+    # 3) one Newton step
+    grad_norm2 = (grads**2).sum(dim=1, keepdim=True)    # (M,1)
+    step = sdf_verts.unsqueeze(1) * grads / (grad_norm2 + 1e-6)
+    proj_vertices = new_vertices - step    
+
+    print("-> vertices:", new_vertices.shape)
+    print("-> projected vertices:", proj_vertices.shape)
+    print("-> #faces:", len(new_faces))
+    return proj_vertices, new_faces
