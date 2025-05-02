@@ -18,6 +18,8 @@
 *.stl
 *.npz
 *.mtl
+*.json
+*.ply
 *.gif
 *.pt
 *.pth
