@@ -751,6 +751,42 @@ def batch_sort_face_loops_from_mask(vertices, face_mask):
     return faces
 
 
+def batch_face_loops_from_mask(face_mask):
+    """
+    face_mask: (C, M) bool tensor where
+               face_mask[r, s] == True if simplex s contributes to face r
+    returns: Python list of C lists, each containing the simplex-indices
+    """
+    C, M = face_mask.shape
+    device = face_mask.device
+
+    # how many verts per face, and pad to the max
+    counts = face_mask.sum(dim=1)            # (C,)
+    Kmax   = int(counts.max().item())
+
+    # flatten mask → (ridge_idx, simplex_idx)
+    ridge_idx, simp_idx = face_mask.nonzero(as_tuple=True)  # both (S,)
+
+    # offsets to compute position within each face
+    offsets = torch.cat((counts.new_zeros(1),
+                         counts.cumsum(0)[:-1]))            # (C,)
+    offs_exp = torch.repeat_interleave(offsets, counts)     # (S,)
+    pos     = torch.arange(ridge_idx.size(0), device=device) - offs_exp  # (S,)
+
+    # build a padded index tensor and fill it
+    idxs = torch.full((C, Kmax), -1, dtype=torch.long, device=device)
+    idxs[ridge_idx, pos] = simp_idx
+
+    # unpack into Python lists
+    faces = []
+    for r in range(C):
+        k = counts[r].item()
+        if k > 0:
+            faces.append(idxs[r, :k].tolist())
+        else:
+            faces.append([])
+    return faces
+
 def get_clipped_mesh_torch(sites, model, d3dsimplices, batch_size=1024):
     """
     sites:           (N,3) torch tensor (requires_grad)
@@ -818,6 +854,7 @@ def get_clipped_mesh_torch(sites, model, d3dsimplices, batch_size=1024):
         face_mask = mask_a & mask_b             # (R0, M)
         print("face_mask", face_mask.shape)
         faces_chunk = batch_sort_face_loops_from_mask(vor_vertices, face_mask)
+        #faces_chunk = batch_face_loops_from_mask(face_mask)
         faces.extend(faces_chunk)
 
     print("faces", len(faces))
