@@ -691,9 +691,9 @@ def batch_sort_face_loops_from_mask(vertices, face_mask):
 
     # how many verts per face, and pad to the max
     counts = face_mask.sum(dim=1)            # (R,)
-    print("counts", counts.shape)
+    #print("counts", counts.shape)
     Kmax   = int(counts.max().item())
-    print("Kmax", Kmax)
+    #print("Kmax", Kmax)
 
     # flatten mask → get (ridge_idx, simplex_idx)
     ridge_idx, simp_idx = face_mask.nonzero(as_tuple=True)  # both (S,)
@@ -800,30 +800,30 @@ def get_clipped_mesh_torch(sites, model, d3dsimplices, batch_size=1024):
         d3dsimplices = np.array(d3dsimplices)
     d3d = torch.tensor(d3dsimplices).to(device)              # (M,4)
 
-    # 1) Compute per‐simplex circumcenters (Voronoi vertices)
+    # Compute per‐simplex circumcenters (Voronoi vertices)
     vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
 
-    # 2) Generate all edges of each simplex
+    # Generate all edges of each simplex
     #    torch.combinations gives the 6 index‐pairs within a 4‐long row
     comb = torch.combinations(torch.arange(d3d.shape[1], device=device), r=2)  # (6,2)
-    print("comb", comb.shape)
+    #print("comb", comb.shape)
     edges = d3d[:, comb]                    # (M,6,2)
     edges = edges.reshape(-1,2)             # (M*6,2)
     edges, _ = torch.sort(edges, dim=1)     # sort each row so (a,b) == (b,a)
 
-    # 3) Unique ridges across all simplices
+    # Unique ridges across all simplices
     ridges, inverse = torch.unique(edges, dim=0, return_inverse=True)  # (R,2)
 
-    # 4) Evaluate SDF at each site
+    # Evaluate SDF at each site
     sdf = model(sites).view(-1)             # (N,)
     sdf_i = sdf[ridges[:,0]]
     sdf_j = sdf[ridges[:,1]]
     zero_cross = (sdf_i * sdf_j <= 0)       # (R,)
 
-    # 5) Keep only the zero-crossing ridges
+    # Keep only the zero-crossing ridges
     ridges = ridges[zero_cross]             # (R0,2)
 
-    # # 6) For each kept ridge, find the simplices that share both its sites
+    # # For each kept ridge, find the simplices that share both its sites
     # #    Build a (R0, M) mask of membership
     # #    mask_a[r,s] = True if simplex s contains ridges[r,0]
     # mask_a = (d3d.unsqueeze(0) == ridges[:,0].unsqueeze(1).unsqueeze(2)).any(dim=2)
@@ -834,7 +834,7 @@ def get_clipped_mesh_torch(sites, model, d3dsimplices, batch_size=1024):
     # print("face_mask", face_mask.shape)
     # print("face_mask", face_mask[0])
 
-    # # 7) Extract and sort each face’s loop of vertices
+    # # Extract and sort each face’s loop of vertices
     # # faces = []
     # # for r in range(ridges.shape[0]):
     # #     simplex_idxs = torch.nonzero(face_mask[r], as_tuple=False).squeeze(1)
@@ -852,25 +852,24 @@ def get_clipped_mesh_torch(sites, model, d3dsimplices, batch_size=1024):
         mask_a = (d3d.unsqueeze(0) == a0).any(dim=2)
         mask_b = (d3d.unsqueeze(0) == b0).any(dim=2)
         face_mask = mask_a & mask_b             # (R0, M)
-        print("face_mask", face_mask.shape)
+        #print("face_mask", face_mask.shape)
         faces_chunk = batch_sort_face_loops_from_mask(vor_vertices, face_mask)
         #faces_chunk = batch_face_loops_from_mask(face_mask)
         faces.extend(faces_chunk)
 
-    print("faces", len(faces))
+    #print("faces", len(faces))
     
-    # 8) Compact the vertex list
+    # Compact the vertex list
     used = {idx for face in faces for idx in face}
     old2new = {old: new for new, old in enumerate(sorted(used))}
     new_vertices = vor_vertices[sorted(used)]
     new_faces = [[old2new[i] for i in face] for face in faces]
 
 
-    # 9) clip the vertices of the faces to the zero-crossing of the sdf
-    # 1) eval SDF at each vertex
+    # clip the vertices of the faces to the zero-crossing of the sdf
     sdf_verts = model(new_vertices).view(-1)           # (M,)
 
-    # 2) compute gradients ∇f(v)  — note create_graph=True if you
+    # compute gradients ∇f(v)  — note create_graph=True if you
     #    want second-order gradients to flow back into the model
     grads = torch.autograd.grad(
         outputs=sdf_verts,
@@ -879,12 +878,126 @@ def get_clipped_mesh_torch(sites, model, d3dsimplices, batch_size=1024):
         create_graph=True,
     )[0]                                               # (M,3)
 
-    # 3) one Newton step
-    grad_norm2 = (grads**2).sum(dim=1, keepdim=True)    # (M,1)
-    step = sdf_verts.unsqueeze(1) * grads / (grad_norm2 + 1e-6)
+    # one Newton step https://en.wikipedia.org/wiki/Newton%27s_method_in_optimization
+    epsilon = 1e-6
+    grad_norm2 = torch.sqrt(((grads + epsilon)**2).sum(dim=1, keepdim=True))    # (M,1)
+    step = sdf_verts.unsqueeze(1) * grads / (grad_norm2 + epsilon)
     proj_vertices = new_vertices - step    
 
-    print("-> vertices:", new_vertices.shape)
-    print("-> projected vertices:", proj_vertices.shape)
-    print("-> #faces:", len(new_faces))
+    #print("-> vertices:", new_vertices.shape)
+    #print("-> projected vertices:", proj_vertices.shape)
+    #print("-> #faces:", len(new_faces))
     return proj_vertices, new_faces
+
+def sample_mesh_points(vertices: torch.Tensor,
+                       faces: torch.LongTensor,
+                       num_samples: int) -> torch.Tensor:
+    """
+    Uniformly (area-weighted) sample points on a triangular mesh.
+
+    Args:
+        vertices: (V,3) float tensor of vertex positions.
+        faces:    (F,3) long tensor of indices into `vertices`.
+        num_samples: int, number of points to sample.
+
+    Returns:
+        samples: (num_samples, 3) float tensor of sampled points.
+    """
+    # 1) Gather triangle vertices
+    v0 = vertices[faces[:, 0]]  # (F,3)
+    v1 = vertices[faces[:, 1]]  # (F,3)
+    v2 = vertices[faces[:, 2]]  # (F,3)
+
+    # 2) Compute each triangle’s area
+    #    area = 0.5 * ||(v1 - v0) × (v2 - v0)||_2
+    tri_edges0 = v1 - v0        # (F,3)
+    tri_edges1 = v2 - v0        # (F,3)
+    cross_prod = torch.cross(tri_edges0, tri_edges1, dim=1)  # (F,3)
+    tri_areas = 0.5 * cross_prod.norm(dim=1)                  # (F,)
+
+    # 3) Sample faces proportional to area
+    face_probs = tri_areas / tri_areas.sum()
+    #    draw `num_samples` face indices with replacement
+    idx = torch.multinomial(face_probs, num_samples, replacement=True)  # (num_samples,)
+
+    # 4) For each sampled face, sample a point via barycentric coords
+    u = torch.rand(num_samples, device=vertices.device)
+    v = torch.rand(num_samples, device=vertices.device)
+
+    # warp to ensure uniformity on triangle
+    sqrt_u = torch.sqrt(u)
+    b0 = 1 - sqrt_u
+    b1 = sqrt_u * (1 - v)
+    b2 = sqrt_u * v
+    # reshape for broadcasting
+    b0 = b0.unsqueeze(1)  # (num_samples,1)
+    b1 = b1.unsqueeze(1)
+    b2 = b2.unsqueeze(1)
+
+    # select the triangle’s vertices
+    v0_sel = v0[idx]  # (num_samples,3)
+    v1_sel = v1[idx]
+    v2_sel = v2[idx]
+
+    # 5) form the sampled points
+    samples = b0 * v0_sel + b1 * v1_sel + b2 * v2_sel  # (num_samples,3)
+
+    return samples
+
+def sample_mesh_points_heitz(vertices: torch.Tensor,
+                             faces: torch.LongTensor,
+                             num_samples: int) -> torch.Tensor:
+    """
+    Uniformly (area weighted) sample points on a triangular mesh
+    using Heitz s low distortion square→triangle mapping.
+
+    Args:
+        vertices:    (V,3) float tensor of vertex positions.
+        faces:       (F,3) long tensor of indices into `vertices`.
+        num_samples: int, number of points to sample.
+
+    Returns:
+        samples: (num_samples, 3) float tensor of sampled points.
+    """
+    # 1) Gather triangle vertices
+    v0 = vertices[faces[:, 0]]  # (F,3)
+    v1 = vertices[faces[:, 1]]  # (F,3)
+    v2 = vertices[faces[:, 2]]  # (F,3)
+
+    # 2) Compute triangle areas for weighting
+    e0 = v1 - v0               # (F,3)
+    e1 = v2 - v0               # (F,3)
+    cross = torch.cross(e0, e1, dim=1)  # (F,3)
+    areas = 0.5 * cross.norm(dim=1)     # (F,)
+
+    # 3) Sample faces proportional to area
+    probs = areas / areas.sum()
+    idx   = torch.multinomial(probs, num_samples, replacement=True)  # (num_samples,)
+
+    # 4) Draw uniform samples u,v in [0,1]^2
+    u = torch.rand(num_samples, device=vertices.device)
+    v = torch.rand(num_samples, device=vertices.device)
+
+    # 5) Heitz–Talbot mapping to barycentric (b0,b1,b2):
+    #    b0 = u/2, b1 = v/2, then shift one cell to compress diagonals
+    b0 = 0.5 * u
+    b1 = 0.5 * v
+    offset = b1 - b0
+    mask = offset > 0
+    # if offset>0, push b1 out; else pull b0 back
+    b1 = torch.where(mask, b1 + offset, b1)
+    b0 = torch.where(mask, b0, b0 - offset)
+    b2 = 1.0 - b0 - b1
+
+    # 6) Assemble final sample positions
+    #    pick the triangle vertices for each sample
+    v0s = v0[idx]  # (num_samples,3)
+    v1s = v1[idx]
+    v2s = v2[idx]
+    # reshape barycentric coords for broadcast
+    b0 = b0.unsqueeze(1)  # (num_samples,1)
+    b1 = b1.unsqueeze(1)
+    b2 = b2.unsqueeze(1)
+    samples = b0*v0s + b1*v1s + b2*v2s  # (num_samples,3)
+
+    return samples
