@@ -4,6 +4,8 @@ from sklearn.cluster import KMeans
 import torch
 import diffvoronoi #delaunay3d bindings
 import math
+from numba import njit, prange
+from collections import defaultdict
 
 device = torch.device("cuda:0")
 
@@ -1001,3 +1003,235 @@ def sample_mesh_points_heitz(vertices: torch.Tensor,
     samples = b0*v0s + b1*v1s + b2*v2s  # (num_samples,3)
 
     return samples
+
+@njit
+def _compute_normal(a, b, c):
+    # cross( b−a, c−a )  
+    ab = b - a
+    ac = c - a
+    # cross product
+    return np.array((
+        ab[1]*ac[2] - ab[2]*ac[1],
+        ab[2]*ac[0] - ab[0]*ac[2],
+        ab[0]*ac[1] - ab[1]*ac[0],
+    ), dtype=np.float64)
+
+@njit
+def _normalize(v):
+    norm = np.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2])
+    return v / (norm + 1e-12)
+
+@njit
+def _angle(idx, vertices, ctr, normal, ref):
+    p = vertices[idx]
+    v = p - ctr
+    # project into plane
+    dot_nv = normal[0]*v[0] + normal[1]*v[1] + normal[2]*v[2]
+    v = v - normal * dot_nv
+    # compute angle = atan2(||ref×v||, ref·v)
+    cr = np.empty(3, dtype=np.float64)
+    cr[0] = ref[1]*v[2] - ref[2]*v[1]
+    cr[1] = ref[2]*v[0] - ref[0]*v[2]
+    cr[2] = ref[0]*v[1] - ref[1]*v[0]
+    num = np.sqrt(cr[0]*cr[0] + cr[1]*cr[1] + cr[2]*cr[2])
+    den = ref[0]*v[0] + ref[1]*v[1] + ref[2]*v[2]
+    ang = np.arctan2(num, den)
+    # sign correction
+    sign = (normal[0]*cr[0] + normal[1]*cr[1] + normal[2]*cr[2]) < 0
+    return 2*np.pi - ang if sign else ang
+
+@njit
+def sort_face_loop_numba(vertices, face):
+    # face: 1D np.array of ints
+    n = face.shape[0]
+    # gather points and centroid
+    ctr = np.zeros(3, dtype=np.float64)
+    for i in range(n):
+        ctr += vertices[face[i]]
+    ctr /= n
+
+    # make a normal from the first 3 points
+    a = vertices[face[0]]
+    b = vertices[face[1]]
+    c = vertices[face[2]]
+    normal = _normalize(_compute_normal(a, b, c))
+
+    # reference axis
+    ref = vertices[face[0]] - ctr
+    dot_nr = normal[0]*ref[0] + normal[1]*ref[1] + normal[2]*ref[2]
+    ref = ref - normal * dot_nr
+    ref = _normalize(ref)
+
+    # compute all angles
+    angs = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        angs[i] = _angle(face[i], vertices, ctr, normal, ref)
+
+    # now do an insertion‐sort by angle, carrying indices
+    sorted_idxs = np.empty(n, dtype=face.dtype)
+    sorted_angs = np.empty(n, dtype=np.float64)
+    length = 0
+    for i in range(n):
+        a_i = angs[i]
+        idx_i = face[i]
+        # find insert position
+        j = length
+        while j > 0 and sorted_angs[j-1] > a_i:
+            sorted_angs[j] = sorted_angs[j-1]
+            sorted_idxs[j] = sorted_idxs[j-1]
+            j -= 1
+        sorted_angs[j]   = a_i
+        sorted_idxs[j]   = idx_i
+        length += 1
+
+    return sorted_idxs
+
+@njit(parallel=True)
+def batch_sort_numba(vertices, faces_list, counts, output):
+    R, Kmax = faces_list.shape
+    for i in prange(R):
+        length = counts[i]
+        sorted_i = sort_face_loop_numba(vertices, faces_list[i, :length])
+        for j in range(length):
+            output[i, j] = sorted_i[j]
+
+def faces_via_dict(d3dsimplices, ridges):
+    # 1) build dict of (a,b) → list of simplex-indices
+    face_dict = defaultdict(list)
+    for si, simplex in enumerate(d3dsimplices):
+        # all 6 edges of a 4-vertex simplex
+        a,b,c,d = simplex
+        for u,v in ((a,b),(a,c),(a,d),(b,c),(b,d),(c,d)):
+            key = (u,v) if u < v else (v,u)
+            face_dict[key].append(si)
+
+    # 2) now for each ridge (a,b) grab its list
+    out = []
+    for (a,b) in ridges:
+        key = (a,b) if a < b else (b,a)
+        lst = face_dict.get(key, [])
+        out.append(np.array(lst, dtype=np.int32))
+    return np.array(out, dtype=object)
+
+def faces_via_dict(d3dsimplices, ridges):
+    # 1) build dict of (a,b) → list of simplex-indices
+    face_dict = defaultdict(list)
+    for si, simplex in enumerate(d3dsimplices):
+        # all 6 edges of a 4-vertex simplex
+        a,b,c,d = simplex
+        for u,v in ((a,b),(a,c),(a,d),(b,c),(b,d),(c,d)):
+            key = (u,v) if u < v else (v,u)
+            face_dict[key].append(si)
+
+    # 2) now for each ridge (a,b) grab its list
+    out = []
+    for (a,b) in ridges:
+        key = (a,b) if a < b else (b,a)
+        lst = face_dict.get(key, [])
+        out.append(np.array(lst, dtype=np.int32))
+    return np.array(out, dtype=object)
+
+def get_clipped_mesh_numba(sites, model, d3dsimplices):
+    """
+    sites:           (N,3) torch tensor (requires_grad)
+    model:           SDF model: sites -> (N,1) tensor of signed distances
+    d3dsimplices:    torch.LongTensor of shape (M,4) from Delaunay
+    """
+    device = sites.device
+    if d3dsimplices is None:
+        sites_np = sites.detach().cpu().numpy()
+        d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1]*sites_np.shape[0]))
+        d3dsimplices = np.array(d3dsimplices)
+    
+    d3d = torch.tensor(d3dsimplices).to(device).detach()            # (M,4)
+    print(f"Before compute vertices 3d vectorized: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
+
+    # Compute per‐simplex circumcenters (Voronoi vertices)
+    vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
+    print(f"After compute vertices 3d vectorized: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
+
+    with torch.no_grad():
+        # Generate all edges of each simplex
+        #    torch.combinations gives the 6 index‐pairs within a 4‐long row
+        comb = torch.combinations(torch.arange(d3d.shape[1], device=device), r=2)  # (6,2)
+        #print("comb", comb.shape)
+        edges = d3d[:, comb]                    # (M,6,2)
+        edges = edges.reshape(-1,2)             # (M*6,2)
+        edges, _ = torch.sort(edges, dim=1)     # sort each row so (a,b) == (b,a)
+
+        # Unique ridges across all simplices
+        #ridges, inverse = torch.unique(edges, dim=0, return_inverse=True) # (R,2)
+        ridges = torch.unique(edges, dim=0, return_inverse=False) # (R,2)
+        
+        del comb, edges
+        torch.cuda.empty_cache()
+        
+        print(ridges.dtype)
+        print(f"After ridge: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
+
+        # Evaluate SDF at each site
+        print(sites.dtype)
+        sdf = model(sites).detach().view(-1)             # (N,)
+        print(f"After sdf: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
+        
+        sdf_i = sdf[ridges[:,0]]
+        sdf_j = sdf[ridges[:,1]]
+        zero_cross = (sdf_i * sdf_j <= 0)       # (R,)
+        # Keep only the zero-crossing ridges
+        ridges = ridges[zero_cross]             # (R0,2)
+        filtered_ridges = ridges.detach().cpu().numpy()
+
+        print("-> filtering ridges")
+        faces = faces_via_dict(d3dsimplices, filtered_ridges)  # (R0, List of simplices)
+        
+        del sdf, sdf_i, sdf_j, zero_cross, ridges, filtered_ridges
+        torch.cuda.empty_cache()
+        
+        
+        R = len(faces)
+        counts = np.array([len(face) for face in faces], dtype=np.int64)
+        Kmax = counts.max()
+        faces_np = np.full((R, Kmax), -1, dtype=np.int64)
+        for i, face in enumerate(faces):
+            faces_np[i, :len(face)] = face
+
+        sorted_faces_np = np.full((R, Kmax), -1, dtype=np.int64)
+
+        print("-> sorting faces")
+        batch_sort_numba(vor_vertices.detach().cpu().numpy(), faces_np, counts, sorted_faces_np)
+        faces_sorted = [sorted_faces_np[i, :counts[i]].tolist() for i in range(R)]
+        faces = faces_sorted
+
+    # Compact the vertex list
+    print("-> compacting vertices")
+    used = {idx for face in faces for idx in face}
+    old2new = {old: new for new, old in enumerate(sorted(used))}
+    new_vertices = vor_vertices[sorted(used)]
+    new_faces = [[old2new[i] for i in face] for face in faces]
+
+    del counts, Kmax, faces_np, sorted_faces_np, faces_sorted, faces, used, old2new
+    torch.cuda.empty_cache()
+
+    # clip the vertices of the faces to the zero-crossing of the sdf
+    sdf_verts = model(new_vertices).view(-1)           # (M,)
+    print(f"After verts sdf: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
+
+    # compute gradients ∇f(v)  — note create_graph=True if you
+    #    want second-order gradients to flow back into the model
+    grads = torch.autograd.grad(
+        outputs=sdf_verts,
+        inputs=new_vertices,
+        grad_outputs=torch.ones_like(sdf_verts),
+        create_graph=True,
+    )[0]                                               # (M,3)
+
+    # one Newton step https://en.wikipedia.org/wiki/Newton%27s_method_in_optimization
+    epsilon = 1e-6
+    grad_norm2 = torch.sqrt(((grads + epsilon)**2).sum(dim=1, keepdim=True))    # (M,1)
+    step = sdf_verts.unsqueeze(1) * grads / (grad_norm2 + epsilon)
+    proj_vertices = new_vertices - step    
+
+    #print("-> vertices:", new_vertices.shape)
+    #print("-> projected vertices:", proj_vertices.shape)
+    #print("-> #faces:", len(new_faces))
+    return proj_vertices, new_faces
