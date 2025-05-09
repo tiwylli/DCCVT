@@ -572,3 +572,29 @@ def update_div_weight(current_iteration, n_iterations, lambda_div, divdecay='lin
     else:
         raise Warning("unsupported div decay value")
     return lambda_div
+
+
+
+from pytorch3d.ops import knn_points, knn_gather
+import torch
+from torch import nn
+
+class Voroloss_opt(nn.Module):
+    def __init__(self):
+        super(Voroloss_opt, self).__init__()
+        self.knn = 16
+
+    def __call__(self, points, spoints):
+        """points, self.points"""
+        # WARNING: fecthing for knn
+        with torch.no_grad():
+            indices = knn_points(points[None, :], spoints[None, :], K=self.knn).idx[0]
+        point_to_voronoi_center = points - spoints[indices[:, 0]]
+        voronoi_edge = spoints[indices[:, 1:]] - \
+            spoints[indices[:, 0, None]]
+        voronoi_edge_l = torch.sqrt(((voronoi_edge**2).sum(-1)))
+        vector_length = (point_to_voronoi_center[:, None, :] * voronoi_edge).sum(
+            -1
+        ) / voronoi_edge_l
+        sq_dist = (vector_length - voronoi_edge_l / 2) ** 2
+        return sq_dist.min(1)[0]

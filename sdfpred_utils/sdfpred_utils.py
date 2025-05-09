@@ -1113,25 +1113,206 @@ def faces_via_dict(d3dsimplices, ridges):
         out.append(np.array(lst, dtype=np.int32))
     return np.array(out, dtype=object)
 
-def faces_via_dict(d3dsimplices, ridges):
-    # 1) build dict of (a,b) → list of simplex-indices
-    face_dict = defaultdict(list)
-    for si, simplex in enumerate(d3dsimplices):
-        # all 6 edges of a 4-vertex simplex
-        a,b,c,d = simplex
-        for u,v in ((a,b),(a,c),(a,d),(b,c),(b,d),(c,d)):
-            key = (u,v) if u < v else (v,u)
-            face_dict[key].append(si)
+# from numba import njit, types
+# from numba.typed import Dict, List
+# import numpy as np
 
-    # 2) now for each ridge (a,b) grab its list
-    out = []
-    for (a,b) in ridges:
-        key = (a,b) if a < b else (b,a)
-        lst = face_dict.get(key, [])
-        out.append(np.array(lst, dtype=np.int32))
-    return np.array(out, dtype=object)
+# @njit
+# def faces_via_dict_numba(d3dsimplices, ridges):
+#     # create an empty typed dict: key is a 2-tuple of i64, value is a List of i64
+#     face_dict = Dict.empty(
+#         key_type=types.Tuple((types.int64, types.int64)),
+#         value_type=types.ListType(types.int64),
+#     )
 
-def get_clipped_mesh_numba(sites, model, d3dsimplices):
+#     M = d3dsimplices.shape[0]
+#     # 1) build the dict
+#     for si in range(M):
+#         a, b, c, d = d3dsimplices[si]
+#         # unrolled edges
+#         for u, v in ((a,b),(a,c),(a,d),(b,c),(b,d),(c,d)):
+#             # normalize key so u<v
+#             if u < v:
+#                 key = (u, v)
+#             else:
+#                 key = (v, u)
+
+#             if key in face_dict:
+#                 face_dict[key].append(si)
+#             else:
+#                 lst = List.empty_list(types.int64)
+#                 lst.append(si)
+#                 face_dict[key] = lst
+
+#     # 2) for each ridge, look up its list
+#     R = ridges.shape[0]
+#     # we'll return a List of Lists of simplex-indices
+#     out = List.empty_list(types.ListType(types.int64))
+#     for i in range(R):
+#         u, v = ridges[i]
+#         if u < v:
+#             key = (u, v)
+#         else:
+#             key = (v, u)
+
+#         if key in face_dict:
+#             out.append(face_dict[key])
+#         else:
+#             # if no simplex contains this ridge, return an empty list
+#             out.append(List.empty_list(types.int64))
+
+#     return out
+
+# from numba import njit, types
+# from numba.typed import Dict, List
+
+# @njit
+# def faces_via_hash(d3dsimplices, ridges):
+#     face_dict = Dict.empty(
+#         key_type=types.int64,                      # single‐integer keys
+#         value_type=types.ListType(types.int64),    # lists of int64
+#     )
+
+#     # build:
+#     V = d3dsimplices.shape[0]+1
+    
+#     for si in range(d3dsimplices.shape[0]):
+#         a,b,c,d = d3dsimplices[si]
+#         for u,v in ((a,b),(a,c),(a,d),(b,c),(b,d),(c,d)):
+#             if u < v:
+#                 key = u * V + v
+#             else:
+#                 key = v * V + u
+
+#             if key not in face_dict:
+#                 face_dict[key] = List.empty_list(types.int64)
+#             face_dict[key].append(si)
+
+#     # collect:
+#     out = List.empty_list(types.ListType(types.int64))
+#     for i in range(ridges.shape[0]):
+#         u,v = ridges[i]
+#         if u < v:
+#             key = u * V + v
+#         else:
+#             key = v * V + u
+
+#         if key in face_dict:
+#             out.append(face_dict[key])
+#         else:
+#             out.append(List.empty_list(types.int64))
+
+#     return out
+
+# @njit
+# def faces_via_numba_hybrid(d3dsimplices, ridges):
+#     """
+#     d3dsimplices : (M,4) int64 array of tetrahedra
+#     ridges       : (R,2) int64 array of edges you care about
+#     V            : int64, = max_vertex_index + 1
+
+#     returns List[List[int64]] of length R, where each inner list
+#     are the indices of the simplices incident on that ridge.
+#     """
+#     M = d3dsimplices.shape[0]
+#     V = d3dsimplices.shape[0]+1
+    
+#     R = ridges.shape[0]
+
+#     # 1) build hash→ridge_index map
+#     ridge_map = Dict.empty(key_type=types.int64, value_type=types.int64)
+#     for i in range(R):
+#         u, v = ridges[i]
+#         if u < v:
+#             key = u * V + v
+#         else:
+#             key = v * V + u
+#         ridge_map[key] = i
+
+#     # 2) allocate storage: assume no ridge has more than 6 simplices
+#     #    (in a Delaunay tessellation on R^3 it's typically ≤2, but 6 is safe)
+#     max_nb = 6
+#     faces_arr = np.empty((R, max_nb), dtype=np.int64)
+#     counts    = np.zeros(R,          dtype=np.int64)
+
+#     # 3) loop over all simplices, assign them to any matching ridge
+#     for si in range(M):
+#         a, b, c, d = d3dsimplices[si]
+#         for u, v in ((a,b),(a,c),(a,d),(b,c),(b,d),(c,d)):
+#             if u < v:
+#                 key = u * V + v
+#             else:
+#                 key = v * V + u
+
+#             if key in ridge_map:
+#                 rid = ridge_map[key]
+#                 idx = counts[rid]
+#                 faces_arr[rid, idx] = si
+#                 counts[rid] += 1
+
+#     # 4) pack into a List[List[int64]] to return
+#     out = List.empty_list(types.ListType(types.int64))
+#     for i in range(R):
+#         lst = List.empty_list(types.int64)
+#         for j in range(counts[i]):
+#             lst.append(faces_arr[i, j])
+#         out.append(lst)
+
+#     return out
+
+# def faces_via_numpy(d3dsimplices, ridges):
+#     """
+#     d3dsimplices: (M,4) array of simplex‐vertex indices
+#     ridges:       (R,2) array of edge‐vertex indices
+#     → returns:    object‐dtype array of length R, each entry a 1D int32 array
+#                    of the simplex‐indices incident on that ridge
+#     """
+#     M = d3dsimplices.shape[0]
+
+#     # 1) list all 6 edges of each simplex, sorted
+#     #    shape (M,6,2)
+#     comb = np.array([[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]])
+#     edges = d3dsimplices[:, comb]      # (M,6,2)
+#     edges = edges.reshape(-1, 2)       # (M*6,2)
+#     edges.sort(axis=1)                 # in‐place sort each row → u<v
+
+#     # 2) unique them, get inverse mapping
+#     unique_edges, inv = np.unique(edges, axis=0, return_inverse=True)
+#     #   unique_edges.shape = (E,2),  inv.shape = (M*6,)
+
+#     # 3) which simplex did each edge come from?
+#     simplex_idx_flat = np.repeat(np.arange(M), 6)  # length M*6
+
+#     # 4) sort edges by group id so we can split into lists
+#     order = np.argsort(inv)
+#     inv_sorted = inv[order]
+#     simp_sorted = simplex_idx_flat[order]
+
+#     # 5) find boundaries where inv changes
+#     #    `breaks` holds the start index of each new group
+#     breaks = np.nonzero(np.concatenate([[True], inv_sorted[1:] != inv_sorted[:-1]]))[0]
+#     #    counts of each group
+#     counts = np.diff(np.append(breaks, len(inv_sorted)))
+
+#     # 6) actually split the sorted simplex indices into one array per edge
+#     groups = np.split(simp_sorted, breaks[1:])
+
+#     # 7) now for each requested ridge, look up its group index in unique_edges
+#     ridges_sorted = np.sort(ridges, axis=1)
+#     #    view rows as a single dtype so we can use searchsorted
+#     dt = np.dtype([('u', unique_edges.dtype), ('v', unique_edges.dtype)])
+#     ue_view = unique_edges.view(dt).reshape(-1)
+#     rid_view = ridges_sorted.view(dt).reshape(-1)
+
+#     # unique_edges from np.unique is guaranteed sorted lexicographically, so this works:
+#     idx_in_unique = np.searchsorted(ue_view, rid_view)
+
+#     # 8) build the final output: one numpy array per ridge – dtype=int32
+#     out = [groups[i].astype(np.int32, copy=False) for i in idx_in_unique]
+
+#     return np.array(out, dtype=object)
+
+def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True):
     """
     sites:           (N,3) torch tensor (requires_grad)
     model:           SDF model: sites -> (N,1) tensor of signed distances
@@ -1144,11 +1325,11 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices):
         d3dsimplices = np.array(d3dsimplices)
     
     d3d = torch.tensor(d3dsimplices).to(device).detach()            # (M,4)
-    print(f"Before compute vertices 3d vectorized: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
+    #print(f"Before compute vertices 3d vectorized: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
 
     # Compute per‐simplex circumcenters (Voronoi vertices)
     vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
-    print(f"After compute vertices 3d vectorized: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
+    #print(f"After compute vertices 3d vectorized: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
 
     with torch.no_grad():
         # Generate all edges of each simplex
@@ -1166,13 +1347,13 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices):
         del comb, edges
         torch.cuda.empty_cache()
         
-        print(ridges.dtype)
-        print(f"After ridge: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
+        #print(ridges.dtype)
+        #print(f"After ridge: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
 
         # Evaluate SDF at each site
-        print(sites.dtype)
+        #print(sites.dtype)
         sdf = model(sites).detach().view(-1)             # (N,)
-        print(f"After sdf: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
+        #print(f"After sdf: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
         
         sdf_i = sdf[ridges[:,0]]
         sdf_j = sdf[ridges[:,1]]
@@ -1181,8 +1362,15 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices):
         ridges = ridges[zero_cross]             # (R0,2)
         filtered_ridges = ridges.detach().cpu().numpy()
 
-        print("-> filtering ridges")
+        #print("-> filtering ridges")
+        #faces = faces_via_numba_hybrid(d3dsimplices, filtered_ridges)
+        #faces = faces_via_dict_numba(d3dsimplices, filtered_ridges)
+        #faces = [np.array(face) for face in faces]
+        #faces = faces_via_numpy(d3dsimplices, filtered_ridges)  # (R0, List of simplices)
         faces = faces_via_dict(d3dsimplices, filtered_ridges)  # (R0, List of simplices)
+        #print("after faces dict")
+        
+        #print(faces[0].shape, faces[0])
         
         del sdf, sdf_i, sdf_j, zero_cross, ridges, filtered_ridges
         torch.cuda.empty_cache()
@@ -1197,13 +1385,13 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices):
 
         sorted_faces_np = np.full((R, Kmax), -1, dtype=np.int64)
 
-        print("-> sorting faces")
+        #print("-> sorting faces")
         batch_sort_numba(vor_vertices.detach().cpu().numpy(), faces_np, counts, sorted_faces_np)
         faces_sorted = [sorted_faces_np[i, :counts[i]].tolist() for i in range(R)]
         faces = faces_sorted
 
     # Compact the vertex list
-    print("-> compacting vertices")
+    #print("-> compacting vertices")
     used = {idx for face in faces for idx in face}
     old2new = {old: new for new, old in enumerate(sorted(used))}
     new_vertices = vor_vertices[sorted(used)]
@@ -1212,9 +1400,12 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices):
     del counts, Kmax, faces_np, sorted_faces_np, faces_sorted, faces, used, old2new
     torch.cuda.empty_cache()
 
+    if not clip:
+        #print("-> not clipping")
+        return new_vertices, new_faces
+    
     # clip the vertices of the faces to the zero-crossing of the sdf
     sdf_verts = model(new_vertices).view(-1)           # (M,)
-    print(f"After verts sdf: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
 
     # compute gradients ∇f(v)  — note create_graph=True if you
     #    want second-order gradients to flow back into the model
