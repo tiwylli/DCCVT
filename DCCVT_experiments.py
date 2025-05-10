@@ -15,9 +15,10 @@ import sdfpred_utils.sdfpred_utils as su
 import sdfpred_utils.loss_functions as lf
 from pytorch3d.loss import chamfer_distance
 
+import sys
+sys.path.append("3rdparty/HotSpot")
 from dataset import shape_3d
 import models.Net as Net
-sys.path.append("3rdparty/HotSpot")
 
 
 
@@ -32,27 +33,44 @@ DEFAULTS = {
     "output" : "/home/wylliam/dev/Kyushu_experiments/outputs/",
     "mesh" : "/home/wylliam/dev/Kyushu_experiments/mesh/",
     "trained_HotSpot" : "/home/wylliam/dev/Kyushu_experiments/hotspots_model/",
-    #"trained_HotSpot" : "/home/wylliam/dev/HotSpot/log/3D/pc/HotSpot-all-2025-04-24-18-16-03/gargoyle/gargoyle/trained_models/model.pth",
     "num_iterations" : 100,
     "num_centroids" : 4, # ** input_dims 
-    "sample_near" : 32, # ** input_dims
-    "clip" : True,
+    "sample_near" : 12, #32 # ** input_dims
+    "clip" : False,
     "triangulate" : True,
-    "w_cvt" : 100,
-    "w_sdf_pull" : 1,    
-    "w_voroloss" : 1000,
-    "w_cd_points" : 1000,
-    "w_cd_mesh" : 1000,
-    "upsampling" : 0,
+    "w_cvt" : 0, #1
+    "w_sdf_pull" : 0, #1    
+    "w_voroloss" : 0, #10
+    "w_cd_points" : 0, #10
+    "w_cd_mesh" : 0, #10
+    "upsampling" : 0, #0
+    "lr_sites" : 0.005,
     
 }
 
-def define_options_parser():
+import argparse
+
+def define_options_parser(arg_list=None):
     parser = argparse.ArgumentParser(description="DCCVT experiments")
-    parser.add_argument('--dataset', type=str, default='dataset_name', help='Dataset name')
-    parser.add_argument('--num_points', type=int, default=1000, help='Number of points in the dataset')
-    parser.add_argument('--num_iterations', type=int, default=100, help='Number of iterations for optimization')
-    return parser.parse_args()
+    parser.add_argument('--input_dims',      type=int,   default=DEFAULTS['input_dims'],            help='Dimensionality of the input')
+    parser.add_argument('--output',          type=str,   default=DEFAULTS['output'],                help='Output directory')
+    parser.add_argument('--mesh',            type=str,   default=DEFAULTS['mesh'],                  help='Mesh directory')
+    parser.add_argument('--trained_HotSpot', type=str,   default=DEFAULTS['trained_HotSpot'],       help='Trained HotSpot model directory')
+    parser.add_argument('--num_iterations',  type=int,   default=DEFAULTS['num_iterations'],         help='Number of iterations for optimization')
+    parser.add_argument('--num_centroids',   type=int,   default=DEFAULTS['num_centroids'],          help='Number of centroids')
+    parser.add_argument('--sample_near',     type=int,   default=DEFAULTS['sample_near'],            help='Samples drawn near each site')
+    parser.add_argument('--clip',            action=argparse.BooleanOptionalAction,         default=DEFAULTS['clip'],                  help='Enable/disable clipping')
+    parser.add_argument('--triangulate',     action=argparse.BooleanOptionalAction,         default=DEFAULTS['triangulate'],           help='Enable/disable triangulation')
+    parser.add_argument('--w_cvt',           type=float, default=DEFAULTS['w_cvt'],               help='Weight for CVT regularization')
+    parser.add_argument('--w_sdf_pull',      type=float, default=DEFAULTS['w_sdf_pull'],          help='Weight for SDF pull loss')
+    parser.add_argument('--w_voroloss',      type=float, default=DEFAULTS['w_voroloss'],          help='Weight for Voronoi loss')
+    parser.add_argument('--w_cd_points',     type=float, default=DEFAULTS['w_cd_points'],         help='Weight for Chamfer distance on points')
+    parser.add_argument('--w_cd_mesh',       type=float, default=DEFAULTS['w_cd_mesh'],           help='Weight for Chamfer distance on mesh')
+    parser.add_argument('--upsampling',      type=int,   default=DEFAULTS['upsampling'],            help='Upsampling factor')
+    parser.add_argument('--lr_sites',        type=float, default=DEFAULTS['lr_sites'],             help='Learning rate for sites')
+    parser.add_argument('--save_path', type=str, default=None, help='(optional) full save path; if omitted, computed from other flags')
+    return parser.parse_args(arg_list)
+
 
 def load_model(mesh, grid, trained_HotSpot):
     #LOAD MODEL WITH HOTSPOT
@@ -134,8 +152,14 @@ def train_DCCVT(sites, model, target_pc, args):
     epoch = 0
     t0 = time()
     
-    while epoch <= args.max_iter:
+    from tqdm import tqdm
+    for epoch in tqdm(range(args.num_iterations)):
         optimizer.zero_grad()
+        cvt_loss = 0
+        chamfer_loss_points = 0
+        chamfer_loss_mesh = 0
+        voroloss_loss = 0
+        d3dsimplices = None
         
         if args.w_sdf_pull > 0:
             for param in model.parameters():
@@ -197,7 +221,7 @@ def train_DCCVT(sites, model, target_pc, args):
         optimizer.step()
         
         # if epoch>100 and (epoch // 100) == upsampled+1 and loss.item() < 0.5 and upsampled < upsampling:
-        if epoch/args.max_iter > (upsampled+1)/(args.upsampling+1) and upsampled < args.upsampling:
+        if epoch/args.num_iterations > (upsampled+1)/(args.upsampling+1) and upsampled < args.upsampling:
             print("sites length BEFORE UPSAMPLING: ",len(sites))
             sites = su.upsampling_vectorized(sites, tri=None, vor=None, simplices=d3dsimplices, model=model)
             sites = sites.detach().requires_grad_(True)
@@ -207,32 +231,172 @@ def train_DCCVT(sites, model, target_pc, args):
             upsampled += 1.0
             print("sites length AFTER: ",len(sites))
             
-        epoch += 1           
+    train_time = time() - t0
     
-    #Export the sites, their sdf values, the gradients of the sdf values and the hessian
+    # #Export the sites, their sdf values, the gradients of the sdf values and the hessian
     sdf_values = model(sites)
-    sdf_gradients = torch.autograd.grad(outputs=sdf_values, inputs=sites, grad_outputs=torch.ones_like(sdf_values), create_graph=True, retain_graph=True,)[0] # (N, 3)
-    N, D = sites.shape
-    hess_sdf = torch.zeros(N, D, D, device=sites.device)
-    for i in range(D):
-        grad2 = torch.autograd.grad(outputs=sdf_gradients[:, i], inputs=sites, grad_outputs=torch.ones_like(sdf_gradients[:, i]), create_graph=False, retain_graph=True,)[0] # (N, 3)
-        hess_sdf[:, i, :] = grad2 # fill row i of each 3×3 Hessian
+    # sdf_gradients = torch.autograd.grad(outputs=sdf_values, inputs=sites, grad_outputs=torch.ones_like(sdf_values), create_graph=True, retain_graph=True,)[0] # (N, 3)
+    # N, D = sites.shape
+    # hess_sdf = torch.zeros(N, D, D, device=sites.device)
+    # for i in range(D):
+    #     grad2 = torch.autograd.grad(outputs=sdf_gradients[:, i], inputs=sites, grad_outputs=torch.ones_like(sdf_gradients[:, i]), create_graph=False, retain_graph=True,)[0] # (N, 3)
+    #     hess_sdf[:, i, :] = grad2 # fill row i of each 3×3 Hessian
     
-    save_path = args.output + os.path.basename(args.mesh) + f"{args.w_cvt}_{args.w_cd_points}_{args.w_cd_mesh}_{args.w_voroloss}_{args.w_sdf_pull}"
-    np.savez(f'{save_path}.npz', 
+    v_vect, f_vect = su.get_clipped_mesh_numba(sites, model, d3dsimplices, args.clip)
+    if args.triangulate:
+        f_vect = [[f[0], f[i], f[i+1]] for f in f_vect for i in range(1, len(f)-1)]
+    
+    #Compute metrics on mesh : CD and IoU and ???
+    #TODO:
+    
+    print("Saving to: ", args.save_path)
+    np.savez(f'{args.save_path}.npz', 
              sites=sites.detach().cpu().numpy(), 
              sdf_values=sdf_values.detach().cpu().numpy(), 
-             sdf_gradients=sdf_gradients.detach().cpu().numpy(), 
-             sdf_hessians=hess_sdf.detach().cpu().numpy(),
-             train_time = time()-t0
+             #sdf_gradients=sdf_gradients.detach().cpu().numpy(), 
+             #sdf_hessians=hess_sdf.detach().cpu().numpy(),
+             v_vect=v_vect.detach().cpu().numpy(),
+             f_vect=np.array(f_vect),
+             train_time = train_time,
+             grads_mesh_extraction_time = time() - t0 - train_time,
              )
     return sites     
 
 
+def build_arg_list():
+    arg_list = []
+    for m in ["gargoyle", "chair", "bunny"]:
+        # Voroloss, Voroloss + CVT, Voroloss + CVT + Clipping,
+        arg_list.append(
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--w_voroloss", "10",
+            ])
+        arg_list.append(
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--w_cvt", "1",
+            "--w_voroloss", "10",
+            ])
+        arg_list.append(
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--clip", "True",
+            "--w_cvt", "1",
+            "--w_voroloss", "10",
+            ])
+        arg_list.append(
+            # Vertex + Bisect, Vertex + Bisect + Clip, Vertex + Bisect + CVT, Vertex + Bisect + CVT + Clip
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--w_cd_points", "10",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--clip", "True",
+            "--w_cd_points", "10",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--w_cvt", "1",
+            "--w_cd_points", "10",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--clip", "True",
+            "--w_cvt", "1",
+            "--w_cd_points", "10",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(
+            # Sampling, Sampling + CVT, Sampling + Clip, Sampling + CVT + Clip
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--w_cd_mesh", "10",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(     
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--w_cvt", "1",
+            "--w_cd_mesh", "10",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(     
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--clip", "True",
+            "--w_cd_mesh", "10",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(     
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--clip", "True",
+            "--w_cvt", "1",
+            "--w_cd_mesh", "10",
+            "--w_sdf_pull", "1",
+            ]
+        )
+    return arg_list
+
 if __name__ == "__main__":
-    parser = define_options_parser()
-    args = parser.parse_args()
-    
-    model, mnfld_points = load_model(args.mesh, args.grid, args.trained_HotSpot)
-    sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
-    sites = train_DCCVT(sites, model, mnfld_points, args)
+    arg_lists = build_arg_list()
+    for arg_list in arg_lists:
+        args = define_options_parser(arg_list)
+        args.save_path = args.output + f"_cdp{int(args.w_cd_points)}_cdm{int(args.w_cd_mesh)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}"
+        
+        print("args: ", args)
+        model, mnfld_points = load_model(args.mesh, args.sample_near, args.trained_HotSpot)
+        sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
+        sites = train_DCCVT(sites, model, mnfld_points, args)
