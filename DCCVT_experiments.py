@@ -33,9 +33,9 @@ DEFAULTS = {
     "output" : "/home/wylliam/dev/Kyushu_experiments/outputs/",
     "mesh" : "/home/wylliam/dev/Kyushu_experiments/mesh/",
     "trained_HotSpot" : "/home/wylliam/dev/Kyushu_experiments/hotspots_model/",
-    "num_iterations" : 100,
+    "num_iterations" : 400,
     "num_centroids" : 4, # ** input_dims 
-    "sample_near" : 12, #32 # ** input_dims
+    "sample_near" : 32, #32 # ** input_dims
     "clip" : False,
     "triangulate" : True,
     "w_cvt" : 0, #1
@@ -214,9 +214,9 @@ def train_DCCVT(sites, model, target_pc, args):
         )
             
         loss = sites_loss
-        print(f"Epoch {epoch}: loss = {loss.item()}")
+        #print(f"Epoch {epoch}: loss = {loss.item()}")
         loss.backward()
-        print("-----------------")
+        #print("-----------------")
         
         optimizer.step()
         
@@ -299,7 +299,7 @@ def output_image_polyscope():
 def build_arg_list():
     arg_list = []
     for m in ["gargoyle", "chair", "bunny"]:
-        # Voroloss, Voroloss + CVT, Voroloss + CVT + Clipping,
+# Voroloss, Voroloss + CVT, Voroloss + CVT + Clipping,
         arg_list.append(
             ["--mesh", 
             f"{DEFAULTS['mesh']}{m}",
@@ -326,12 +326,12 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--clip", "True",
+            "--clip",
             "--w_cvt", "1",
             "--w_voroloss", "10",
             ])
+# Vertex + Bisect, Vertex + Bisect + Clip, Vertex + Bisect + CVT, Vertex + Bisect + CVT + Clip
         arg_list.append(
-            # Vertex + Bisect, Vertex + Bisect + Clip, Vertex + Bisect + CVT, Vertex + Bisect + CVT + Clip
             ["--mesh", 
             f"{DEFAULTS['mesh']}{m}",
             "--trained_HotSpot",
@@ -348,7 +348,7 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--clip", "True",
+            "--clip",
             "--w_cd_points", "10",
             "--w_sdf_pull", "1",
             ])
@@ -370,13 +370,13 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--clip", "True",
+            "--clip",
             "--w_cvt", "1",
             "--w_cd_points", "10",
             "--w_sdf_pull", "1",
             ])
+# Sampling, Sampling + CVT, Sampling + Clip, Sampling + CVT + Clip
         arg_list.append(
-            # Sampling, Sampling + CVT, Sampling + Clip, Sampling + CVT + Clip
             ["--mesh", 
             f"{DEFAULTS['mesh']}{m}",
             "--trained_HotSpot",
@@ -404,7 +404,7 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--clip", "True",
+            "--clip",
             "--w_cd_mesh", "10",
             "--w_sdf_pull", "1",
             ])
@@ -415,8 +415,58 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--clip", "True",
+            "--clip",
             "--w_cvt", "1",
+            "--w_cd_mesh", "10",
+            "--w_sdf_pull", "1",
+            ]
+        )
+#cdp + cdm, cdp + cdm + CVT, cdp + cdm + Clip, cdp + cdm + CVT + Clip
+        arg_list.append(
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--w_cd_mesh", "10",
+            "--w_cd_points", "10",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(     
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--w_cvt", "1",
+            "--w_cd_mesh", "10",
+            "--w_cd_points", "10",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(     
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--clip",
+            "--w_cd_mesh", "10",
+            "--w_cd_points", "10",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(     
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--clip",
+            "--w_cvt", "1",
+            "--w_cd_points", "10",
             "--w_cd_mesh", "10",
             "--w_sdf_pull", "1",
             ]
@@ -427,13 +477,12 @@ if __name__ == "__main__":
     arg_lists = build_arg_list()
     for arg_list in arg_lists:
         args = define_options_parser(arg_list)
-        args.save_path = args.output + f"_cdp{int(args.w_cd_points)}_cdm{int(args.w_cd_mesh)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}"
-        # if os.path.exists(args.save_path + ".npz"):
-        #     print("File already exists, skipping...")
-        #     continue
+        args.save_path = args.output + f"/cdp{int(args.w_cd_points)}_cdm{int(args.w_cd_mesh)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}"
+        if os.path.exists(args.save_path + ".npz"):
+            print("File already exists, skipping...")
+            continue
         print("args: ", args)
         model, mnfld_points = load_model(args.mesh, args.sample_near, args.trained_HotSpot)
         sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
         sites = train_DCCVT(sites, model, mnfld_points, args)
         output_image_polyscope()
-        assert False, "End of script reached"
