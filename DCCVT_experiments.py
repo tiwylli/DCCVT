@@ -243,11 +243,24 @@ def train_DCCVT(sites, model, target_pc, args):
     #     hess_sdf[:, i, :] = grad2 # fill row i of each 3×3 Hessian
     
     v_vect, f_vect = su.get_clipped_mesh_numba(sites, model, d3dsimplices, args.clip)
+    
     if args.triangulate:
         f_vect = [[f[0], f[i], f[i+1]] for f in f_vect for i in range(1, len(f)-1)]
     
-    #Compute metrics on mesh : CD and IoU and ???
-    #TODO:
+    #Compute metrics on mesh : CD and F1 
+    hs_p = su.sample_mesh_points_heitz(v_vect, torch.tensor(f_vect), num_samples=2*args.sample_near*150)
+    chamfer_loss_mesh, _ = chamfer_distance(target_pc.detach(), hs_p.unsqueeze(0))
+    print("Chamfer loss mesh: ", chamfer_loss_mesh.item())
+    # Compute F1 score
+    dmat = torch.cdist(hs_p, target_pc.squeeze(0))  # (N, M)
+    d_rec2gt, idx_rec2gt = dmat.min(dim=1)  # for precision
+    d_gt2rec, _         = dmat.min(dim=0)  # for recall
+    tau = 0.003
+    P  = (d_rec2gt <= tau).float().mean()
+    R  = (d_gt2rec <= tau).float().mean()
+    F1 = 2 * P * R / (P + R + 1e-8)
+    # Compute normal consistency
+    
     
     print("Saving to: ", args.save_path)
     np.savez(f'{args.save_path}.npz', 
@@ -259,9 +272,29 @@ def train_DCCVT(sites, model, target_pc, args):
              f_vect=np.array(f_vect),
              train_time = train_time,
              grads_mesh_extraction_time = time() - t0 - train_time,
+             chamfer_loss_mesh = chamfer_loss_mesh.item(),
+             F1 = F1.item(),
              )
     return sites     
 
+def output_image_polyscope():
+    ps.init()
+    ps.set_up_dir("z_up")
+    ps.set_front_dir("neg_y_front")
+    
+    #ps.set_background_color((1, 1, 1))
+    # remove groud plane
+    ps.set_ground_plane_mode("none")
+    
+    # Load mesh from args.save_path
+    data = np.load(f'{args.save_path}.npz')
+    v_vect = data['v_vect']
+    f_vect = data['f_vect']
+    
+    # Add the mesh to polyscope
+    ps_mesh = ps.register_surface_mesh("mesh", v_vect, f_vect, back_face_policy="identical")
+    
+    ps.screenshot(args.save_path + ".png", transparent_bg=True)
 
 def build_arg_list():
     arg_list = []
@@ -395,8 +428,12 @@ if __name__ == "__main__":
     for arg_list in arg_lists:
         args = define_options_parser(arg_list)
         args.save_path = args.output + f"_cdp{int(args.w_cd_points)}_cdm{int(args.w_cd_mesh)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}"
-        
+        # if os.path.exists(args.save_path + ".npz"):
+        #     print("File already exists, skipping...")
+        #     continue
         print("args: ", args)
         model, mnfld_points = load_model(args.mesh, args.sample_near, args.trained_HotSpot)
         sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
         sites = train_DCCVT(sites, model, mnfld_points, args)
+        output_image_polyscope()
+        assert False, "End of script reached"
