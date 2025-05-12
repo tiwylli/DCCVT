@@ -33,16 +33,16 @@ DEFAULTS = {
     "output" : "/home/wylliam/dev/Kyushu_experiments/outputs/",
     "mesh" : "/home/wylliam/dev/Kyushu_experiments/mesh/",
     "trained_HotSpot" : "/home/wylliam/dev/Kyushu_experiments/hotspots_model/",
-    "num_iterations" : 400,
-    "num_centroids" : 4, # ** input_dims 
+    "num_iterations" : 100,
+    "num_centroids" : 8, # ** input_dims 
     "sample_near" : 32, #32 # ** input_dims
     "clip" : False,
     "triangulate" : True,
-    "w_cvt" : 0, #1
-    "w_sdf_pull" : 0, #1    
-    "w_voroloss" : 0, #10
-    "w_cd_points" : 0, #10
-    "w_cd_mesh" : 0, #10
+    "w_cvt" : 0, #100
+    "w_sdf_pull" : 0, #1 
+    "w_voroloss" : 0, #1000
+    "w_cd_points" : 0, #1000
+    "w_cd_mesh" : 0, #1000
     "upsampling" : 0, #0
     "lr_sites" : 0.005,
     
@@ -140,9 +140,7 @@ def init_sites(mnfld_points, num_centroids, sample_near, input_dims):
     # make sites a leaf tensor
     sites = sites.detach().requires_grad_()
     return sites
-        
-        
-   
+
 def train_DCCVT(sites, model, target_pc, args):
     optimizer = torch.optim.Adam([
     {'params': [sites], 'lr': args.lr_sites},
@@ -151,15 +149,16 @@ def train_DCCVT(sites, model, target_pc, args):
     upsampled = 0.0
     epoch = 0
     t0 = time()
+    cvt_loss = 0
+    chamfer_loss_points = 0
+    chamfer_loss_mesh = 0
+    voroloss_loss = 0
+    d3dsimplices = None
+    voroloss = lf.Voroloss_opt().to(device)
     
     from tqdm import tqdm
     for epoch in tqdm(range(args.num_iterations)):
         optimizer.zero_grad()
-        cvt_loss = 0
-        chamfer_loss_points = 0
-        chamfer_loss_mesh = 0
-        voroloss_loss = 0
-        d3dsimplices = None
         
         if args.w_sdf_pull > 0:
             for param in model.parameters():
@@ -203,7 +202,6 @@ def train_DCCVT(sites, model, target_pc, args):
             chamfer_loss_mesh, _ = chamfer_distance(target_pc.detach(), hs_p.unsqueeze(0))
 
         if args.w_voroloss > 0:
-            voroloss = lf.Voroloss_opt().to(device)
             voroloss_loss = voroloss(target_pc.squeeze(0), sites).mean()
         
         sites_loss = (
@@ -230,9 +228,10 @@ def train_DCCVT(sites, model, target_pc, args):
                                           ])
             upsampled += 1.0
             print("sites length AFTER: ",len(sites))
-            
+    return sites     
+
+def output_npz(sites, model, target_pc, args, state="", d3dsimplices=None, t0=time()):
     train_time = time() - t0
-    
     # #Export the sites, their sdf values, the gradients of the sdf values and the hessian
     sdf_values = model(sites)
     # sdf_gradients = torch.autograd.grad(outputs=sdf_values, inputs=sites, grad_outputs=torch.ones_like(sdf_values), create_graph=True, retain_graph=True,)[0] # (N, 3)
@@ -261,44 +260,39 @@ def train_DCCVT(sites, model, target_pc, args):
     F1 = 2 * P * R / (P + R + 1e-8)
     # Compute normal consistency
     
-    
-    print("Saving to: ", args.save_path)
-    np.savez(f'{args.save_path}.npz', 
+    s = f'{args.save_path}_{state}.npz'
+    print("Saving to: ", s)
+    np.savez(s, 
              sites=sites.detach().cpu().numpy(), 
              sdf_values=sdf_values.detach().cpu().numpy(), 
              #sdf_gradients=sdf_gradients.detach().cpu().numpy(), 
              #sdf_hessians=hess_sdf.detach().cpu().numpy(),
              v_vect=v_vect.detach().cpu().numpy(),
-             f_vect=np.array(f_vect),
+             f_vect=f_vect,
              train_time = train_time,
              grads_mesh_extraction_time = time() - t0 - train_time,
              chamfer_loss_mesh = chamfer_loss_mesh.item(),
              F1 = F1.item(),
              )
-    return sites     
 
-def output_image_polyscope():
+def output_image_polyscope(state=""):
     ps.init()
     ps.set_up_dir("z_up")
     ps.set_front_dir("neg_y_front")
-    
-    #ps.set_background_color((1, 1, 1))
-    # remove groud plane
     ps.set_ground_plane_mode("none")
     
     # Load mesh from args.save_path
-    data = np.load(f'{args.save_path}.npz')
+    data = np.load(f'{args.save_path}_{state}.npz', allow_pickle=True)
     v_vect = data['v_vect']
     f_vect = data['f_vect']
     
-    # Add the mesh to polyscope
-    ps_mesh = ps.register_surface_mesh("mesh", v_vect, f_vect, back_face_policy="identical")
-    
-    ps.screenshot(args.save_path + ".png", transparent_bg=True)
+    ps.register_surface_mesh("mesh", v_vect, f_vect, back_face_policy="identical")
+    ps.screenshot(args.save_path + f"{state}.png", transparent_bg=True)
+    ps.unshow()
 
-def build_arg_list():
+def build_arg_list(m_list=["gargoyle", "chair", "bunny"]):
     arg_list = []
-    for m in ["gargoyle", "chair", "bunny"]:
+    for m in m_list:
 # Voroloss, Voroloss + CVT, Voroloss + CVT + Clipping,
         arg_list.append(
             ["--mesh", 
@@ -307,7 +301,7 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--w_voroloss", "10",
+            "--w_voroloss", "1000",
             ])
         arg_list.append(
             ["--mesh", 
@@ -316,8 +310,8 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--w_cvt", "1",
-            "--w_voroloss", "10",
+            "--w_cvt", "100",
+            "--w_voroloss", "1000",
             ])
         arg_list.append(
             ["--mesh", 
@@ -327,8 +321,8 @@ def build_arg_list():
             "--output",
             f"{DEFAULTS['output']}{m}",
             "--clip",
-            "--w_cvt", "1",
-            "--w_voroloss", "10",
+            "--w_cvt", "100",
+            "--w_voroloss", "1000",
             ])
 # Vertex + Bisect, Vertex + Bisect + Clip, Vertex + Bisect + CVT, Vertex + Bisect + CVT + Clip
         arg_list.append(
@@ -338,7 +332,7 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--w_cd_points", "10",
+            "--w_cd_points", "1000",
             "--w_sdf_pull", "1",
             ])
         arg_list.append(
@@ -349,7 +343,7 @@ def build_arg_list():
             "--output",
             f"{DEFAULTS['output']}{m}",
             "--clip",
-            "--w_cd_points", "10",
+            "--w_cd_points", "1000",
             "--w_sdf_pull", "1",
             ])
         arg_list.append(
@@ -359,8 +353,8 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--w_cvt", "1",
-            "--w_cd_points", "10",
+            "--w_cvt", "100",
+            "--w_cd_points", "1000",
             "--w_sdf_pull", "1",
             ])
         arg_list.append(
@@ -371,8 +365,8 @@ def build_arg_list():
             "--output",
             f"{DEFAULTS['output']}{m}",
             "--clip",
-            "--w_cvt", "1",
-            "--w_cd_points", "10",
+            "--w_cvt", "100",
+            "--w_cd_points", "1000",
             "--w_sdf_pull", "1",
             ])
 # Sampling, Sampling + CVT, Sampling + Clip, Sampling + CVT + Clip
@@ -383,7 +377,7 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--w_cd_mesh", "10",
+            "--w_cd_mesh", "1000",
             "--w_sdf_pull", "1",
             ])
         arg_list.append(     
@@ -393,19 +387,8 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--w_cvt", "1",
-            "--w_cd_mesh", "10",
-            "--w_sdf_pull", "1",
-            ])
-        arg_list.append(     
-            ["--mesh", 
-            f"{DEFAULTS['mesh']}{m}",
-            "--trained_HotSpot",
-            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
-            "--output",
-            f"{DEFAULTS['output']}{m}",
-            "--clip",
-            "--w_cd_mesh", "10",
+            "--w_cvt", "100",
+            "--w_cd_mesh", "1000",
             "--w_sdf_pull", "1",
             ])
         arg_list.append(     
@@ -416,8 +399,19 @@ def build_arg_list():
             "--output",
             f"{DEFAULTS['output']}{m}",
             "--clip",
-            "--w_cvt", "1",
-            "--w_cd_mesh", "10",
+            "--w_cd_mesh", "1000",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(     
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--clip",
+            "--w_cvt", "100",
+            "--w_cd_mesh", "1000",
             "--w_sdf_pull", "1",
             ]
         )
@@ -429,8 +423,8 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--w_cd_mesh", "10",
-            "--w_cd_points", "10",
+            "--w_cd_mesh", "1000",
+            "--w_cd_points", "1000",
             "--w_sdf_pull", "1",
             ])
         arg_list.append(     
@@ -440,21 +434,9 @@ def build_arg_list():
             f"{DEFAULTS['trained_HotSpot']}{m}.pth",
             "--output",
             f"{DEFAULTS['output']}{m}",
-            "--w_cvt", "1",
-            "--w_cd_mesh", "10",
-            "--w_cd_points", "10",
-            "--w_sdf_pull", "1",
-            ])
-        arg_list.append(     
-            ["--mesh", 
-            f"{DEFAULTS['mesh']}{m}",
-            "--trained_HotSpot",
-            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
-            "--output",
-            f"{DEFAULTS['output']}{m}",
-            "--clip",
-            "--w_cd_mesh", "10",
-            "--w_cd_points", "10",
+            "--w_cvt", "100",
+            "--w_cd_mesh", "1000",
+            "--w_cd_points", "1000",
             "--w_sdf_pull", "1",
             ])
         arg_list.append(     
@@ -465,24 +447,96 @@ def build_arg_list():
             "--output",
             f"{DEFAULTS['output']}{m}",
             "--clip",
-            "--w_cvt", "1",
-            "--w_cd_points", "10",
-            "--w_cd_mesh", "10",
+            "--w_cd_mesh", "1000",
+            "--w_cd_points", "1000",
+            "--w_sdf_pull", "1",
+            ])
+        arg_list.append(     
+            ["--mesh", 
+            f"{DEFAULTS['mesh']}{m}",
+            "--trained_HotSpot",
+            f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+            "--output",
+            f"{DEFAULTS['output']}{m}",
+            "--clip",
+            "--w_cvt", "100",
+            "--w_cd_points", "1000",
+            "--w_cd_mesh", "1000",
             "--w_sdf_pull", "1",
             ]
         )
     return arg_list
 
+def output_results_figure():
+    # create a table with the results
+    # load all the files in the output directory
+    files = os.listdir(args.output)
+    files = [f for f in files if f.endswith(".npz")]
+    # create a figure with the images their names and the metrics
+    fig, axs = plt.subplots(len(files), 1, figsize=(10, 10))
+    fig.subplots_adjust(hspace=0.5)
+    for i, f in enumerate(files):
+        data = np.load(args.output +"/"+ f)
+        # load the image
+        img = plt.imread(args.output +"/" + f[:-4] + ".png")
+        axs[i].imshow(img)
+        axs[i].set_title(f)
+        axs[i].axis("off")
+        # add the metrics
+        axs[i].text(0, 0, f"Chamfer loss mesh: {data['chamfer_loss_mesh']:.4f}", fontsize=10)
+        axs[i].text(0, 20, f"F1 score: {data['F1']:.4f}", fontsize=10)
+        axs[i].text(0, 40, f"Train time: {data['train_time']:.4f}", fontsize=10)
+        axs[i].text(0, 60, f"Grads mesh extraction time: {data['grads_mesh_extraction_time']:.4f}", fontsize=10)
+    plt.savefig(args.output + "results.png")
+
+def open_everything_polyscope():
+    # open polyscope with all the meshes
+    ps.init()
+    ps.set_up_dir("z_up")
+    ps.set_front_dir("neg_y_front")
+    
+    #ps.set_background_color((1, 1, 1))
+    # remove groud plane
+    ps.set_ground_plane_mode("none")
+    
+    # Load mesh from args.save_path
+    files = os.listdir(args.output)
+    files = [f for f in files if f.endswith(".npz")]
+    
+    for f in files:
+        data = np.load(args.output+"/" + f, allow_pickle=True)
+        v_vect = data['v_vect']
+        f_vect = data['f_vect']
+        ps_mesh = ps.register_surface_mesh(f[:-4], v_vect, f_vect, back_face_policy="identical")
+    
+    ps.show()
+
+
 if __name__ == "__main__":
-    arg_lists = build_arg_list()
+    arg_lists = build_arg_list(["gargoyle"])
     for arg_list in arg_lists:
         args = define_options_parser(arg_list)
         args.save_path = args.output + f"/cdp{int(args.w_cd_points)}_cdm{int(args.w_cd_mesh)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}"
-        if os.path.exists(args.save_path + ".npz"):
-            print("File already exists, skipping...")
-            continue
+        # if os.path.exists(args.save_path+"init" + ".npz"):
+        #     print("File already exists, skipping...")
+        #     continue
         print("args: ", args)
         model, mnfld_points = load_model(args.mesh, args.sample_near, args.trained_HotSpot)
         sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
+        
+        output_npz(sites, model, mnfld_points, args, "init")
+        output_image_polyscope("init")
+        
         sites = train_DCCVT(sites, model, mnfld_points, args)
-        output_image_polyscope()
+        
+        output_npz(sites, model, mnfld_points, args, "final")
+        output_image_polyscope("final")
+        
+        # reset everything for the next iteration
+        del sites
+        del model
+        del mnfld_points
+        torch.cuda.empty_cache()
+    
+    #output_results_figure()
+    open_everything_polyscope()
