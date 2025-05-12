@@ -592,6 +592,7 @@ def output_results_figure():
     # -------------------------------------------------------------------------
     # 1) Header row: turn off all three axes, then place text in the center one
     header_text = (
+        f"All results are for {args.num_iterations} iterations and {args.sample_near**args.input_dims} sites\n"
         "cdp = chamfer distance vertices+bisectors to target point\n"
         "cdm = Chamfer distance sampled mesh to target point\n"
         "v = voroloss"
