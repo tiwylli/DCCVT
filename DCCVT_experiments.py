@@ -467,28 +467,6 @@ def build_arg_list(m_list=["gargoyle", "chair", "bunny"]):
         )
     return arg_list
 
-# def output_results_figure():
-#     # create a table with the results
-#     # load all the files in the output directory
-#     files = os.listdir(args.output)
-#     files = [f for f in files if f.endswith(".npz")]
-#     # create a figure with the images their names and the metrics
-#     fig, axs = plt.subplots(len(files), 1, figsize=(10, 10))
-#     fig.subplots_adjust(hspace=0.5)
-#     for i, f in enumerate(files):
-#         data = np.load(args.output +"/"+ f)
-#         # load the image
-#         img = plt.imread(args.output +"/" + f[:-4] + ".png")
-#         axs[i].imshow(img)
-#         axs[i].set_title(f)
-#         axs[i].axis("off")
-#         # add the metrics
-#         axs[i].text(0, 0, f"Chamfer loss mesh: {data['chamfer_loss_mesh']:.4f}", fontsize=10)
-#         axs[i].text(0, 20, f"F1 score: {data['F1']:.4f}", fontsize=10)
-#         axs[i].text(0, 40, f"Train time: {data['train_time']:.4f}", fontsize=10)
-#         axs[i].text(0, 60, f"Grads mesh extraction time: {data['grads_mesh_extraction_time']:.4f}", fontsize=10)
-#     plt.savefig(args.output + "results.png")
-
 def crop_transparent(img, tol=0.0):
     """
     Crop off outer rows/cols where the alpha channel is nearly zero.
@@ -510,63 +488,9 @@ def crop_transparent(img, tol=0.0):
     y1, x1 = coords.max(axis=0) + 1
     return img[y0:y1, x0:x1]
 
-# def output_results_figure():
-#     # collect and group .npz files by experiment prefix
-#     files = [f for f in os.listdir(args.output) if f.endswith('.npz')]
-#     groups = {}
-#     for f in files:
-#         if f.endswith('_init.npz'):
-#             prefix = f[:-9]  # strip "_init.npz"
-#             groups.setdefault(prefix, {})['init'] = f
-#         elif f.endswith('_final.npz'):
-#             prefix = f[:-10]  # strip "_final.npz"
-#             groups.setdefault(prefix, {})['final'] = f
-
-#     prefixes = sorted(groups.keys())
-#     n = len(prefixes)
-#     fig, axs = plt.subplots(n, 3, figsize=(15, 5*n))
-#     if n == 1:
-#         axs = axs[None, :]  # ensure axs is 2D
-
-#     for i, prefix in enumerate(prefixes):
-#         grp = groups[prefix]
-
-#         # --- init image ---
-#         ax = axs[i, 0]
-#         init_png = grp.get('init', '').replace('.npz', '.png')
-#         img_init = plt.imread(os.path.join(args.output, init_png))
-#         trimmed = crop_transparent(img_init, tol=1e-3)
-#         ax.imshow(trimmed)
-#         ax.set_title('Init')
-#         ax.axis('off')
-
-#         # --- final image ---
-#         ax = axs[i, 1]
-#         final_png = grp.get('final', '').replace('.npz', '.png')
-#         img_final = plt.imread(os.path.join(args.output, final_png))
-#         trimmed = crop_transparent(img_final, tol=1e-3)
-#         ax.imshow(trimmed)
-#         ax.set_title('Final')
-#         ax.axis('off')
-
-#         # --- metrics ---
-#         ax = axs[i, 2]
-#         data = np.load(os.path.join(args.output, grp['final']))
-#         text = (
-#             f"Chamfer loss mesh 10*-5: {data['chamfer_loss_mesh']*10000:.4f}\n"
-#             f"F1 score: {data['F1']:.4f}\n"
-#             f"Train time (s): {data['train_time']:.4f}\n"
-#             f"Mesh extraction time (s): {data['grads_mesh_extraction_time']:.4f}"
-#         )
-#         ax.text(0, 0.5, text, va='center', fontsize=24)
-#         ax.set_title(prefix, fontsize=20)
-#         ax.axis('off')
-
-#     plt.tight_layout()
-#     plt.savefig(os.path.join(args.output, "results.png"))
-
 def output_results_figure():
     # collect and group .npz files by experiment prefix
+    print(args.output)
     files = [f for f in os.listdir(args.output) if f.endswith('.npz')]
     groups = {}
     for f in files:
@@ -646,10 +570,11 @@ def output_results_figure():
 
     # -------------------------------------------------------------------------
     plt.savefig(
-        os.path.join(args.output, "results.png"),
+        os.path.join(args.output, f"results{args.num_iterations}.png"),
         bbox_inches='tight',
         dpi = 300,
     )
+    print(os.path.join(args.output, f"results{args.num_iterations}.png"))
 
 def open_everything_polyscope():
     # open polyscope with all the meshes
@@ -675,7 +600,7 @@ def open_everything_polyscope():
 
 
 if __name__ == "__main__":
-    arg_lists = build_arg_list(["gargoyle"])
+    arg_lists = build_arg_list()
     for arg_list in arg_lists:
         args = define_options_parser(arg_list)
         args.save_path = args.output + f"/cdp{int(args.w_cd_points)}_cdm{int(args.w_cd_mesh)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}"
