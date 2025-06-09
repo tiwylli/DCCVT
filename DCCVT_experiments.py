@@ -29,10 +29,10 @@ print("Using device: ", torch.cuda.get_device_name(device))
 
 
 DEFAULTS = {
-    "input_dims" : 3,
     "output" : "/home/wylliam/dev/Kyushu_experiments/outputs/",
     "mesh" : "/home/wylliam/dev/Kyushu_experiments/mesh/",
     "trained_HotSpot" : "/home/wylliam/dev/Kyushu_experiments/hotspots_model/",
+    "input_dims" : 3,
     "num_iterations" : 100,
     "num_centroids" : 8, # ** input_dims 
     "sample_near" : 32, #32 # ** input_dims
