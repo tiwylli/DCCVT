@@ -1182,61 +1182,148 @@ def faces_via_dict(d3dsimplices, ridges):
 
 
 
-import torch
-from pytorch3d.ops import knn_points
+# import torch
+# from pytorch3d.ops import knn_points
 
-def approximate_sdf_and_gradient(
-    query_points: torch.Tensor,
-    target_points: torch.Tensor,
-    K: int = 6
-):
+# def approximate_sdf_and_gradient(
+#     query_points: torch.Tensor,
+#     target_points: torch.Tensor,
+#     K: int = 6
+# ):
+#     """
+#     Approximate an unsigned SDF and its gradient via k-nearest neighbors.
+
+#     Args:
+#         query_points:  Tensor of shape (N, 3) the points at which to approximate the SDF.
+#         target_points: Tensor of shape (M, 3) the point cloud defining the surface.
+#         K:             Number of nearest neighbours to use (default: 6).
+
+#     Returns:
+#         d_mean:  Tensor of shape (N,)    the mean distance to the K nearest neighbors.
+#         grad:    Tensor of shape (N, 3)  the (unit averaged) gradient vector.
+#     """
+#     # Add batch dimension
+#     P = query_points.unsqueeze(0)   # (1, N, 3)
+#     Q = target_points#.unsqueeze(0)  # (1, M, 3)
+    
+#     # KNN search: returns squared distances, indices, and the actual neighbor coords
+#     knn = knn_points(P, Q, K=K, return_nn=True)
+#     # knn.dists: (1, N, K) squared distances
+#     # knn.knn:   (1, N, K, 3) coords of the K neighbors
+
+#     # Compute Euclidean distances: (1, N, K)
+#     dists = torch.sqrt(knn.dists + 1e-12)
+
+#     # 1) Mean distance per query point: (N,)
+#     d_mean = dists.mean(dim=2).squeeze(0)
+
+#     # 2) Compute per-neighbor unit vectors: (1, N, K, 3)
+#     #    vector from query → neighbor = (knn - P[...,None,:])
+#     vecs = knn.knn - P.unsqueeze(2)
+#     #    normalize along last dim:
+#     unit_vecs = vecs / (dists.unsqueeze(-1) + 1e-12)
+
+#     # 3) Average those unit vectors: (1, N, 3), then normalize final gradient
+#     g_raw = unit_vecs.mean(dim=2)        # (1, N, 3)
+#     g_norm = torch.norm(g_raw, dim=2, keepdim=True)  # (1, N, 1)
+#     grad  = (g_raw / (g_norm + 1e-12)).squeeze(0)     # (N, 3)
+
+#     return d_mean, grad
+
+
+
+def interpolate_sdf_of_vertices(
+    vertices: torch.Tensor,        # (M, 3)  positions of Voronoi vertices
+    tets:     torch.LongTensor,    # (M, 4)  indices of the 4 sites for each tet
+    sites:    torch.Tensor,        # (N, 3)  xyz of all sites
+    sdf:      torch.Tensor,        # (N,)    φ at each site
+) -> torch.Tensor:
+    # ------------------------------------------------------------
+    # barycentric interpolation to Voronoi vertices (= tetra circum-centres)
+    # ------------------------------------------------------------
     """
-    Approximate an unsigned SDF and its gradient via k-nearest neighbors.
+    Returns
+    -------
+    phi_v   : (M,)   SDF value at each Voronoi vertex
+    """
+    # --------------------------------------------------------
+    # 1. Gather positions / field values for the tetra vertices
+    # --------------------------------------------------------
+    v_pos  = sites[tets]       # (M,4,3)
+    v_phi  = sdf[tets]         # (M,4)
+
+    # --------------------------------------------------------
+    # 2. Barycentric coords of the vertex inside its tet
+    #    Solve  (x - x0) = (x1-x0, x2-x0, x3-x0) · [w1 w2 w3]^T
+    # --------------------------------------------------------
+    x0   = v_pos[:, 0]                   # (M,3)
+    D    = torch.stack(                 # (M,3,3)
+        (v_pos[:, 1] - x0,
+         v_pos[:, 2] - x0,
+         v_pos[:, 3] - x0), dim=2)
+
+    rhs  = (vertices - x0)              # (M,3)
+
+    # batched solve: D · w123 = rhs   →  w123 = D⁻¹ rhs
+    w123 = torch.linalg.solve(D, rhs.unsqueeze(-1)).squeeze(-1)   # (M,3)
+
+    w0   = 1.0 - w123.sum(dim=1, keepdim=True)                    # (M,1)
+    W    = torch.cat((w0, w123), dim=1)                           # (M,4)
+    
+    # Make sure weights are non-negative and not too large (> 1.0)
+    W = torch.clamp(W, min=0.0, max=1.0)                          # (M,4)
+    # Normalize weights to sum to 1.0
+    W = W / (W.sum(dim=1, keepdim=True) + 1e-12)                  # (M,4)
+    
+    # --------------------------------------------------------
+    # 3. Interpolate φ
+    # --------------------------------------------------------
+    phi_v  = (W * v_phi).sum(dim=1)                               # (M,)
+
+    return phi_v
+
+def analytic_grad_per_tet(sites, tets, sdf):
+    """
+    Compute the spatial gradient of a linearly interpolated scalar field in a tetrahedron.
 
     Args:
-        query_points:  Tensor of shape (N, 3) the points at which to approximate the SDF.
-        target_points: Tensor of shape (M, 3) the point cloud defining the surface.
-        K:             Number of nearest neighbours to use (default: 6).
+        sites: (N,3) Tensor of site positions
+        tets:  (M,4) LongTensor of indices into `sites`
+        sdf:   (N,)  Scalar values at sites
 
     Returns:
-        d_mean:  Tensor of shape (N,)    the mean distance to the K nearest neighbors.
-        grad:    Tensor of shape (N, 3)  the (unit averaged) gradient vector.
+        grad_phi: (M,3) Spatial gradient of the scalar field per tetrahedron
     """
-    # Add batch dimension
-    P = query_points.unsqueeze(0)   # (1, N, 3)
-    Q = target_points#.unsqueeze(0)  # (1, M, 3)
+    v0 = sites[tets[:, 0]]  # (M,3)
+    v1 = sites[tets[:, 1]]
+    v2 = sites[tets[:, 2]]
+    v3 = sites[tets[:, 3]]
+
+    D = torch.stack([v1 - v0, v2 - v0, v3 - v0], dim=-1)  # (M,3,3)
     
-    # KNN search: returns squared distances, indices, and the actual neighbor coords
-    knn = knn_points(P, Q, K=K, return_nn=True)
-    # knn.dists: (1, N, K) squared distances
-    # knn.knn:   (1, N, K, 3) coords of the K neighbors
+    # Compute inverse transpose of D manually using adjugate/det
+    D_invT = torch.inverse(D).transpose(1, 2)  # (M,3,3) -- can replace with closed-form for perf
 
-    # Compute Euclidean distances: (1, N, K)
-    dists = torch.sqrt(knn.dists + 1e-12)
+    phi0 = sdf[tets[:, 0]]
+    phi1 = sdf[tets[:, 1]]
+    phi2 = sdf[tets[:, 2]]
+    phi3 = sdf[tets[:, 3]]
 
-    # 1) Mean distance per query point: (N,)
-    d_mean = dists.mean(dim=2).squeeze(0)
+    dphi = torch.stack([phi1 - phi0, phi2 - phi0, phi3 - phi0], dim=-1).unsqueeze(-1)  # (M,3,1)
 
-    # 2) Compute per-neighbor unit vectors: (1, N, K, 3)
-    #    vector from query → neighbor = (knn - P[...,None,:])
-    vecs = knn.knn - P.unsqueeze(2)
-    #    normalize along last dim:
-    unit_vecs = vecs / (dists.unsqueeze(-1) + 1e-12)
+    grad_phi = torch.bmm(D_invT, dphi).squeeze(-1)  # (M,3)
+    return grad_phi
 
-    # 3) Average those unit vectors: (1, N, 3), then normalize final gradient
-    g_raw = unit_vecs.mean(dim=2)        # (1, N, 3)
-    g_norm = torch.norm(g_raw, dim=2, keepdim=True)  # (1, N, 1)
-    grad  = (g_raw / (g_norm + 1e-12)).squeeze(0)     # (N, 3)
 
-    return d_mean, grad
-
-def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sdf_v=None, sdf_v_grads=None, target_pc=None):
+def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None, offset=None):
     """
     sites:           (N,3) torch tensor (requires_grad)
     model:           SDF model: sites -> (N,1) tensor of signed distances
     d3dsimplices:    torch.LongTensor of shape (M,4) from Delaunay
     """
     device = sites.device
+    vertices_sdf = None
+    vertices_sdf_grad = None
     if d3dsimplices is None:
         sites_np = sites.detach().cpu().numpy()
         d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1]*sites_np.shape[0]))
@@ -1250,7 +1337,11 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sdf_v=None, sd
     #     vor_vertices, sdf_vertices, sdf_vertices_grads= compute_vertices_3d_vectorized_w_sdf_grads(sites, d3d, sdf_v, sdf_v_grads)
     
     vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
-    #print(f"After compute vertices 3d vectorized: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
+    if sites_sdf is not None:
+        vertices_sdf = interpolate_sdf_of_vertices(vor_vertices, d3d, sites, sites_sdf)
+        if offset is not None:
+            offset = interpolate_sdf_of_vertices(vor_vertices, d3d, sites, offset)
+        vertices_sdf_grad = analytic_grad_per_tet(sites, d3d, sites_sdf)
 
     with torch.no_grad():
         # Generate all edges of each simplex
@@ -1276,7 +1367,7 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sdf_v=None, sd
         if model is not None:
             sdf = model(sites).detach().view(-1)             # (N,)
         else:
-            sdf = sdf_v.view(-1)             # (N,)
+            sdf = sites_sdf        # (N,)
         #print(f"After sdf: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
         
         sdf_i = sdf[ridges[:,0]]
@@ -1286,24 +1377,15 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sdf_v=None, sd
         ridges = ridges[zero_cross]             # (R0,2)
         filtered_ridges = ridges.detach().cpu().numpy()
 
-        #print("-> filtering ridges")
-        #faces = faces_via_numba_hybrid(d3dsimplices, filtered_ridges)
-        #faces = faces_via_dict_numba(d3dsimplices, filtered_ridges)
-        #faces = [np.array(face) for face in faces]
-        #faces = faces_via_numpy(d3dsimplices, filtered_ridges)  # (R0, List of simplices)
         faces = faces_via_dict(d3dsimplices, filtered_ridges)  # (R0, List of simplices)
-        #print("after faces dict")
-        
-        #print(faces[0].shape, faces[0])
-        
-        #del sdf, sdf_i, sdf_j, zero_cross, ridges, filtered_ridges
+
+        # Sort faces
         torch.cuda.empty_cache()
-        
-        
         R = len(faces)
         counts = np.array([len(face) for face in faces], dtype=np.int64)
         Kmax = counts.max()
         faces_np = np.full((R, Kmax), -1, dtype=np.int64)
+        
         for i, face in enumerate(faces):
             faces_np[i, :len(face)] = face
 
@@ -1324,33 +1406,16 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sdf_v=None, sd
     del counts, Kmax, faces_np, sorted_faces_np, faces_sorted, faces, old2new #used, 
     torch.cuda.empty_cache()
 
-    if not clip:
-        #print("-> not clipping")
-        return new_vertices, new_faces
 
-    # if model is None and sdf_v is not None and target_pc is None:
-    #     sdf_verts = sdf_vertices[sorted(used)]
-    #     grads = sdf_vertices_grads[sorted(used)]
-    # elif sdf_v is not None and target_pc is not None:
-    #     #knn closest target points for each vertex for sdf
-    #     #knn closests target points for each vertex for gradients
-               
-    #     #sdf_vertices = sdf_vertices/sdf_vertices.abs()
-    #     sdf_sign = model(new_vertices).view(-1)
-    #     sdf_sign = sdf_sign/sdf_sign.abs()     
-        
-    #     sdf_verts, grads = approximate_sdf_and_gradient(new_vertices, target_pc, K=1)
-    #     sdf_verts = sdf_verts * sdf_sign
-    #     #sdf_verts = sdf_verts * sdf_vertices[sorted(used)]
-    if sdf_v is not None and sdf_v_grads is not None:
-        sorted_used = torch.tensor(sorted(used), dtype=torch.long, device=device)
-        print("sorted_used:", sorted_used.shape)
-        print("sdf_v_grads.shape[0]:", sdf_v_grads.shape[0])
 
-        # use precomputed SDF and gradients
-        sdf_verts = sdf_v[sorted_used]
-        grads = sdf_v_grads[sorted_used]
-    else:
+    if vertices_sdf is not None and vertices_sdf_grad is not None:
+        sdf_verts = vertices_sdf[sorted(used)]
+        grads = vertices_sdf_grad[sorted(used)]  # (M,3)
+        if offset is not None:
+            offset = offset[sorted(used)]
+        else:
+            offset = 0.0
+    elif model is not None:
         # clip the vertices of the faces to the zero-crossing of the sdf
         sdf_verts = model(new_vertices).view(-1)           # (M,)
         # compute gradients ∇f(v)  — note create_graph=True if you
@@ -1361,16 +1426,21 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sdf_v=None, sd
             grad_outputs=torch.ones_like(sdf_verts),
             create_graph=True,
         )[0]                                               # (M,3)
-    
-    
+    else:
+        return new_vertices, new_faces
+
+    if not clip:
+        #print("-> not clipping")
+        return new_vertices, new_faces, sdf_verts, grads
 
     # one Newton step https://en.wikipedia.org/wiki/Newton%27s_method_in_optimization
-    epsilon = 1e-6
+    epsilon = 1e-12
     grad_norm2 = torch.sqrt(((grads + epsilon)**2).sum(dim=1, keepdim=True))    # (M,1)
-    step = sdf_verts.unsqueeze(1) * grads / (grad_norm2 + epsilon)
+    step = (sdf_verts + offset).unsqueeze(1) * grads / (grad_norm2 + epsilon)
+    
     proj_vertices = new_vertices - step    
 
     #print("-> vertices:", new_vertices.shape)
     #print("-> projected vertices:", proj_vertices.shape)
     #print("-> #faces:", len(new_faces))
-    return proj_vertices, new_faces
+    return proj_vertices, new_faces, sdf_verts, grads
