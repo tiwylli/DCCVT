@@ -238,6 +238,7 @@ def compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values):
     # Find the indices where SDF values have opposing signs or one is zero
     mask_zero_crossing_sites = (sdf_i * sdf_j <= 0).squeeze()
     zero_crossing_pairs = neighbors[mask_zero_crossing_sites]
+    
     return zero_crossing_pairs
 
 def compute_vertex(s_i, s_j, s_k):
@@ -922,7 +923,6 @@ def interpolate_sdf_grad_of_vertices(
 
     return grad_v
 
-
 def volume_tetrahedron(a, b, c, d):
     ad = a - d
     bd = b - d
@@ -1105,12 +1105,6 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
             sdf_verts = vertices_sdf[sorted(used)]
             grads = vertices_sdf_grad[sorted(used)]  # (M,3)
             
-            print("sorted(used)", torch.tensor(sorted(used)).shape)
-            print("sorted(used) 0", torch.tensor(sorted(used))[:5])
-            
-            
-            print("d3d[sorted(used)]", d3d[sorted(used)].shape)
-            
             proj_vertices, tet_probs = tet_plane_clipping(d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices)  # (M,3)
             return proj_vertices, new_faces, sdf_verts, grads, tet_probs
     else:
@@ -1118,7 +1112,8 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
         all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
         vertices_to_compute, bisectors_to_compute, used_tet = compute_zero_crossing_vertices_3d(sites, None, None, d3dsimplices, sites_sdf)
         vertices = compute_vertices_3d_vectorized(sites, vertices_to_compute)    
-        #bisectors = compute_all_bisectors_vectorized(sites, bisectors_to_compute)
+        bisectors = compute_all_bisectors_vectorized(sites, bisectors_to_compute)
+        #TODO:idea use bisectors as center of face and use knn to do the face connectivity to the vertices
         #points = torch.cat((vertices, bisectors), 0)
         if not clip:
             print("-> not clipping")
@@ -1126,17 +1121,24 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
         else:
             print("-> clipping")
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
-            sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)  # (M,3)
+            sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)
             vertices_sdf_grad = interpolate_sdf_grad_of_vertices(all_vor_vertices,  d3d, sites, sites_sdf_grad)
             
-            print("used_tet", used_tet.shape)
-            print("d3d[used_tet]",d3d[used_tet].shape)
-            
             sdf_verts = vertices_sdf[used_tet]
-            grads = vertices_sdf_grad[used_tet]  # (M,3)
+            grads = vertices_sdf_grad[used_tet]
+            proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
             
-            proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)  # (M,3)
-            return proj_vertices, None, sdf_verts, grads, tet_probs
+            print("-> computing bisectors")
+            print(sites.shape, sites_sdf.shape, "bisectors shape", bisectors.shape, "bisectors_to_compute shape", bisectors_to_compute.shape)
+            
+            bisectors_sdf = (sites_sdf[bisectors_to_compute[:,0]] + sites_sdf[bisectors_to_compute[:,1]])/2
+            bisectors_sdf_grad = (sites_sdf_grad[bisectors_to_compute[:,0]] + sites_sdf_grad[bisectors_to_compute[:,1]])/2
+        
+            proj_bisectors = newton_step_clipping(bisectors_sdf_grad, bisectors_sdf, bisectors)  # (M,3)
+            
+            proj_points = torch.cat((proj_vertices, proj_bisectors), 0)
+            
+            return proj_points, None, sdf_verts, grads, tet_probs
     
 
 
@@ -1215,15 +1217,12 @@ def tet_plane_clipping(
     voronoi_vertices: torch.Tensor  # (M, 3)
 ) -> torch.Tensor:
     
-    print(f"tets shape: {tets.shape}")
-    print(f"tets 0: {tets[0]}")
-    
     eps = 1e-12
     # Gather tet-specific data
     tet_sites = sites[tets]                 # (M, 4, 3)
     tet_sdf = sdf_values[tets]              # (M, 4)
     tet_grads = sdf_grads[tets]             # (M, 4, 3)
-    print(f"tet_sites shape: {tet_sites.shape}, tet_sdf shape: {tet_sdf.shape}, tet_grads shape: {tet_grads.shape}")
+    #print(f"tet_sites shape: {tet_sites.shape}, tet_sdf shape: {tet_sdf.shape}, tet_grads shape: {tet_grads.shape}")
 
     # Project each site to its local zero level-set via Newton step
     grad_norm2 = torch.sqrt((tet_grads ** 2).sum(dim=-1, keepdim=True) + eps)   # (M, 4, 1)
