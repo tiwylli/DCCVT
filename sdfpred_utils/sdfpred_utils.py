@@ -212,9 +212,9 @@ def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None,
     sdf_2 = sdf_values[all_tetrahedra[:, 2]]  # Third site in each pair
     sdf_3 = sdf_values[all_tetrahedra[:, 3]]  # Fourth site in each pair
     mask_zero_crossing_faces = (sdf_0*sdf_1<=0).squeeze() | (sdf_0*sdf_2<=0).squeeze() | (sdf_0*sdf_3<=0).squeeze() | (sdf_1*sdf_2<=0).squeeze() | (sdf_1*sdf_3<=0).squeeze() | (sdf_2*sdf_3<=0).squeeze()
-    zero_crossing_vertices_index = all_tetrahedra[mask_zero_crossing_faces]
+    zero_crossing_sites_making_verts = all_tetrahedra[mask_zero_crossing_faces]
     
-    return zero_crossing_vertices_index, zero_crossing_pairs
+    return zero_crossing_sites_making_verts, zero_crossing_pairs, mask_zero_crossing_faces
 
 
 def compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values):
@@ -358,81 +358,6 @@ def compute_vertices_3d_vectorized(sites, vertices_to_compute):
 
     return circumcenters  # Shape: (M, 3)
 
-def compute_vertices_3d_vectorized_w_sdf_grads(
-    sites: torch.Tensor,                # (N, 3)
-    vertices_to_compute: torch.Tensor,  # (M, 4)
-    sdf_values: torch.Tensor,           # (N,) or (N,1)
-    sdf_gradients: torch.Tensor         # (N, 3)
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Computes the circumcenters of multiple tetrahedra in a vectorized manner,
-    then interpolates per-vertex SDF values and SDF gradients at those circumcenters.
-
-    Args:
-        sites:               (N, 3) tensor of site positions.
-        vertices_to_compute: (M, 4) tensor of indices forming tetrahedra.
-        sdf_values:          (N,) tensor of SDF values at each site.
-        sdf_gradients:       (N, 3) tensor of SDF gradients at each site.
-
-    Returns:
-        circumcenters:      (M, 3) tensor of computed Voronoi vertices.
-        sdf_at_centers:     (M,) tensor of interpolated SDF values.
-        grad_at_centers:    (M, 3) tensor of interpolated SDF gradients.
-    """
-    # --- 1) Circumcenters ---
-    tetra = sites[vertices_to_compute]                    # (M,4,3)
-    norms = (tetra**2).sum(dim=2, keepdim=True)           # (M,4,1)
-    ones = torch.ones_like(norms)                         # (M,4,1)
-
-    A  = torch.cat([tetra,       ones], dim=2)            # (M,4,4)
-    Dx = torch.cat([norms,       tetra[:,:,1:], ones], dim=2)
-    Dy = torch.cat([tetra[:,:,:1], norms,        tetra[:,:,2:], ones], dim=2)
-    Dz = torch.cat([tetra[:,:,:2], norms,        ones], dim=2)
-
-    detA  = torch.linalg.det(A)   # (M,)
-    detDx = torch.linalg.det(Dx)
-    detDy = torch.linalg.det(Dy)
-    detDz = torch.linalg.det(Dz)
-
-    circumcenters = 0.5 * torch.stack([detDx, detDy, detDz], dim=1) / detA.unsqueeze(1)  # (M,3)
-
-    # --- 2) Barycentric weights ---
-    v0 = tetra[:,0]  # (M,3)
-    v1 = tetra[:,1]
-    v2 = tetra[:,2]
-    v3 = tetra[:,3]
-
-    T = torch.stack([v1 - v0, v2 - v0, v3 - v0], dim=2)         # (M,3,3)
-    b = (circumcenters - v0).unsqueeze(2)                       # (M,3,1)
-    lambda123 = torch.linalg.solve(T, b).squeeze(2)            # (M,3)
-    lambda0 = 1.0 - lambda123.sum(dim=1, keepdim=True)         # (M,1)
-    weights = torch.cat([lambda0, lambda123], dim=1)           # (M,4)
-
-    # --- 3) Interpolate SDF values ---
-    sdf4 = sdf_values[vertices_to_compute].squeeze(-1)                     # (M,4)
-    sdf_at_centers = (weights * sdf4).sum(dim=1)               # (M,)
-
-    # --- 4) Interpolate gradients ---
-    grad4 = sdf_gradients[vertices_to_compute]                 # (M,4,3)
-    grad_at_centers = (weights.unsqueeze(2) * grad4).sum(dim=1)  # (M,3)
-    return circumcenters, sdf_at_centers, grad_at_centers
-
-
-
-
-# def compute_all_bisectors(sites, bisectors_to_compute):
-#     # Initialize an empty tensor for storing bisectors
-#     bisectors = []
-    
-#     for pairs in bisectors_to_compute:
-#         si = sites[pairs[0]]
-#         sj = sites[pairs[1]]
-#         b = (si + sj) / 2
-#         bisectors.append(b)
-
-#     # Stack the list of bisectors into a single tensor for easier gradient tracking
-#     bisectors = torch.stack(bisectors)
-#     return bisectors
 def compute_all_bisectors_vectorized(sites, bisectors_to_compute):
     """
     Computes the bisector points for given pairs of sites in 3D.
@@ -566,7 +491,6 @@ def get_sites_zero_crossing_edges(sites, model):
             
     return edges
 
-
 def adaptive_density_upsampling(sites, model, num_points_per_site=5, max_distance=1.0, sigma=1.0):
     """
     Upsample sites based on the SDF gradient and density map, placing new sites along the gradient direction.
@@ -644,35 +568,6 @@ def adaptive_density_upsampling(sites, model, num_points_per_site=5, max_distanc
     # Return the new sites as a tensor
     return new_sites
 
-
-def get_zero_crossing_mesh_3d(sites, model):
-    sites_np = sites.detach().cpu().numpy()
-    vor = Voronoi(sites_np)  # Compute 3D Voronoi diagram
-
-    sdf_values = model(sites)[:, 0].detach().cpu().numpy()  # Compute SDF values
-
-    valid_faces = []  # List of polygonal faces
-    used_vertices = set()  # Set of indices for valid vertices
-
-    for (point1, point2), ridge_vertices in zip(vor.ridge_points, vor.ridge_vertices):
-        if -1 in ridge_vertices:
-            continue  # Skip infinite ridges
-
-        # Check if SDF changes sign across this ridge
-        if np.sign(sdf_values[point1]) != np.sign(sdf_values[point2]):
-            valid_faces.append(ridge_vertices)
-            used_vertices.update(ridge_vertices)
-
-    # **Filter Voronoi vertices**
-    used_vertices = sorted(used_vertices)  # Keep unique, sorted indices
-    vertex_map = {old_idx: new_idx for new_idx, old_idx in enumerate(used_vertices)}
-    filtered_vertices = vor.vertices[used_vertices]
-
-    # **Re-index faces to match the new filtered vertex list**
-    filtered_faces = [[vertex_map[v] for v in face] for face in valid_faces]
-
-    return filtered_vertices, filtered_faces
-
 def upsampling_vectorized(sites, tri=None, vor=None, simplices=None, model=None):
     if model.__class__.__name__ == "SDFGrid":
         sdf_values = model.sdf(sites)
@@ -746,270 +641,6 @@ def upsampling_vectorized(sites, tri=None, vor=None, simplices=None, model=None)
     updated_sites = torch.cat((sites, new_sites), dim=0)
     
     return updated_sites
-
-def batch_sort_face_loops_from_mask(vertices, face_mask):
-    """
-    vertices:  (M,3)  circumcenters
-    face_mask: (R,N)  bool tensor where face_mask[r,n]=True iff simplex n contributed to face r
-    returns: Python list of R sorted faces (each a list of vertex-indices into `vertices`)
-    """
-    R, N = face_mask.shape
-    device = vertices.device
-
-    # how many verts per face, and pad to the max
-    counts = face_mask.sum(dim=1)            # (R,)
-    #print("counts", counts.shape)
-    Kmax   = int(counts.max().item())
-    #print("Kmax", Kmax)
-
-    # flatten mask → get (ridge_idx, simplex_idx)
-    ridge_idx, simp_idx = face_mask.nonzero(as_tuple=True)  # both (S,)
-
-    # offsets to compute “position within each group”:
-    offsets = torch.cat((torch.tensor([0], device=device),
-                         counts.cumsum(0)[:-1]))               # (R,)
-    # expand offsets to length S by repeating each offset counts[r] times
-    offs_exp = torch.repeat_interleave(offsets, counts)    # (S,)
-    group_pos = torch.arange(ridge_idx.size(0), device=device) - offs_exp  # (S,)
-
-    # build a padded index tensor and mask
-    idxs = torch.full((R, Kmax), -1, dtype=torch.long, device=device)
-    idxs[ridge_idx, group_pos] = simp_idx
-    valid = idxs >= 0   # (R, Kmax)
-
-    # gather all points, compute per-face centroids
-    pts = vertices[idxs.clamp(min=0)]                   # (R, Kmax, 3)
-    ctr = (pts * valid.unsqueeze(-1)).sum(dim=1, keepdim=True) / \
-          counts.unsqueeze(-1).unsqueeze(-1)            # (R,1,3)
-
-    # batched SVD → normals
-    U, S, Vh = torch.linalg.svd(pts - ctr)              # Vh: (R,3,3)
-    normals  = Vh[:, -1, :]                             # (R,3)
-
-    # reference axis in each plane
-    ref = pts[:, 0, :] - ctr.squeeze(1)                 # (R,3)
-    ref = ref - normals * (normals * ref).sum(dim=1, keepdim=True)
-
-    # project into plane
-    vecs = pts - ctr                                    # (R,Kmax,3)
-    dotn = (vecs * normals.unsqueeze(1)).sum(dim=2, keepdim=True)
-    vecs = vecs - normals.unsqueeze(1)*dotn
-
-    # angles = atan2(||ref×v||, ref·v), with sign
-    cross   = torch.cross(ref.unsqueeze(1).expand_as(vecs), vecs, dim=2)
-    norms   = torch.linalg.norm(cross, dim=2)
-    dots    = (vecs * ref.unsqueeze(1)).sum(dim=2)
-    ang     = torch.atan2(norms, dots)
-    sign_m  = ((normals.unsqueeze(1)*cross).sum(dim=2) < 0)
-    ang[sign_m] = 2*math.pi - ang[sign_m]
-
-    # force padded slots to sort last
-    ang[~valid] = float('inf')
-
-    # per-face sort
-    order = torch.argsort(ang, dim=1)                   # (R,Kmax)
-
-    # unpack back into Python lists
-    faces = []
-    for r in range(R):
-        k = counts[r].item()
-        picks = order[r, :k]
-        faces.append( idxs[r, picks].tolist() )
-    return faces
-
-
-def batch_face_loops_from_mask(face_mask):
-    """
-    face_mask: (C, M) bool tensor where
-               face_mask[r, s] == True if simplex s contributes to face r
-    returns: Python list of C lists, each containing the simplex-indices
-    """
-    C, M = face_mask.shape
-    device = face_mask.device
-
-    # how many verts per face, and pad to the max
-    counts = face_mask.sum(dim=1)            # (C,)
-    Kmax   = int(counts.max().item())
-
-    # flatten mask → (ridge_idx, simplex_idx)
-    ridge_idx, simp_idx = face_mask.nonzero(as_tuple=True)  # both (S,)
-
-    # offsets to compute position within each face
-    offsets = torch.cat((counts.new_zeros(1),
-                         counts.cumsum(0)[:-1]))            # (C,)
-    offs_exp = torch.repeat_interleave(offsets, counts)     # (S,)
-    pos     = torch.arange(ridge_idx.size(0), device=device) - offs_exp  # (S,)
-
-    # build a padded index tensor and fill it
-    idxs = torch.full((C, Kmax), -1, dtype=torch.long, device=device)
-    idxs[ridge_idx, pos] = simp_idx
-
-    # unpack into Python lists
-    faces = []
-    for r in range(C):
-        k = counts[r].item()
-        if k > 0:
-            faces.append(idxs[r, :k].tolist())
-        else:
-            faces.append([])
-    return faces
-
-def get_clipped_mesh_torch(sites, model, d3dsimplices, batch_size=1024):
-    """
-    sites:           (N,3) torch tensor (requires_grad)
-    model:           SDF model: sites -> (N,1) tensor of signed distances
-    d3dsimplices:    torch.LongTensor of shape (M,4) from Delaunay
-    """
-    device = sites.device
-    if d3dsimplices is None:
-        sites_np = sites.detach().cpu().numpy()
-        d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1]*sites_np.shape[0]))
-        d3dsimplices = np.array(d3dsimplices)
-    d3d = torch.tensor(d3dsimplices).to(device)              # (M,4)
-
-    # Compute per‐simplex circumcenters (Voronoi vertices)
-    vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
-
-    # Generate all edges of each simplex
-    #    torch.combinations gives the 6 index‐pairs within a 4‐long row
-    comb = torch.combinations(torch.arange(d3d.shape[1], device=device), r=2)  # (6,2)
-    #print("comb", comb.shape)
-    edges = d3d[:, comb]                    # (M,6,2)
-    edges = edges.reshape(-1,2)             # (M*6,2)
-    edges, _ = torch.sort(edges, dim=1)     # sort each row so (a,b) == (b,a)
-
-    # Unique ridges across all simplices
-    ridges, inverse = torch.unique(edges, dim=0, return_inverse=True)  # (R,2)
-
-    # Evaluate SDF at each site
-    sdf = model(sites).view(-1)             # (N,)
-    sdf_i = sdf[ridges[:,0]]
-    sdf_j = sdf[ridges[:,1]]
-    zero_cross = (sdf_i * sdf_j <= 0)       # (R,)
-
-    # Keep only the zero-crossing ridges
-    ridges = ridges[zero_cross]             # (R0,2)
-
-    # # For each kept ridge, find the simplices that share both its sites
-    # #    Build a (R0, M) mask of membership
-    # #    mask_a[r,s] = True if simplex s contains ridges[r,0]
-    # mask_a = (d3d.unsqueeze(0) == ridges[:,0].unsqueeze(1).unsqueeze(2)).any(dim=2)
-    # print("mask_a", mask_a.shape)
-    # print("mask_a", mask_a[0])
-    # mask_b = (d3d.unsqueeze(0) == ridges[:,1].unsqueeze(1).unsqueeze(2)).any(dim=2)
-    # face_mask = mask_a & mask_b             # (R0, M)
-    # print("face_mask", face_mask.shape)
-    # print("face_mask", face_mask[0])
-
-    # # Extract and sort each face’s loop of vertices
-    # # faces = []
-    # # for r in range(ridges.shape[0]):
-    # #     simplex_idxs = torch.nonzero(face_mask[r], as_tuple=False).squeeze(1)
-    # #     faces.append(sort_face_loop_torch(vor_vertices, simplex_idxs))
-
-    # faces = batch_sort_face_loops_from_mask(vor_vertices, face_mask)
-    
-    faces = []
-    R0 = ridges.shape[0]
-    for start in range(0, R0, batch_size):
-        end = min(start + batch_size, R0)
-        ridges_chunk = ridges[start:end]
-        a0 = ridges_chunk[:,0].view(-1,1,1)
-        b0 = ridges_chunk[:,1].view(-1,1,1)
-        mask_a = (d3d.unsqueeze(0) == a0).any(dim=2)
-        mask_b = (d3d.unsqueeze(0) == b0).any(dim=2)
-        face_mask = mask_a & mask_b             # (R0, M)
-        #print("face_mask", face_mask.shape)
-        faces_chunk = batch_sort_face_loops_from_mask(vor_vertices, face_mask)
-        #faces_chunk = batch_face_loops_from_mask(face_mask)
-        faces.extend(faces_chunk)
-
-    #print("faces", len(faces))
-    
-    # Compact the vertex list
-    used = {idx for face in faces for idx in face}
-    old2new = {old: new for new, old in enumerate(sorted(used))}
-    new_vertices = vor_vertices[sorted(used)]
-    new_faces = [[old2new[i] for i in face] for face in faces]
-
-
-    # clip the vertices of the faces to the zero-crossing of the sdf
-    sdf_verts = model(new_vertices).view(-1)           # (M,)
-
-    # compute gradients ∇f(v)  — note create_graph=True if you
-    #    want second-order gradients to flow back into the model
-    grads = torch.autograd.grad(
-        outputs=sdf_verts,
-        inputs=new_vertices,
-        grad_outputs=torch.ones_like(sdf_verts),
-        create_graph=True,
-    )[0]                                               # (M,3)
-
-    # one Newton step https://en.wikipedia.org/wiki/Newton%27s_method_in_optimization
-    epsilon = 1e-6
-    grad_norm2 = torch.sqrt(((grads + epsilon)**2).sum(dim=1, keepdim=True))    # (M,1)
-    step = sdf_verts.unsqueeze(1) * grads / (grad_norm2 + epsilon)
-    proj_vertices = new_vertices - step    
-
-    #print("-> vertices:", new_vertices.shape)
-    #print("-> projected vertices:", proj_vertices.shape)
-    #print("-> #faces:", len(new_faces))
-    return proj_vertices, new_faces
-
-def sample_mesh_points(vertices: torch.Tensor,
-                       faces: torch.LongTensor,
-                       num_samples: int) -> torch.Tensor:
-    """
-    Uniformly (area-weighted) sample points on a triangular mesh.
-
-    Args:
-        vertices: (V,3) float tensor of vertex positions.
-        faces:    (F,3) long tensor of indices into `vertices`.
-        num_samples: int, number of points to sample.
-
-    Returns:
-        samples: (num_samples, 3) float tensor of sampled points.
-    """
-    # 1) Gather triangle vertices
-    v0 = vertices[faces[:, 0]]  # (F,3)
-    v1 = vertices[faces[:, 1]]  # (F,3)
-    v2 = vertices[faces[:, 2]]  # (F,3)
-
-    # 2) Compute each triangle’s area
-    #    area = 0.5 * ||(v1 - v0) × (v2 - v0)||_2
-    tri_edges0 = v1 - v0        # (F,3)
-    tri_edges1 = v2 - v0        # (F,3)
-    cross_prod = torch.cross(tri_edges0, tri_edges1, dim=1)  # (F,3)
-    tri_areas = 0.5 * cross_prod.norm(dim=1)                  # (F,)
-
-    # 3) Sample faces proportional to area
-    face_probs = tri_areas / tri_areas.sum()
-    #    draw `num_samples` face indices with replacement
-    idx = torch.multinomial(face_probs, num_samples, replacement=True)  # (num_samples,)
-
-    # 4) For each sampled face, sample a point via barycentric coords
-    u = torch.rand(num_samples, device=vertices.device)
-    v = torch.rand(num_samples, device=vertices.device)
-
-    # warp to ensure uniformity on triangle
-    sqrt_u = torch.sqrt(u)
-    b0 = 1 - sqrt_u
-    b1 = sqrt_u * (1 - v)
-    b2 = sqrt_u * v
-    # reshape for broadcasting
-    b0 = b0.unsqueeze(1)  # (num_samples,1)
-    b1 = b1.unsqueeze(1)
-    b2 = b2.unsqueeze(1)
-
-    # select the triangle’s vertices
-    v0_sel = v0[idx]  # (num_samples,3)
-    v1_sel = v1[idx]
-    v2_sel = v2[idx]
-
-    # 5) form the sampled points
-    samples = b0 * v0_sel + b1 * v1_sel + b2 * v2_sel  # (num_samples,3)
-
-    return samples
 
 def sample_mesh_points_heitz(vertices: torch.Tensor,
                              faces: torch.LongTensor,
@@ -1170,152 +801,273 @@ def faces_via_dict(d3dsimplices, ridges):
             key = (u,v) if u < v else (v,u)
             face_dict[key].append(si)
 
+    #face dict creates a dictionnary of all the voronoi vertex that form voronoi faces
+    
     # 2) now for each ridge (a,b) grab its list
     out = []
     for (a,b) in ridges:
         key = (a,b) if a < b else (b,a)
         lst = face_dict.get(key, [])
         out.append(np.array(lst, dtype=np.int32))
+        
     return np.array(out, dtype=object)
 
 
-
-
-
-# import torch
-# from pytorch3d.ops import knn_points
-
-# def approximate_sdf_and_gradient(
-#     query_points: torch.Tensor,
-#     target_points: torch.Tensor,
-#     K: int = 6
-# ):
-#     """
-#     Approximate an unsigned SDF and its gradient via k-nearest neighbors.
-
-#     Args:
-#         query_points:  Tensor of shape (N, 3) the points at which to approximate the SDF.
-#         target_points: Tensor of shape (M, 3) the point cloud defining the surface.
-#         K:             Number of nearest neighbours to use (default: 6).
-
-#     Returns:
-#         d_mean:  Tensor of shape (N,)    the mean distance to the K nearest neighbors.
-#         grad:    Tensor of shape (N, 3)  the (unit averaged) gradient vector.
-#     """
-#     # Add batch dimension
-#     P = query_points.unsqueeze(0)   # (1, N, 3)
-#     Q = target_points#.unsqueeze(0)  # (1, M, 3)
-    
-#     # KNN search: returns squared distances, indices, and the actual neighbor coords
-#     knn = knn_points(P, Q, K=K, return_nn=True)
-#     # knn.dists: (1, N, K) squared distances
-#     # knn.knn:   (1, N, K, 3) coords of the K neighbors
-
-#     # Compute Euclidean distances: (1, N, K)
-#     dists = torch.sqrt(knn.dists + 1e-12)
-
-#     # 1) Mean distance per query point: (N,)
-#     d_mean = dists.mean(dim=2).squeeze(0)
-
-#     # 2) Compute per-neighbor unit vectors: (1, N, K, 3)
-#     #    vector from query → neighbor = (knn - P[...,None,:])
-#     vecs = knn.knn - P.unsqueeze(2)
-#     #    normalize along last dim:
-#     unit_vecs = vecs / (dists.unsqueeze(-1) + 1e-12)
-
-#     # 3) Average those unit vectors: (1, N, 3), then normalize final gradient
-#     g_raw = unit_vecs.mean(dim=2)        # (1, N, 3)
-#     g_norm = torch.norm(g_raw, dim=2, keepdim=True)  # (1, N, 1)
-#     grad  = (g_raw / (g_norm + 1e-12)).squeeze(0)     # (N, 3)
-
-#     return d_mean, grad
-
-
-
 def interpolate_sdf_of_vertices(
-    vertices: torch.Tensor,        # (M, 3)  positions of Voronoi vertices
-    tets:     torch.LongTensor,    # (M, 4)  indices of the 4 sites for each tet
-    sites:    torch.Tensor,        # (N, 3)  xyz of all sites
-    sdf:      torch.Tensor,        # (N,)    φ at each site
+    vertices: torch.Tensor,        # (M, 3)  positions of Voronoi vertices (e.g. circumcenters)
+    tets:     torch.LongTensor,    # (M, 4)  indices of the 4 sites per tetrahedron
+    sites:    torch.Tensor,        # (N, 3)  coordinates of the sites
+    sdf:      torch.Tensor,        # (N,)    scalar field value at each site
 ) -> torch.Tensor:
-    # ------------------------------------------------------------
-    # barycentric interpolation to Voronoi vertices (= tetra circum-centres)
-    # ------------------------------------------------------------
     """
+    Interpolates the SDF at Voronoi vertices (e.g., circumcenters) using barycentric coordinates,
+    without calling torch.linalg.solve.
+
     Returns
     -------
-    phi_v   : (M,)   SDF value at each Voronoi vertex
+    phi_v : (M,) tensor of interpolated SDF values at Voronoi vertices
     """
-    # --------------------------------------------------------
-    # 1. Gather positions / field values for the tetra vertices
-    # --------------------------------------------------------
-    v_pos  = sites[tets]       # (M,4,3)
-    v_phi  = sdf[tets]         # (M,4)
-
-    # --------------------------------------------------------
-    # 2. Barycentric coords of the vertex inside its tet
-    #    Solve  (x - x0) = (x1-x0, x2-x0, x3-x0) · [w1 w2 w3]^T
-    # --------------------------------------------------------
-    x0   = v_pos[:, 0]                   # (M,3)
-    D    = torch.stack(                 # (M,3,3)
-        (v_pos[:, 1] - x0,
-         v_pos[:, 2] - x0,
-         v_pos[:, 3] - x0), dim=2)
-
-    rhs  = (vertices - x0)              # (M,3)
-
-    # batched solve: D · w123 = rhs   →  w123 = D⁻¹ rhs
-    w123 = torch.linalg.solve(D, rhs.unsqueeze(-1)).squeeze(-1)   # (M,3)
-
-    w0   = 1.0 - w123.sum(dim=1, keepdim=True)                    # (M,1)
-    W    = torch.cat((w0, w123), dim=1)                           # (M,4)
     
-    # Make sure weights are non-negative and not too large (> 1.0)
-    W = torch.clamp(W, min=0.0, max=1.0)                          # (M,4)
-    # Normalize weights to sum to 1.0
-    W = W / (W.sum(dim=1, keepdim=True) + 1e-12)                  # (M,4)
-    
-    # --------------------------------------------------------
-    # 3. Interpolate φ
-    # --------------------------------------------------------
-    phi_v  = (W * v_phi).sum(dim=1)                               # (M,)
+    v_pos = sites[tets]        # (M, 4, 3)
+    v_phi = sdf[tets]          # (M, 4)
 
+    x0 = v_pos[:, 0]           # (M, 3)
+    x1 = v_pos[:, 1]
+    x2 = v_pos[:, 2]
+    x3 = v_pos[:, 3]
+
+    # Build D = [x1 - x0 | x2 - x0 | x3 - x0]
+    e1 = x1 - x0
+    e2 = x2 - x0
+    e3 = x3 - x0
+
+    D = torch.stack([e1, e2, e3], dim=2)  # (M,3,3)
+
+    c1 = torch.cross(e2, e3, dim=1)  # cofactor for col 0
+    c2 = torch.cross(e3, e1, dim=1)  # cofactor for col 1
+    c3 = torch.cross(e1, e2, dim=1)  # cofactor for col 2
+
+    adj_D = torch.stack([c1, c2, c3], dim=2)  # (M, 3, 3)
+
+    # Determinant of D
+    det_D = (e1 * c1).sum(dim=1, keepdim=True)  # (M, 1)
+
+    # Right-hand side: x - x0
+    rhs = vertices - x0  # (M, 3)
+
+    # Inverse: D⁻¹ @ rhs = adj(D)^T @ rhs / det(D)
+    w123 = torch.bmm(adj_D.transpose(1, 2), rhs.unsqueeze(-1)).squeeze(-1) / (det_D + 1e-12)  # (M, 3)
+    w0 = 1.0 - w123.sum(dim=1, keepdim=True)  # (M, 1)
+    W = torch.cat([w0, w123], dim=1)          # (M, 4)
+
+    # Interpolate SDF
+    phi_v = (W * v_phi).sum(dim=1)  # (M,)
+
+
+    # true_vertices_sdf, true_vertices_sdf_grad = sphere_sdf_and_grad(vertices)
+    # threshold = 10000
+    # sdf_mask = abs(phi_v - true_vertices_sdf) > threshold
+    # for i in range(sdf_mask.sum().item()):
+    #     print(f"Vertex {tets[sdf_mask][i]} ,SDF mismatch: {phi_v[sdf_mask][i]} vs {true_vertices_sdf[sdf_mask][i]}, W : {W[sdf_mask][i]}")
+    #     print(f"Sites positions: {sites[tets[sdf_mask][i]]}")
+    #     print(f"Vertices positions: {vertices[sdf_mask][i]}")
     return phi_v
 
-def analytic_grad_per_tet(sites, tets, sdf):
+def interpolate_sdf_grad_of_vertices(
+    vertices: torch.Tensor,        # (M, 3) positions of Voronoi vertices
+    tets:     torch.LongTensor,    # (M, 4) indices of sites per tetrahedron
+    sites:    torch.Tensor,        # (N, 3) coordinates of the sites
+    site_grads: torch.Tensor,      # (N, 3) spatial gradients ∇φ at each site
+) -> torch.Tensor:
     """
-    Compute the spatial gradient of a linearly interpolated scalar field in a tetrahedron.
+    Interpolates the SDF gradient at Voronoi vertices using barycentric coordinates,
+    without using torch.linalg.solve.
+
+    Returns
+    -------
+    grad_v : (M, 3) tensor of interpolated SDF gradients at Voronoi vertices
+    """
+
+    v_pos = sites[tets]             # (M, 4, 3)
+    v_grad = site_grads[tets]       # (M, 4, 3)
+
+    x0, x1, x2, x3 = v_pos[:, 0], v_pos[:, 1], v_pos[:, 2], v_pos[:, 3]
+    e1 = x1 - x0
+    e2 = x2 - x0
+    e3 = x3 - x0
+
+    D = torch.stack([e1, e2, e3], dim=2)  # (M, 3, 3)
+
+    # Cofactors of D
+    c1 = torch.cross(e2, e3, dim=1)
+    c2 = torch.cross(e3, e1, dim=1)
+    c3 = torch.cross(e1, e2, dim=1)
+    adj_D = torch.stack([c1, c2, c3], dim=2)  # (M, 3, 3)
+
+    # Determinant
+    det_D = (e1 * c1).sum(dim=1, keepdim=True)  # (M, 1)
+
+    # Vector from x0 to each vertex
+    rhs = vertices - x0  # (M, 3)
+
+    # Solve D⁻¹ (x - x0)
+    w123 = torch.bmm(adj_D.transpose(1, 2), rhs.unsqueeze(-1)).squeeze(-1) / (det_D + 1e-12)  # (M, 3)
+    w0 = 1.0 - w123.sum(dim=1, keepdim=True)
+    W = torch.cat([w0, w123], dim=1)  # (M, 4)
+    
+    we = torch.abs(W).max(dim=1, keepdim=True)[0]  # (M, 1)
+
+    # Weighted sum of gradients
+    grad_v = (W.unsqueeze(-1) * v_grad).sum(dim=1)  # (M, 3)
+
+    return grad_v
+
+
+def volume_tetrahedron(a, b, c, d):
+    ad = a - d
+    bd = b - d
+    cd = c - d
+    n = torch.cross(bd, cd)
+    return torch.abs((ad * n).sum(dim=-1)) / 6.0
+
+def sdf_space_grad_pytorch_diego(sites, sdf, tets):
+    # sites: (N, 3)
+    # sdf: (N,)
+    # tets: (M, 4)
+
+    M = tets.shape[0]
+    tet_ids = tets
+    a, b, c, d = sites[tet_ids[:, 0]], sites[tet_ids[:, 1]], sites[tet_ids[:, 2]], sites[tet_ids[:, 3]]
+    sdf_a, sdf_b, sdf_c, sdf_d = sdf[tet_ids[:, 0]], sdf[tet_ids[:, 1]], sdf[tet_ids[:, 2]], sdf[tet_ids[:, 3]]
+
+    center = (a + b + c + d) / 4
+    sdf_center = (sdf_a + sdf_b + sdf_c + sdf_d) / 4
+
+    volume = volume_tetrahedron(a, b, c, d)
+
+    # Build dX: (M, 4, 3)
+    X = torch.stack([a, b, c, d], dim=1)  # (M, 4, 3)
+    dX = X - center[:, None, :]
+    #print("dX shape:", dX.shape)
+
+    dX_T = dX.transpose(1, 2)  # (M, 3, 4)
+    #print("dX_T shape:", dX_T.shape)    
+    
+    # G = dX^T @ dX: (M, 3, 3)
+    #G = torch.einsum('mic,mjc->mij', dX, dX)
+    G = torch.bmm(dX_T, dX)  # (M, 3, 3)
+    #print("G shape:", G.shape)
+    # Inverse G: (M, 3, 3)
+    Ginv = torch.linalg.pinv(G)  # stable pseudo-inverse for singular cases
+    #print("Ginv shape:", Ginv.shape)
+    
+    # Weights: Ginv @ dX^T -> (M, 3, 4)
+    #W = torch.einsum('mij,mkj->mki', Ginv, dX)  # (M, 4, 3)
+    W = torch.einsum('mij,mnj->mni', Ginv, dX)
+
+    sdf_stack = torch.stack([sdf_a, sdf_b, sdf_c, sdf_d], dim=1)  # (M, 4)
+    sdf_diff = sdf_stack - sdf_center[:, None]
+
+    elem = torch.einsum('mi,mij->mj', sdf_diff, W)  # (M, 3)
+
+    grad_sdf = torch.zeros_like(sites)  # (N, 3)
+    weights_tot = torch.zeros_like(sdf)  # (N,)
+
+    for i in range(4):
+        ids = tet_ids[:, i]
+        grad_contrib = elem * volume[:, None]  # (M, 3)
+        grad_sdf.index_add_(0, ids, grad_contrib)
+        weights_tot.index_add_(0, ids, volume)
+
+    # Avoid division by zero (e.g., isolated vertices)
+    weights_tot_clamped = weights_tot.clamp(min=1e-8).unsqueeze(1)  # (N, 1)
+    grad_sdf /= weights_tot_clamped
+    
+    return grad_sdf
+
+def sphere_sdf_and_grad(points: torch.Tensor, center: torch.Tensor = torch.zeros(3).to(device), radius: float = 0.5):
+    """
+    Compute the signed distance and gradient of a sphere at given 3D points.
 
     Args:
-        sites: (N,3) Tensor of site positions
-        tets:  (M,4) LongTensor of indices into `sites`
-        sdf:   (N,)  Scalar values at sites
+        points: (N, 3) tensor of 3D query points
+        center: (3,) tensor for the sphere center
+        radius: float, sphere radius
 
     Returns:
-        grad_phi: (M,3) Spatial gradient of the scalar field per tetrahedron
+        sdf: (N,) signed distance to sphere
+        grad: (N, 3) normalized gradient vectors
     """
-    v0 = sites[tets[:, 0]]  # (M,3)
-    v1 = sites[tets[:, 1]]
-    v2 = sites[tets[:, 2]]
-    v3 = sites[tets[:, 3]]
+    vec = points - center  # (N, 3)
+    dist = torch.norm(vec, dim=-1, keepdim=True)  # (N, 1)
+    sdf = dist.squeeze(-1) - radius               # (N,)
+    grad = vec / (dist + 1e-8)                    # (N, 3) unit vectors
+    return sdf, grad
 
-    D = torch.stack([v1 - v0, v2 - v0, v3 - v0], dim=-1)  # (M,3,3)
+
+# def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None, build_mesh=False):
+#     """
+#     sites:           (N,3) torch tensor (requires_grad)
+#     model:           SDF model: sites -> (N,1) tensor of signed distances
+#     d3dsimplices:    torch.LongTensor of shape (M,4) from Delaunay
+#     """
+#     device = sites.device
+#     vertices_sdf = None
+#     vertices_sdf_grad = None
+#     if d3dsimplices is None:
+#         print("Computing Delaunay simplices...")
+#         sites_np = sites.detach().cpu().numpy()
+#         d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1]*sites_np.shape[0]))
+#         d3dsimplices = np.array(d3dsimplices)
     
-    # Compute inverse transpose of D manually using adjugate/det
-    D_invT = torch.inverse(D).transpose(1, 2)  # (M,3,3) -- can replace with closed-form for perf
+#     d3d = torch.tensor(d3dsimplices).to(device).detach()            # (M,4)
 
-    phi0 = sdf[tets[:, 0]]
-    phi1 = sdf[tets[:, 1]]
-    phi2 = sdf[tets[:, 2]]
-    phi3 = sdf[tets[:, 3]]
+#     vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
 
-    dphi = torch.stack([phi1 - phi0, phi2 - phi0, phi3 - phi0], dim=-1).unsqueeze(-1)  # (M,3,1)
+#     if sites_sdf is not None:
+#         vertices_sdf = interpolate_sdf_of_vertices(vor_vertices, d3d, sites, sites_sdf)
+#         # Tets spatial gradient of the SDF
+#         sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)  # (M,3)
+#         vertices_sdf_grad, we = interpolate_sdf_grad_of_vertices(vor_vertices, d3d, sites, sites_sdf_grad)
 
-    grad_phi = torch.bmm(D_invT, dphi).squeeze(-1)  # (M,3)
-    return grad_phi
+#     faces = get_faces(d3dsimplices, sites, vor_vertices, model, sites_sdf)  # (R0, List of simplices)
+
+#     # Compact the vertex list
+#     used = {idx for face in faces for idx in face}
+#     old2new = {old: new for new, old in enumerate(sorted(used))}
+#     new_vertices = vor_vertices[sorted(used)]
+#     new_faces = [[old2new[i] for i in face] for face in faces]
+    
+#     if vertices_sdf is not None and vertices_sdf_grad is not None:
+#         sdf_verts = vertices_sdf[sorted(used)]
+#         grads = vertices_sdf_grad[sorted(used)]  # (M,3)
+        
+#     elif model is not None:
+#         # clip the vertices of the faces to the zero-crossing of the sdf
+#         sdf_verts = model(new_vertices).view(-1)           # (M,)
+#         # compute gradients ∇f(v)  — note create_graph=True if you
+#         #    want second-order gradients to flow back into the model
+#         grads = torch.autograd.grad(
+#             outputs=sdf_verts,
+#             inputs=new_vertices,
+#             grad_outputs=torch.ones_like(sdf_verts),
+#             create_graph=True,
+#         )[0]                                               # (M,3)
+
+#     if not clip:
+#         print("-> not clipping")
+#         return new_vertices, new_faces, sdf_verts, grads
+#     else:
+#         print("-> clipping")
+#         #proj_vertices = newton_step_clipping(grads, sdf_verts, new_vertices)  # (M,3)
+#         #tet_probs = sites_sdf_grad  # Placeholder for tet probabilities, if needed later
+        
+#         proj_vertices, tet_probs = tet_plane_clipping(d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices)  # (M,3)
+    
+#     return proj_vertices, new_faces, sdf_verts, grads, tet_probs
 
 
-def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None, offset=None):
+def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None, build_mesh=False):
     """
     sites:           (N,3) torch tensor (requires_grad)
     model:           SDF model: sites -> (N,1) tensor of signed distances
@@ -1325,25 +1077,73 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
     vertices_sdf = None
     vertices_sdf_grad = None
     if d3dsimplices is None:
+        print("Computing Delaunay simplices...")
         sites_np = sites.detach().cpu().numpy()
         d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1]*sites_np.shape[0]))
         d3dsimplices = np.array(d3dsimplices)
     
     d3d = torch.tensor(d3dsimplices).to(device).detach()            # (M,4)
-    #print(f"Before compute vertices 3d vectorized: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
 
-    # Compute per‐simplex circumcenters (Voronoi vertices)
-    # if sdf_v is not None:
-    #     vor_vertices, sdf_vertices, sdf_vertices_grads= compute_vertices_3d_vectorized_w_sdf_grads(sites, d3d, sdf_v, sdf_v_grads)
+    if build_mesh:
+        print("-> tracing mesh")
+        all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
+        faces = get_faces(d3dsimplices, sites, all_vor_vertices, model, sites_sdf)  # (R0, List of simplices)
+        # Compact the vertex list
+        used = {idx for face in faces for idx in face}
+        old2new = {old: new for new, old in enumerate(sorted(used))}
+        new_vertices = all_vor_vertices[sorted(used)]
+        new_faces = [[old2new[i] for i in face] for face in faces]
+        if not clip:
+            print("-> not clipping")
+            return new_vertices, new_faces, None, None
+        else:
+            print("-> clipping")
+            vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
+            sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)  # (M,3)
+            vertices_sdf_grad = interpolate_sdf_grad_of_vertices(all_vor_vertices, d3d, sites, sites_sdf_grad)
+            
+            sdf_verts = vertices_sdf[sorted(used)]
+            grads = vertices_sdf_grad[sorted(used)]  # (M,3)
+            
+            print("sorted(used)", torch.tensor(sorted(used)).shape)
+            print("sorted(used) 0", torch.tensor(sorted(used))[:5])
+            
+            
+            print("d3d[sorted(used)]", d3d[sorted(used)].shape)
+            
+            proj_vertices, tet_probs = tet_plane_clipping(d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices)  # (M,3)
+            return proj_vertices, new_faces, sdf_verts, grads, tet_probs
+    else:
+        print("-> not tracing mesh")
+        all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
+        vertices_to_compute, bisectors_to_compute, used_tet = compute_zero_crossing_vertices_3d(sites, None, None, d3dsimplices, sites_sdf)
+        vertices = compute_vertices_3d_vectorized(sites, vertices_to_compute)    
+        #bisectors = compute_all_bisectors_vectorized(sites, bisectors_to_compute)
+        #points = torch.cat((vertices, bisectors), 0)
+        if not clip:
+            print("-> not clipping")
+            return vertices, None, None, None
+        else:
+            print("-> clipping")
+            vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
+            sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)  # (M,3)
+            vertices_sdf_grad = interpolate_sdf_grad_of_vertices(all_vor_vertices,  d3d, sites, sites_sdf_grad)
+            
+            print("used_tet", used_tet.shape)
+            print("d3d[used_tet]",d3d[used_tet].shape)
+            
+            sdf_verts = vertices_sdf[used_tet]
+            grads = vertices_sdf_grad[used_tet]  # (M,3)
+            
+            proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)  # (M,3)
+            return proj_vertices, None, sdf_verts, grads, tet_probs
     
-    vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
-    if sites_sdf is not None:
-        vertices_sdf = interpolate_sdf_of_vertices(vor_vertices, d3d, sites, sites_sdf)
-        if offset is not None:
-            offset = interpolate_sdf_of_vertices(vor_vertices, d3d, sites, offset)
-        vertices_sdf_grad = analytic_grad_per_tet(sites, d3d, sites_sdf)
 
+
+
+def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
     with torch.no_grad():
+        d3d = torch.tensor(d3dsimplices).to(device).detach()            # (M,4)
         # Generate all edges of each simplex
         #    torch.combinations gives the 6 index‐pairs within a 4‐long row
         comb = torch.combinations(torch.arange(d3d.shape[1], device=device), r=2)  # (6,2)
@@ -1354,30 +1154,24 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
 
         # Unique ridges across all simplices
         #ridges, inverse = torch.unique(edges, dim=0, return_inverse=True) # (R,2)
-        ridges = torch.unique(edges, dim=0, return_inverse=False) # (R,2)
+        
+        ridges = edges#torch.unique(edges, dim=0, return_inverse=False) # (R,2)
         
         del comb, edges
         torch.cuda.empty_cache()
         
-        #print(ridges.dtype)
-        #print(f"After ridge: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
-
         # Evaluate SDF at each site
-        #print(sites.dtype)
         if model is not None:
             sdf = model(sites).detach().view(-1)             # (N,)
         else:
             sdf = sites_sdf        # (N,)
-        #print(f"After sdf: Allocated: {torch.cuda.memory_allocated() / 1e6} MB, Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
         
         sdf_i = sdf[ridges[:,0]]
         sdf_j = sdf[ridges[:,1]]
         zero_cross = (sdf_i * sdf_j <= 0)       # (R,)
         # Keep only the zero-crossing ridges
         ridges = ridges[zero_cross]             # (R0,2)
-        filtered_ridges = ridges.detach().cpu().numpy()
-
-        faces = faces_via_dict(d3dsimplices, filtered_ridges)  # (R0, List of simplices)
+        faces = faces_via_dict(d3dsimplices, ridges.detach().cpu().numpy())  # (R0, List of simplices)
 
         # Sort faces
         torch.cuda.empty_cache()
@@ -1385,7 +1179,7 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
         counts = np.array([len(face) for face in faces], dtype=np.int64)
         Kmax = counts.max()
         faces_np = np.full((R, Kmax), -1, dtype=np.int64)
-        
+
         for i, face in enumerate(faces):
             faces_np[i, :len(face)] = face
 
@@ -1394,53 +1188,70 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
         #print("-> sorting faces")
         batch_sort_numba(vor_vertices.detach().cpu().numpy(), faces_np, counts, sorted_faces_np)
         faces_sorted = [sorted_faces_np[i, :counts[i]].tolist() for i in range(R)]
-        faces = faces_sorted
+        return faces_sorted
+    
 
-    # Compact the vertex list
-    #print("-> compacting vertices")
-    used = {idx for face in faces for idx in face}
-    old2new = {old: new for new, old in enumerate(sorted(used))}
-    new_vertices = vor_vertices[sorted(used)]
-    new_faces = [[old2new[i] for i in face] for face in faces]
-
-    del counts, Kmax, faces_np, sorted_faces_np, faces_sorted, faces, old2new #used, 
-    torch.cuda.empty_cache()
-
-
-
-    if vertices_sdf is not None and vertices_sdf_grad is not None:
-        sdf_verts = vertices_sdf[sorted(used)]
-        grads = vertices_sdf_grad[sorted(used)]  # (M,3)
-        if offset is not None:
-            offset = offset[sorted(used)]
-        else:
-            offset = 0.0
-    elif model is not None:
-        # clip the vertices of the faces to the zero-crossing of the sdf
-        sdf_verts = model(new_vertices).view(-1)           # (M,)
-        # compute gradients ∇f(v)  — note create_graph=True if you
-        #    want second-order gradients to flow back into the model
-        grads = torch.autograd.grad(
-            outputs=sdf_verts,
-            inputs=new_vertices,
-            grad_outputs=torch.ones_like(sdf_verts),
-            create_graph=True,
-        )[0]                                               # (M,3)
-    else:
-        return new_vertices, new_faces
-
-    if not clip:
-        #print("-> not clipping")
-        return new_vertices, new_faces, sdf_verts, grads
-
+def newton_step_clipping(grads, sdf_verts, new_vertices):
+    """
+    Perform a single Newton step to clip vertices based on their SDF values and gradients.
+    This function is used to refine the positions of Voronoi vertices after computing their SDFs.
+    """
     # one Newton step https://en.wikipedia.org/wiki/Newton%27s_method_in_optimization
     epsilon = 1e-12
-    grad_norm2 = torch.sqrt(((grads + epsilon)**2).sum(dim=1, keepdim=True))    # (M,1)
-    step = (sdf_verts + offset).unsqueeze(1) * grads / (grad_norm2 + epsilon)
-    
-    proj_vertices = new_vertices - step    
 
-    #print("-> vertices:", new_vertices.shape)
-    #print("-> projected vertices:", proj_vertices.shape)
-    #print("-> #faces:", len(new_faces))
-    return proj_vertices, new_faces, sdf_verts, grads
+    #grad_norm2 = torch.sqrt(((grads + epsilon)**2).sum(dim=1, keepdim=True))    # (M,1)
+    grad_norm2 = torch.sqrt((grads ** 2).sum(dim=1, keepdim=True) + epsilon)  # (M,1)
+
+    step = sdf_verts.unsqueeze(1) * grads / (grad_norm2)  # (M,3)
+    proj_vertices = new_vertices - step    
+    
+    return proj_vertices
+    
+def tet_plane_clipping(
+    tets: torch.Tensor,              # (M, 4)
+    sites: torch.Tensor,            # (N, 3)
+    sdf_values: torch.Tensor,       # (N,)
+    sdf_grads: torch.Tensor,        # (N, 3)
+    voronoi_vertices: torch.Tensor  # (M, 3)
+) -> torch.Tensor:
+    
+    print(f"tets shape: {tets.shape}")
+    print(f"tets 0: {tets[0]}")
+    
+    eps = 1e-12
+    # Gather tet-specific data
+    tet_sites = sites[tets]                 # (M, 4, 3)
+    tet_sdf = sdf_values[tets]              # (M, 4)
+    tet_grads = sdf_grads[tets]             # (M, 4, 3)
+    print(f"tet_sites shape: {tet_sites.shape}, tet_sdf shape: {tet_sdf.shape}, tet_grads shape: {tet_grads.shape}")
+
+    # Project each site to its local zero level-set via Newton step
+    grad_norm2 = torch.sqrt((tet_grads ** 2).sum(dim=-1, keepdim=True) + eps)   # (M, 4, 1)
+    site_step_dir = (tet_grads / grad_norm2)
+    steps = tet_sdf.unsqueeze(-1) * site_step_dir # (M, 4, 3)
+    projected_pts = tet_sites - steps                          # (M, 4, 3)
+
+    # Fit plane: subtract mean
+    centroid = projected_pts.mean(dim=1, keepdim=True)         # (M, 1, 3)
+    centered = projected_pts - centroid                        # (M, 4, 3)
+    
+    # Compute covariance matrix
+    cov = torch.einsum('mni,mnj->mij', centered, centered) / 4  # (M, 3, 3)
+    # Compute eigenvectors — last one is normal
+    _, eigvecs = torch.linalg.eigh(cov)                         # (M, 3), (M, 3, 3)
+    normal = eigvecs[:, :, 0]                                   # Smallest eigenvalue → normal direction
+    normal = normal / (normal.norm(dim=1, keepdim=True) + eps)  # Normalize
+
+    
+    # Normalize the normal vector
+    normal_norm2 = (normal ** 2).sum(dim=1, keepdim=True) + eps
+    vert_step_dir = normal / torch.sqrt(normal_norm2)                 # (M, 3)
+
+    # Project voronoi vertices to plane
+    v_to_c = voronoi_vertices - centroid.squeeze(1)            # (M, 3)
+    normal_dot = (v_to_c * vert_step_dir).sum(dim=1, keepdim=True)    # (M, 1)
+
+    steps_verts = normal_dot * vert_step_dir  # (M, 3)
+    projected_verts = voronoi_vertices - steps_verts  # (M, 3)
+
+    return projected_verts, (site_step_dir, vert_step_dir, tet_sites)
