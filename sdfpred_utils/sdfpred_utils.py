@@ -572,9 +572,12 @@ def adaptive_density_upsampling(sites, model, num_points_per_site=5, max_distanc
 def upsampling_vectorized(sites, tri=None, vor=None, simplices=None, model=None):
     if model.__class__.__name__ == "SDFGrid":
         sdf_values = model.sdf(sites)
+    # model might be a [sites, 1] tensor
+    elif isinstance(model, torch.Tensor):
+        sdf_values = model
     else:
-        sdf_values = model(sites).detach()
-        
+        sdf_values = model(sites).detach()  # Assuming model outputs (N, 1) or (N,) tensor    
+    
     #sites_np = sites.detach().cpu().numpy()
     
     if tri is not None:
@@ -582,7 +585,6 @@ def upsampling_vectorized(sites, tri=None, vor=None, simplices=None, model=None)
     else:
         all_tetrahedra = torch.tensor(np.array(simplices), device=device)
 
-    
     if vor is not None:
         neighbors = torch.tensor(np.array(vor.ridge_points), device=device)
     # could compute neighbors without the voronoi diagram
@@ -600,7 +602,6 @@ def upsampling_vectorized(sites, tri=None, vor=None, simplices=None, model=None)
         tetra_edges, _ = torch.sort(tetra_edges, dim=1)
         # Get unique edges
         neighbors = torch.unique(tetra_edges, dim=0)
-    
     
     # Extract the SDF values for each site in the pair
     sdf_i = sdf_values[neighbors[:, 0]]  # First site in each pair
@@ -638,10 +639,115 @@ def upsampling_vectorized(sites, tri=None, vor=None, simplices=None, model=None)
     scale = (min_dists[sites_to_upsample] / 4).unsqueeze(1)  # shape: (num_upsampled, 1)
     
     new_sites = torch.cat((tet_centroids + basic_tet_1 * scale, tet_centroids + basic_tet_2 * scale, tet_centroids + basic_tet_3 * scale, tet_centroids + basic_tet_4 * scale), dim=0)
-
     updated_sites = torch.cat((sites, new_sites), dim=0)
     
     return updated_sites
+
+
+def upsampling_vectorized_sites_sites_sdf(
+    sites:        torch.Tensor,          # (N,3)
+    tri   = None,                        # scipy.spatial.Delaunay object            (optional)
+    vor   = None,                        # scipy.spatial.Voronoi  object            (optional)
+    simplices=None,                      # np.ndarray shape (M,4) if tri is None    (optional)
+    model = None,                        # SDFGrid | nn.Module | Tensor of shape (N,)
+    eps:  float = 1e-12,
+):
+    """
+    • Detect zero-crossing edges, pick their incident sites for up-sampling.
+    • Insert four points around every selected site (regular tetrahedron, scaled to ¼
+      of its shortest incident edge).
+    • Estimate ∇φ at the original sites from finite differences on all edges.
+    • Assign φ(new) ≈ φ(old) + ∇φ(old)·δ  to every new point.
+    • Return the concatenated point cloud and the concatenated SDF vector.
+    """
+    
+    if model is None:
+        raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
+    if model.__class__.__name__ == "SDFGrid":
+        sdf_values = model.sdf(sites)                   # (N,)
+    elif isinstance(model, torch.Tensor):
+        sdf_values = model.to(device)
+    else:                                               # nn.Module / callable
+        sdf_values = model(sites).detach()
+    sdf_values = sdf_values.squeeze()                   # ensure shape (N,)
+
+    if tri is not None:
+        all_tetrahedra = torch.as_tensor(tri.simplices, device=device)
+    else:
+        all_tetrahedra = torch.as_tensor(simplices,     device=device)
+
+    if vor is not None:
+        neighbors = torch.as_tensor(vor.ridge_points,   device=device)
+    else:
+        # six edges per tet
+        tetra_edges = torch.cat([
+            all_tetrahedra[:, [0, 1]],
+            all_tetrahedra[:, [1, 2]],
+            all_tetrahedra[:, [2, 3]],
+            all_tetrahedra[:, [3, 0]],
+            all_tetrahedra[:, [0, 2]],
+            all_tetrahedra[:, [1, 3]],
+        ], dim=0)
+        neighbors, _ = torch.sort(tetra_edges, dim=1)   # canonical ordering
+        neighbors = torch.unique(neighbors, dim=0)
+
+    sdf_i, sdf_j  = sdf_values[neighbors[:, 0]], sdf_values[neighbors[:, 1]]
+    mask_zc       = (sdf_i * sdf_j <= 0)                # zero-crossing edge
+    sites_to_up   = torch.unique(neighbors[mask_zc].reshape(-1))
+    print("Sites to upsample :", sites_to_up.numel())
+
+    centroids = sites[sites_to_up]                      # (K,3)
+
+    # shortest incident edge length per site
+    edge_vec     = sites[neighbors[:, 1]] - sites[neighbors[:, 0]]
+    edge_len     = torch.norm(edge_vec, dim=1)          # (E,)
+    idx_all      = torch.cat([neighbors[:, 0], neighbors[:, 1]])
+    dists_all    = torch.cat([edge_len, edge_len])
+    min_dists    = torch.full((sites.shape[0],),
+                              float("inf"), device=device)
+    min_dists    = min_dists.scatter_reduce(0, idx_all,
+                                            dists_all, reduce='amin')
+    scale        = (min_dists[sites_to_up] / 4).unsqueeze(1)  # (K,1)
+
+    tetr_dirs = torch.as_tensor([
+        [ 1,  1,  1],
+        [-1, -1,  1],
+        [-1,  1, -1],
+        [ 1, -1, -1],
+    ], dtype=torch.float32, device=device)                              # (4,3)
+
+    new_sites = (centroids.unsqueeze(1) + tetr_dirs.unsqueeze(0) * scale.unsqueeze(1)
+                 ).reshape(-1, 3)                                        # (4K,3)
+
+    # Estimate ∇φ at every original site (scatter-add, O(E))
+    # finite-difference contribution from each edge endpoint
+    sdf_diff   = (sdf_values[neighbors[:, 1]] - sdf_values[neighbors[:, 0]]
+                 ).unsqueeze(1)                                          # (E,1)
+    edge_norm2 = (edge_vec ** 2).sum(1, keepdim=True) + eps              # (E,1)
+    contrib    = sdf_diff * edge_vec / edge_norm2                        # (E,3)
+
+    grad_est   = torch.zeros_like(sites)                                 # (N,3)
+    grad_est   = grad_est.index_add(0, neighbors[:, 0], contrib)
+    grad_est   = grad_est.index_add(0, neighbors[:, 1], contrib)
+
+    counts     = torch.zeros((sites.shape[0], 1), device=device)
+    ones       = torch.ones_like(sdf_diff)
+    counts     = counts.index_add(0, neighbors[:, 0], ones)
+    counts     = counts.index_add(0, neighbors[:, 1], ones)
+    grad_est  /= counts.clamp(min=1.0)                                   # mean
+
+    # First-order interpolation  φ(new) = φ(old) + ∇φ·δ
+    cent_grad   = grad_est[sites_to_up]                                   # (K,3)
+    delta       = new_sites.reshape(-1, 4, 3) - centroids.unsqueeze(1)    # (K,4,3)
+    new_sdf     = (sdf_values[sites_to_up].unsqueeze(1)                  # (K,1)
+                   + (cent_grad.unsqueeze(1) * delta).sum(dim=2))        # (K,4)
+    new_sdf     = new_sdf.reshape(-1)                                    # (4K,)
+
+    updated_sites     = torch.cat([sites, new_sites], dim=0)             # (N+4K,3)
+    updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)          # (N+4K,)
+
+    return updated_sites, updated_sites_sdf
+
 
 def sample_mesh_points_heitz(vertices: torch.Tensor,
                              faces: torch.LongTensor,
@@ -1128,8 +1234,8 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
             grads = vertices_sdf_grad[used_tet]
             proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
             
-            print("-> computing bisectors")
-            print(sites.shape, sites_sdf.shape, "bisectors shape", bisectors.shape, "bisectors_to_compute shape", bisectors_to_compute.shape)
+            # print("-> computing bisectors")
+            # print(sites.shape, sites_sdf.shape, "bisectors shape", bisectors.shape, "bisectors_to_compute shape", bisectors_to_compute.shape)
             
             bisectors_sdf = (sites_sdf[bisectors_to_compute[:,0]] + sites_sdf[bisectors_to_compute[:,1]])/2
             bisectors_sdf_grad = (sites_sdf_grad[bisectors_to_compute[:,0]] + sites_sdf_grad[bisectors_to_compute[:,1]])/2
