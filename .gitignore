@@ -37,6 +37,7 @@ outputs/*
 Resources/*
 /*.npz
 /*json
+.vscode/
 /*.ini
 utils/*.ini
 old/*.ini
