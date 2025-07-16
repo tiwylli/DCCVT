@@ -6,6 +6,9 @@ import diffvoronoi  # delaunay3d bindings
 import math
 from numba import njit, prange
 from collections import defaultdict
+from pytorch3d.loss import chamfer_distance
+import trimesh
+from scipy.spatial import cKDTree
 
 device = torch.device("cuda:0")
 
@@ -1489,7 +1492,7 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
     d3d = torch.tensor(d3dsimplices).to(device).detach()  # (M,4)
 
     if build_mesh:
-        print("-> tracing mesh")
+        # print("-> tracing mesh")
         all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
         faces = get_faces(d3dsimplices, sites, all_vor_vertices, model, sites_sdf)  # (R0, List of simplices)
         # Compact the vertex list
@@ -1498,10 +1501,10 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
         new_vertices = all_vor_vertices[sorted(used)]
         new_faces = [[old2new[i] for i in face] for face in faces]
         if not clip:
-            print("-> not clipping")
-            return new_vertices, new_faces, None, None
+            # print("-> not clipping")
+            return new_vertices, new_faces, None, None, None
         else:
-            print("-> clipping")
+            # print("-> clipping")
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
             sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)  # (M,3)
             vertices_sdf_grad = interpolate_sdf_grad_of_vertices(all_vor_vertices, d3d, sites, sites_sdf_grad)
@@ -1514,7 +1517,7 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
             )  # (M,3)
             return proj_vertices, new_faces, sdf_verts, grads, tet_probs
     else:
-        print("-> not tracing mesh")
+        # print("-> not tracing mesh")
         all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
         vertices_to_compute, bisectors_to_compute, used_tet = compute_zero_crossing_vertices_3d(
             sites, None, None, d3dsimplices, sites_sdf
@@ -1524,10 +1527,10 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
         # TODO:idea use bisectors as center of face and use knn to do the face connectivity to the vertices
         # points = torch.cat((vertices, bisectors), 0)
         if not clip:
-            print("-> not clipping")
-            return vertices, None, None, None
+            # print("-> not clipping")
+            return vertices, None, None, None, None
         else:
-            print("-> clipping")
+            # print("-> clipping")
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
             sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)
             vertices_sdf_grad = interpolate_sdf_grad_of_vertices(all_vor_vertices, d3d, sites, sites_sdf_grad)
@@ -1806,3 +1809,181 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
 
     return updated_sites, updated_sites_sdf
+
+
+# def upsampling_chamfer_vectorized_sites_sites_sdf(
+#     sites: torch.Tensor,  # (N,3)
+#     simplices=None,  # np.ndarray (M,4) if tri is None
+#     model=None,  # SDFGrid | nn.Module | Tensor (N,)
+#     target_pts: torch.Tensor = None,
+#     growth_cap: float = 0.10,
+#     eps: float = 1e-12,
+# ):
+#     device = sites.device
+#     N = sites.shape[0]
+
+#     # SDF at original sites
+#     if model is None:
+#         raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
+#     if model.__class__.__name__ == "SDFGrid":
+#         sdf_values = model.sdf(sites)
+#     elif isinstance(model, torch.Tensor):
+#         sdf_values = model.to(device)
+#     else:  # nn.Module / callable
+#         sdf_values = model(sites).detach()
+#     sdf_values = sdf_values.squeeze()  # (N,)
+
+#     # Build edge list (ridge points)
+
+#     all_tets = torch.as_tensor(simplices, device=device)
+
+#     edges = torch.cat(
+#         [
+#             all_tets[:, [0, 1]],
+#             all_tets[:, [1, 2]],
+#             all_tets[:, [2, 3]],
+#             all_tets[:, [3, 0]],
+#             all_tets[:, [0, 2]],
+#             all_tets[:, [1, 3]],
+#         ],
+#         dim=0,
+#     )
+#     neighbors, _ = torch.sort(edges, dim=1)
+#     neighbors = torch.unique(neighbors, dim=0)  # (E,2)
+
+#     # Zero-crossing sites
+#     sdf_i, sdf_j = sdf_values[neighbors[:, 0]], sdf_values[neighbors[:, 1]]
+#     mask_zc = sdf_i * sdf_j <= 0
+#     zc_sites = neighbors[mask_zc]
+
+#     t = sdf_i[mask_zc] / (sdf_i[mask_zc] - sdf_j[mask_zc] + eps)  # (R0,)
+#     pts = sites[zc_sites[:, 0]] + (sites[zc_sites[:, 1]] - sites[zc_sites[:, 0]]) * t.unsqueeze(1)  # (R0,3)
+
+#     dist_pred2tgt, _ = chamfer_distance(pts.unsqueeze(0), target_pts.detach())  # (1, R0)
+#     print("dist_pred2tgt shape:", dist_pred2tgt.shape)
+#     scores = dist_pred2tgt.squeeze(0)
+
+#     M = min(int(growth_cap * N), scores.numel())
+#     worst_idx = torch.topk(scores, k=M, largest=True).indices  # (M,)
+#     bad_pairs = zc_sites[worst_idx]  # (M,2)
+#     cand = torch.unique(bad_pairs.reshape(-1))  # (K,)
+
+#     # Insert 4 off-spring per selected site (regular tetrahedron)
+#     tetr_dirs = torch.as_tensor(
+#         [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
+#         dtype=torch.float32,
+#         device=device,
+#     )  # (4,3)
+
+#     edge_vec = sites[neighbors[:, 1]] - sites[neighbors[:, 0]]  # (E,3)
+#     edge_len = torch.norm(edge_vec, dim=1)  # (E,)
+#     idx_all = torch.cat([neighbors[:, 0], neighbors[:, 1]])
+#     dists_all = torch.cat([edge_len, edge_len])
+#     min_dists = torch.full((N,), float("inf"), device=device)
+#     min_dists = min_dists.scatter_reduce(0, idx_all, dists_all, reduce="amin")  # (N,)
+
+#     # Gradient ∇φ and curvature proxy κᵢ  (1-ring normal variation)
+#     # ∇φ estimate (scatter-add of finite-difference contributions)
+#     sdf_diff = sdf_values[neighbors[:, 1]] - sdf_values[neighbors[:, 0]]
+#     sdf_diff = sdf_diff.unsqueeze(1)  # (E,1)
+#     edge_norm2 = (edge_vec**2).sum(1, keepdim=True) + eps
+#     contrib = sdf_diff * edge_vec / edge_norm2  # (E,3)
+
+#     grad_est = torch.zeros_like(sites)  # (N,3)
+#     grad_est = grad_est.index_add(0, neighbors[:, 0], contrib)
+#     grad_est = grad_est.index_add(0, neighbors[:, 1], contrib)
+
+#     counts = torch.zeros((N, 1), device=device)
+#     ones = torch.ones_like(sdf_diff)
+#     counts = counts.index_add(0, neighbors[:, 0], ones)
+#     counts = counts.index_add(0, neighbors[:, 1], ones)
+#     grad_est /= counts.clamp(min=1.0)
+
+#     centroids = sites[cand]  # (K,3)
+#     scale = (min_dists[cand] / 4).unsqueeze(1)  # (K,1)
+#     new_sites = (centroids.unsqueeze(1) + tetr_dirs.unsqueeze(0) * scale.unsqueeze(1)).reshape(-1, 3)  # (4K,3)
+#     print("Before upsampling, number of sites:", sites.shape[0], "amount added:", new_sites.shape[0])
+#     # First-order SDF interpolation φ(new) = φ(old) + ∇φ·δ
+#     cent_grad = grad_est[cand]  # (K,3)
+#     delta = new_sites.reshape(-1, 4, 3) - centroids.unsqueeze(1)  # (K,4,3)
+#     new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
+
+#     # Concatenate & return
+#     updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
+#     updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
+
+
+#     return updated_sites, updated_sites_sdf
+def save_obj(filename, vertices, faces):
+    """
+    Save a mesh to an OBJ file.
+
+    Args:
+        filename: str, path to output .obj file
+        vertices: (N, 3) array of float vertex positions
+        faces: (M, 3) or (M, K) array of int indices (0-based)
+    """
+    with open(filename, "w") as f:
+        for v in vertices:
+            f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+
+        # Offset indices by +1 for OBJ (1-based indexing)
+        for face in faces:
+            # Ensure all face entries are written, even if quads or ngons
+            indices = " ".join(str(idx + 1) for idx in face)
+            f.write(f"f {indices}\n")
+
+
+def save_target_pc_ply(filename, points):
+    """
+    Save a point cloud to a PLY file.
+
+    Args:
+        filename: str, path to output .ply file
+        points: (N, 3) array of float point positions
+    """
+    with open(filename, "w") as f:
+        f.write("ply\n")
+        f.write("format ascii 1.0\n")
+        f.write(f"element vertex {len(points)}\n")
+        f.write("property float x\n")
+        f.write("property float y\n")
+        f.write("property float z\n")
+        f.write("end_header\n")
+        for p in points:
+            f.write(f"{p[0]} {p[1]} {p[2]}\n")
+
+
+def sample_points_on_mesh(mesh_path, n_points=100000):
+    mesh = trimesh.load(mesh_path)
+    # normalize mesh
+    mesh.apply_translation(-mesh.centroid)
+    mesh.apply_scale(1.0 / np.max(np.abs(mesh.vertices)))
+    # export mesh to obj file
+    mesh.export(mesh_path)
+    points, _ = trimesh.sample.sample_surface(mesh, n_points)
+    return points, mesh
+
+
+def chamfer_accuracy_completeness_f1(ours_pts, gt_pts, threshold=0.003):
+    # Completeness: GT → Ours
+    dists_gt_to_ours = cKDTree(ours_pts).query(gt_pts, k=1)[0]
+    completeness = np.mean(dists_gt_to_ours**2)
+
+    # Accuracy: Ours → GT
+    dists_ours_to_gt = cKDTree(gt_pts).query(ours_pts, k=1)[0]
+    accuracy = np.mean(dists_ours_to_gt**2)
+
+    chamfer = accuracy + completeness
+
+    # Distance: pred → gt
+    dist_pred_to_gt = cKDTree(gt_pts).query(ours_pts, k=1)[0]
+    precision = np.mean(dist_pred_to_gt < threshold)
+
+    # Distance: gt → pred
+    dist_gt_to_pred = cKDTree(ours_pts).query(gt_pts, k=1)[0]
+    recall = np.mean(dist_gt_to_pred < threshold)
+
+    f1 = 2 * precision * recall / (precision + recall + 1e-8)
+
+    return accuracy, completeness, chamfer, precision, recall, f1
