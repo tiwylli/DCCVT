@@ -1956,11 +1956,17 @@ def save_target_pc_ply(filename, points):
 
 def sample_points_on_mesh(mesh_path, n_points=100000):
     mesh = trimesh.load(mesh_path)
-    # normalize mesh
-    mesh.apply_translation(-mesh.centroid)
-    mesh.apply_scale(1.0 / np.max(np.abs(mesh.vertices)))
-    # export mesh to obj file
-    mesh.export(mesh_path)
+
+    # Normalize mesh (centered and scaled uniformly)
+    bbox = mesh.bounds
+    center = mesh.centroid
+    scale = np.linalg.norm(bbox[1] - bbox[0])
+    mesh.apply_translation(-center)
+    mesh.apply_scale(1.0 / scale)
+
+    # Export normalized mesh
+    mesh.export(mesh_path.replace(".obj", ".obj"))
+
     points, _ = trimesh.sample.sample_surface(mesh, n_points)
     return points, mesh
 

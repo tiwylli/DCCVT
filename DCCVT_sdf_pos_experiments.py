@@ -232,24 +232,28 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 )
                 upsampled = args.upsampling
                 sites = sites.detach().requires_grad_(True)
-                sites_sdf = sites_sdf.detach().requires_grad_(True)
 
-                optimizer = torch.optim.Adam(
-                    [
-                        {"params": [sites], "lr": args.lr_sites},
-                        {"params": [sites_sdf], "lr": args.lr_sites},
-                    ]
-                )
+                if args.w_chamfer > 0:
+                    sites_sdf = sites_sdf.detach().requires_grad_(True)
+                    optimizer = torch.optim.Adam(
+                        [
+                            {"params": [sites], "lr": args.lr_sites},
+                            {"params": [sites_sdf], "lr": args.lr_sites},
+                        ]
+                    )
+                else:
+                    optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
+
                 # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
                 continue
             if d3dsimplices is None:
                 d3dsimplices = diffvoronoi.get_delaunay_simplices(sites.detach().cpu().numpy().reshape(-1))
                 d3dsimplices = np.array(d3dsimplices)
-            sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
-            sites = sites.detach().requires_grad_(True)
-            sites_sdf = sites_sdf.detach().requires_grad_(True)
 
             if args.w_chamfer > 0:
+                sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
+                sites = sites.detach().requires_grad_(True)
+                sites_sdf = sites_sdf.detach().requires_grad_(True)
                 optimizer = torch.optim.Adam(
                     [
                         {"params": [sites], "lr": args.lr_sites},
@@ -257,23 +261,26 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                     ]
                 )
             else:
+                sites, _ = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
+                sites = sites.detach().requires_grad_(True)
                 optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
             upsampled += 1.0
             print("sites length AFTER: ", len(sites))
     return sites, sites_sdf
 
 
-def output_npz(sites, model, target_pc, args, state="", d3dsimplices=None, t0=time()):
-    train_time = time() - t0
-
+def output_npz(sites, model, target_pc, args, state="", d3dsimplices=None, t=time()):
     # SDF at original sites
     if model is None:
         raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
     if model.__class__.__name__ == "SDFGrid":
+        print("Using SDFGrid model")
         sdf_values = model.sdf(sites)
     elif isinstance(model, torch.Tensor):
+        print("Using Tensor model")
         sdf_values = model.to(device)
     else:  # nn.Module / callable
+        print("Using nn.Module / callable model")
         sdf_values = model(sites).detach()
 
     sdf_values = sdf_values.squeeze()  # (N,)
@@ -304,6 +311,7 @@ def output_npz(sites, model, target_pc, args, state="", d3dsimplices=None, t0=ti
 
     s = f"{args.save_path}_{state}.npz"
     print("Saving to: ", s)
+
     np.savez(
         s,
         sites=sites.detach().cpu().numpy(),
@@ -312,8 +320,8 @@ def output_npz(sites, model, target_pc, args, state="", d3dsimplices=None, t0=ti
         # sdf_hessians=hess_sdf.detach().cpu().numpy(),
         v_vect=v_vect.detach().cpu().numpy(),
         f_vect=f_vect,
-        train_time=train_time,
-        grads_mesh_extraction_time=time() - t0 - train_time,
+        train_time=t,
+        # grads_mesh_extraction_time=time() - t0 - train_time,
         accuracy=accuracy,
         completeness=completeness,
         chamfer=chamfer,
@@ -342,7 +350,8 @@ def output_image_polyscope(state=""):
     ps.unshow()
 
 
-def build_arg_list(m_list=["gargoyle", "chair", "bunny"]):
+# m_list=["gargoyle", "chair", "bunny"]
+def build_arg_list(m_list=["gargoyle", "gargoyle_unconverged", "bunny", "chair"]):
     arg_list = []
     for m in m_list:
         # Voroloss vs DCCVT : baseline
@@ -435,86 +444,92 @@ def crop_transparent(img, tol=0.0):
 
 
 def output_results_figure():
+    # for each mesh in outputs
     # collect and group .npz files by experiment prefix
-    print(args.output)
-    files = [f for f in os.listdir(args.output) if f.endswith(".npz")]
-    groups = {}
-    for f in files:
-        if f.endswith("_init.npz"):
-            prefix = f[:-9]  # strip "_init.npz"
-            groups.setdefault(prefix, {})["init"] = f
-        elif f.endswith("_final.npz"):
-            prefix = f[:-10]  # strip "_final.npz"
-            groups.setdefault(prefix, {})["final"] = f
 
-    prefixes = sorted(groups.keys())
-    n = len(prefixes)
-    total_rows = n + 1  # +1 for our header
+    for m in os.listdir(DEFAULTS["output"]):
+        current_mesh_path = f"{DEFAULTS['output']}{m}/"
+        files = [f for f in os.listdir(current_mesh_path) if f.endswith(".npz")]
+        groups = {}
+        for f in files:
+            if f.endswith("_init.npz"):
+                prefix = f[:-9]  # strip "_init.npz"
+                groups.setdefault(prefix, {})["init"] = f
+            elif f.endswith("_final.npz"):
+                prefix = f[:-10]  # strip "_final.npz"
+                groups.setdefault(prefix, {})["final"] = f
 
-    fig, axs = plt.subplots(
-        total_rows,
-        3,
-        figsize=(15, 5 * total_rows),
-        gridspec_kw={"height_ratios": [0.5] + [1] * n},  # make header a bit shorter
-        constrained_layout=True,
-    )
+        prefixes = sorted(groups.keys())
+        n = len(prefixes)
+        total_rows = n + 1  # +1 for our header
 
-    # If there's only one data‐row, axs will be 2D but with shape (2,3); no change needed.
-    # -------------------------------------------------------------------------
-    # 1) Header row: turn off all three axes, then place text in the center one
-    header_text = (
-        f"All results are for {args.num_iterations} iterations and {args.sample_near**args.input_dims} sites\n"
-        "cdp = chamfer distance vertices+bisectors to target point\n"
-        "cdm = Chamfer distance sampled mesh to target point\n"
-        "v = voroloss"
-    )
-    for col in range(3):
-        axs[0, col].axis("off")
-    axs[0, 1].text(0.5, 0.5, header_text, ha="center", va="center", fontsize=16, family="monospace")
-
-    # -------------------------------------------------------------------------
-    # 2) Data rows
-    for i, prefix in enumerate(prefixes, start=1):
-        grp = groups[prefix]
-
-        # --- init image ---
-        ax = axs[i, 0]
-        init_png = grp.get("init", "").replace(".npz", ".png")
-        img_init = plt.imread(os.path.join(args.output, init_png))
-        trimmed_init = crop_transparent(img_init, tol=1e-3)
-        ax.imshow(trimmed_init)
-        ax.set_title("Init")
-        ax.axis("off")
-
-        # --- final image ---
-        ax = axs[i, 1]
-        final_png = grp.get("final", "").replace(".npz", ".png")
-        img_final = plt.imread(os.path.join(args.output, final_png))
-        trimmed_final = crop_transparent(img_final, tol=1e-3)
-        ax.imshow(trimmed_final)
-        ax.set_title("Final")
-        ax.axis("off")
-
-        # --- metrics ---
-        ax = axs[i, 2]
-        data = np.load(os.path.join(args.output, grp["final"]))
-        text = (
-            f"Chamfer loss mesh 10⁻⁵: {data['chamfer_loss_mesh'] * 1e4:.4f}\n"
-            f"F1 score:               {data['F1']:.4f}\n"
-            f"Train time (s):         {data['train_time']:.4f}\n"
-            f"Mesh extraction (s):    {data['grads_mesh_extraction_time']:.4f}"
+        fig, axs = plt.subplots(
+            total_rows,
+            3,
+            figsize=(15, 5 * total_rows),
+            gridspec_kw={"height_ratios": [0.5] + [1] * n},  # make header a bit shorter
+            constrained_layout=True,
         )
-        ax.text(0, 0.5, text, va="center", fontsize=18, family="monospace")
-        ax.set_title(prefix, fontsize=20)
-        ax.axis("off")
 
-    # -------------------------------------------------------------------------
-    plt.savefig(
-        os.path.join(args.output, f"results{args.num_iterations}.png"),
-        bbox_inches="tight",
-        dpi=300,
-    )
-    print(os.path.join(args.output, f"results{args.num_iterations}.png"))
+        # If there's only one data‐row, axs will be 2D but with shape (2,3); no change needed.
+        # -------------------------------------------------------------------------
+        # 1) Header row: turn off all three axes, then place text in the center one
+        header_text = (
+            f"All results are for {args.num_iterations} iterations and from a uniform grid init\n"
+            "cdp = chamfer distance vertices+bisectors to target point\n"
+            "v = voroloss\n"
+            "all metrics are multiplied by 1e4 \n"
+        )
+        for col in range(3):
+            axs[0, col].axis("off")
+        axs[0, 1].text(0.5, 0.5, header_text, ha="center", va="center", fontsize=16, family="monospace")
+
+        # -------------------------------------------------------------------------
+        # 2) Data rows
+        for i, prefix in enumerate(prefixes, start=1):
+            grp = groups[prefix]
+
+            # --- init image ---
+            ax = axs[i, 0]
+            init_png = grp.get("init", "").replace(".npz", ".png")
+            img_init = plt.imread(os.path.join(current_mesh_path, init_png))
+            trimmed_init = crop_transparent(img_init, tol=1e-3)
+            ax.imshow(trimmed_init)
+            ax.set_title("Init")
+            ax.axis("off")
+
+            # --- final image ---
+            ax = axs[i, 1]
+            final_png = grp.get("final", "").replace(".npz", ".png")
+            img_final = plt.imread(os.path.join(current_mesh_path, final_png))
+            trimmed_final = crop_transparent(img_final, tol=1e-3)
+            ax.imshow(trimmed_final)
+            ax.set_title("Final")
+            ax.axis("off")
+
+            # --- metrics ---
+            ax = axs[i, 2]
+            data = np.load(os.path.join(current_mesh_path, grp["final"]))
+            text = (
+                f"Chamfer: {data['chamfer'] * 1e4:.4f}\n"
+                f"Accuracy: {data['accuracy'] * 1e4:.4f}\n"
+                f"Completeness: {data['completeness'] * 1e4:.4f}\n"
+                f"Precision: {data['precision'] * 1e4:.4f}\n"
+                f"Recall: {data['recall'] * 1e4:.4f}\n"
+                f"F1: {data['f1']:.4f}\n"
+                f"Train time (s):         {data['train_time']:.4f}\n"
+            )
+            ax.text(0, 0.5, text, va="center", fontsize=18, family="monospace")
+            ax.set_title(prefix, fontsize=20)
+            ax.axis("off")
+
+        # -------------------------------------------------------------------------
+        plt.savefig(
+            os.path.join(current_mesh_path, f"results{args.num_iterations}.png"),
+            bbox_inches="tight",
+            dpi=300,
+        )
+        print(os.path.join(current_mesh_path, f"results{args.num_iterations}.png"))
 
 
 def open_everything_polyscope():
@@ -540,8 +555,46 @@ def open_everything_polyscope():
     ps.show()
 
 
+def generate_latex_table_from_npz(folder):
+    files = [f for f in os.listdir(folder) if f.endswith(".npz")]
+    methods = {}
+
+    for f in files:
+        prefix = f.replace(".npz", "")
+        data = np.load(os.path.join(folder, f))
+        methods[prefix] = {
+            "CD": data["chamfer"] * 1e4,
+            "F1": data["f1"],
+            # "NC": data.get("normal_consistency", np.nan),
+            "Time": data["train_time"],
+        }
+
+    # Order by method name
+    method_names = sorted(methods.keys())
+
+    # Build LaTeX string
+    latex = []
+    latex.append("\\begin{tabular}{lcccc}")
+    latex.append("\\toprule")
+    latex.append("Method & CD ($\\times10^{-4}$) & F1 & Time (s) \\\\")
+    latex.append("\\midrule")
+
+    for name in method_names:
+        m = methods[name]
+        latex.append(f"{name} & {m['CD']:.3f} & {m['F1']:.3f} & {m['Time']:.1f} \\\\")
+
+    latex.append("\\bottomrule")
+    latex.append("\\end{tabular}")
+
+    latex_table = "\n".join(latex)
+
+    return latex_table
+
+
 if __name__ == "__main__":
     arg_lists = build_arg_list()
+    start_time = time()
+    print(start_time)
     for arg_list in arg_lists:
         args = define_options_parser(arg_list)
         # TODO:
@@ -558,16 +611,16 @@ if __name__ == "__main__":
         sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
 
         if args.w_chamfer > 0:
-            sites_sdf = init_sdf(model, sites)
-            output_npz(sites, sites_sdf, mnfld_points, args, "init")
-            output_image_polyscope("init")
-            sites, sites_sdf = train_DCCVT(sites, sites_sdf, mnfld_points, args)
-            output_npz(sites, sites_sdf, mnfld_points, args, "final")
+            sdf = init_sdf(model, sites)
         else:
-            output_npz(sites, model, mnfld_points, args, "init")
-            output_image_polyscope("init")
-            sites, sites_sdf = train_DCCVT(sites, model, mnfld_points, args)
-            output_npz(sites, model, mnfld_points, args, "final")
+            sdf = model
+
+        output_npz(sites, sdf, mnfld_points, args, "init")
+        output_image_polyscope("init")
+        t0 = time() - start_time
+        sites, sites_sdf = train_DCCVT(sites, sdf, mnfld_points, args)
+        ti = time() - t0 - start_time
+        output_npz(sites, sites_sdf, mnfld_points, args, "final", None, ti)
 
         output_image_polyscope("final")
 
@@ -579,4 +632,6 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
 
     output_results_figure()
+    print(generate_latex_table_from_npz(args.output))
+
     # open_everything_polyscope()
