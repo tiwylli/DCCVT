@@ -4,7 +4,6 @@ import sys
 import argparse
 import tqdm as tqdm
 from time import time
-import kaolin
 import torch
 import os
 import numpy as np
@@ -25,6 +24,7 @@ import models.Net as Net
 # cuda devices
 device = torch.device("cuda:0")
 print("Using device: ", torch.cuda.get_device_name(device))
+torch.manual_seed(69)
 
 
 DEFAULTS = {
@@ -141,6 +141,7 @@ def init_sites(mnfld_points, num_centroids, sample_near, input_dims):
         z = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
         meshgrid = torch.meshgrid(x, y, z)
         meshgrid = torch.stack(meshgrid, dim=3).view(-1, 3)
+        meshgrid += torch.randn_like(meshgrid) * noise_scale
 
     sites = meshgrid.to(device, dtype=torch.float32).requires_grad_(True)
     # add mnfld points with random noise to sites
@@ -516,7 +517,7 @@ def output_results_figure():
                 f"Completeness: {data['completeness'] * 1e4:.4f}\n"
                 f"Precision: {data['precision'] * 1e4:.4f}\n"
                 f"Recall: {data['recall'] * 1e4:.4f}\n"
-                f"F1: {data['f1']:.4f}\n"
+                f"F1: {data['f1'] * 1e4:.4f}\n"
                 f"Train time (s):         {data['train_time']:.4f}\n"
             )
             ax.text(0, 0.5, text, va="center", fontsize=18, family="monospace")
