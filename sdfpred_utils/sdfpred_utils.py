@@ -1761,7 +1761,6 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
         spacing_target = median_min_dists * 0.8  # heuristic default
 
     # --- UNIFORM ---------------------------------------------------- #
-    print(median_min_dists, spacing_target * alpha_high, spacing_target * alpha_low)
     if median_min_dists > spacing_target * alpha_high or spacing_target * alpha_high == float("inf"):
         print("Uniform upsampling regime")
         cand = zc_sites[min_dists[zc_sites] > spacing_target]

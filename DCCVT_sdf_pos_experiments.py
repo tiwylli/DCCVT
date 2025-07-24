@@ -41,6 +41,7 @@ DEFAULTS = {
     "w_cvt": 0,  # 10
     "w_voroloss": 0,  # 1000
     "w_chamfer": 0,  # 1000
+    "w_bpa": 0,  # 1000
     "upsampling": 0,  # 0
     "lr_sites": 0.0005,
 }
@@ -76,6 +77,7 @@ def define_options_parser(arg_list=None):
     parser.add_argument(
         "--w_chamfer", type=float, default=DEFAULTS["w_chamfer"], help="Weight for Chamfer distance on points"
     )
+    parser.add_argument("--w_bpa", type=float, default=DEFAULTS["w_bpa"], help="flag to use BPA instead of DCCVT")
     parser.add_argument("--upsampling", type=int, default=DEFAULTS["upsampling"], help="Upsampling factor")
     parser.add_argument("--lr_sites", type=float, default=DEFAULTS["lr_sites"], help="Learning rate for sites")
     parser.add_argument(
@@ -181,6 +183,7 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
     cvt_loss = 0
     chamfer_loss_mesh = 0
     voroloss_loss = 0
+    sdf_loss = 0
     d3dsimplices = None
     voroloss = lf.Voroloss_opt().to(device)
 
@@ -196,6 +199,12 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
 
         if args.w_cvt > 0:
             cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
+            sites_sdf_grads = su.sdf_space_grad_pytorch_diego(
+                sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach()
+            )
+            eik_loss = args.w_cvt / 10 * lf.discrete_tet_volume_eikonal_loss(sites, sites_sdf_grads, d3dsimplices)
+            shl = args.w_cvt / 0.1 * lf.smoothed_heaviside_loss(sites, sites_sdf, sites_sdf_grads, d3dsimplices)
+            sdf_loss = eik_loss + shl
 
         if args.w_chamfer > 0:
             v_vect, f_vect, sdf_verts, sdf_verts_grads, _ = su.get_clipped_mesh_numba(
@@ -214,7 +223,7 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
 
         sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
-        loss = sites_loss
+        loss = sites_loss + sdf_loss
         # print(f"Epoch {epoch}: loss = {loss.item()}")
         loss.backward()
         # print("-----------------")
@@ -332,9 +341,6 @@ def output_npz(sites, model, target_pc, args, state="", d3dsimplices=None, t=tim
     )
 
 
-# chamfer metric :
-
-
 def output_image_polyscope(state=""):
     ps.init()
     ps.set_up_dir("z_up")
@@ -419,6 +425,21 @@ def build_arg_list(m_list=["gargoyle", "gargoyle_unconverged", "bunny", "chair"]
                 "--clip",
             ]
         )
+
+        # BPA
+        arg_list.append(
+            [
+                "--mesh",
+                f"{DEFAULTS['mesh']}{m}",
+                "--trained_HotSpot",
+                f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+                "--output",
+                f"{DEFAULTS['output']}{m}",
+                "--w_bpa",
+                "1000",
+            ]
+        )
+
     return arg_list
 
 
@@ -519,6 +540,7 @@ def output_results_figure():
                 f"Recall: {data['recall'] * 1e4:.4f}\n"
                 f"F1: {data['f1'] * 1e4:.4f}\n"
                 f"Train time (s):         {data['train_time']:.4f}\n"
+                f"Nber of sites: {len(data['sites'])}\n"
             )
             ax.text(0, 0.5, text, va="center", fontsize=18, family="monospace")
             ax.set_title(prefix, fontsize=20)
@@ -592,17 +614,66 @@ def generate_latex_table_from_npz(folder):
     return latex_table
 
 
+def BPA_metrics(args):
+    bpa_pts, mesh = su.sample_points_on_mesh(
+        args.save_path + ".obj", n_points=args.target_size * args.target_size * 150
+    )
+    gt_pts, _ = su.sample_points_on_mesh(args.mesh + ".obj", n_points=args.target_size * args.target_size * 150)
+    accuracy, completeness, chamfer, precision, recall, f1 = su.chamfer_accuracy_completeness_f1(bpa_pts, gt_pts)
+    print(f"Chamfer Accuracy (Ours → GT): {accuracy:.6f}")
+    print(f"Chamfer Completeness (GT → Ours): {completeness:.6f}")
+    print(f"Chamfer Distance (symmetric): {chamfer:.6f}")
+    print(f"Precision: {precision:.6f}")
+    print(f"Recall: {recall:.6f}")
+    print(f"F1 Score: {f1:.6f}")
+
+    s = f"{args.save_path}_init.npz"
+    np.savez(
+        s,
+        sites=np.zeros(args.target_size * args.target_size * 150),
+        v_vect=mesh.vertices,
+        f_vect=mesh.faces,
+        train_time=99999,
+        accuracy=None,
+        completeness=None,
+        chamfer=None,
+        precision=None,
+        recall=None,
+        f1=None,
+    )
+    s = f"{args.save_path}_final.npz"
+    print("Saving to: ", s)
+
+    np.savez(
+        s,
+        sites=np.zeros(args.target_size * args.target_size * 150),
+        v_vect=mesh.vertices,
+        f_vect=mesh.faces,
+        train_time=99999,
+        accuracy=accuracy,
+        completeness=completeness,
+        chamfer=chamfer,
+        precision=precision,
+        recall=recall,
+        f1=f1,
+    )
+
+
 if __name__ == "__main__":
     arg_lists = build_arg_list()
     start_time = time()
     print(start_time)
     for arg_list in arg_lists:
         args = define_options_parser(arg_list)
-        # TODO:
-        args.save_path = (
-            args.output
-            + f"/cdp{int(args.w_chamfer)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}_build{args.build_mesh}_upsampling{args.upsampling}_num_centroids{args.num_centroids}_target_size{args.target_size}"
-        )
+
+        if args.w_chamfer > 0 or args.w_voroloss > 0:
+            args.save_path = (
+                args.output
+                + f"/cdp{int(args.w_chamfer)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}_build{args.build_mesh}_upsampling{args.upsampling}_num_centroids{args.num_centroids}_target_size{args.target_size}"
+            )
+        else:
+            args.save_path = args.output + "/BPA"
+
         if os.path.exists(args.save_path + "_final" + ".npz"):
             print("File already exists, skipping...")
             continue
@@ -616,23 +687,27 @@ if __name__ == "__main__":
         else:
             sdf = model
 
-        output_npz(sites, sdf, mnfld_points, args, "init")
-        output_image_polyscope("init")
-        t0 = time() - start_time
-        sites, sites_sdf = train_DCCVT(sites, sdf, mnfld_points, args)
-        ti = time() - t0 - start_time
-        output_npz(sites, sites_sdf, mnfld_points, args, "final", None, ti)
+        if args.w_chamfer > 0 or args.w_voroloss > 0:
+            output_npz(sites, sdf, mnfld_points, args, "init")
+            output_image_polyscope("init")
+            t0 = time() - start_time
+            sites, sites_sdf = train_DCCVT(sites, sdf, mnfld_points, args)
+            ti = time() - t0 - start_time
+            output_npz(sites, sites_sdf, mnfld_points, args, "final", None, ti)
+
+        else:
+            BPA_metrics(args)
+            output_image_polyscope("init")
 
         output_image_polyscope("final")
 
         # reset everything for the next iteration
-        del sites
-        del sites_sdf
-        del model
-        del mnfld_points
+        for var_name in ["sites", "sites_sdf", "model", "mnfld_points"]:
+            if var_name in locals() and locals()[var_name] is not None:
+                del locals()[var_name]
         torch.cuda.empty_cache()
 
     output_results_figure()
-    print(generate_latex_table_from_npz(args.output))
+    # print(generate_latex_table_from_npz(args.output))
 
     # open_everything_polyscope()
