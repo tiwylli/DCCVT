@@ -7,3 +7,18 @@
 [submodule "3rdparty/HotSpot"]
 	path = 3rdparty/HotSpot
 	url = https://github.com/Galaxeaaa/HotSpot.git
+[submodule "3rdparty/kaolin"]
+	path = 3rdparty/kaolin
+	url = https://github.com/NVIDIAGameWorks/kaolin
+[submodule "3rdparty/openusd"]
+	path = 3rdparty/openusd
+	url = https://github.com/PixarAnimationStudios/OpenUSD
+[submodule "3rdparty/pytorch3d"]
+	path = 3rdparty/pytorch3d
+	url = git@github.com:facebookresearch/pytorch3d.git
+[submodule "3rdparty/open3d"]
+	path = 3rdparty/open3d
+	url = https://github.com/isl-org/Open3D
+[submodule "3rdparty/diffvoronoi"]
+	path = 3rdparty/diffvoronoi
+	url = https://github.com/tiwylli/cmake_example
