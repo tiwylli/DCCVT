@@ -27,11 +27,10 @@ device = torch.device("cuda:0")
 print("Using device: ", torch.cuda.get_device_name(device))
 torch.manual_seed(69)
 
-
 DEFAULTS = {
-    "output": "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/outputs/",
-    "mesh": "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/mesh/",
-    "trained_HotSpot": "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/hotspots_model/",
+    "output": "/home/wylliam/dev/Kyushu_experiments/outputs/",
+    "mesh": "/home/wylliam/dev/Kyushu_experiments/mesh/",
+    "trained_HotSpot": "/home/wylliam/dev/Kyushu_experiments/hotspots_model/",
     "input_dims": 3,
     "num_iterations": 1000,
     "num_centroids": 16,  # ** input_dims
@@ -46,6 +45,12 @@ DEFAULTS = {
     "upsampling": 0,  # 0
     "lr_sites": 0.0005,
 }
+
+# if user name is beltegeuse, use the defaults
+if os.getenv("USER") == "beltegeuse":
+    DEFAULTS["output"] = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/outputs/"
+    DEFAULTS["mesh"] = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/mesh/"
+    DEFAULTS["trained_HotSpot"] = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/hotspots_model/"
 
 import argparse
 
