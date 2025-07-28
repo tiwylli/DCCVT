@@ -3,10 +3,10 @@
 	url = https://github.com/NVlabs/tiny-cuda-nn
 [submodule "3rdparty/pytorch_cluster"]
 	path = 3rdparty/pytorch_cluster
-	url = git@github.com:rusty1s/pytorch_cluster.git
+	url = https://github.com/rusty1s/pytorch_cluster
 [submodule "3rdparty/HotSpot"]
 	path = 3rdparty/HotSpot
-	url = https://github.com/Galaxeaaa/HotSpot.git
+	url = https://github.com/Galaxeaaa/HotSpot
 [submodule "3rdparty/kaolin"]
 	path = 3rdparty/kaolin
 	url = https://github.com/NVIDIAGameWorks/kaolin
@@ -15,10 +15,13 @@
 	url = https://github.com/PixarAnimationStudios/OpenUSD
 [submodule "3rdparty/pytorch3d"]
 	path = 3rdparty/pytorch3d
-	url = git@github.com:facebookresearch/pytorch3d.git
+	url = https://github.com/facebookresearch/pytorch3d
 [submodule "3rdparty/open3d"]
 	path = 3rdparty/open3d
 	url = https://github.com/isl-org/Open3D
-[submodule "3rdparty/diffvoronoi"]
-	path = 3rdparty/diffvoronoi
-	url = https://github.com/tiwylli/cmake_example
+# [submodule "3rdparty/diffvoronoi"]
+# 	path = 3rdparty/diffvoronoi
+# 	url = https://github.com/tiwylli/cmake_example
+[submodule "3rdparty/gDel3D"]
+	path = 3rdparty/gDel3D
+	url = https://github.com/beltegeuse/gDel3D.git

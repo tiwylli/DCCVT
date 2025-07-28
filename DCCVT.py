@@ -11,8 +11,7 @@ import matplotlib.pyplot as plt
 import polyscope as ps
 import kaolin
 
-import diffvoronoi
-# import pygdel3d
+import pygdel3d
 
 import sdfpred_utils.sdfpred_utils as su
 import sdfpred_utils.loss_functions as lf
@@ -240,8 +239,7 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
 
         if args.w_cvt > 0 or args.w_chamfer > 0:
             sites_np = sites.detach().cpu().numpy()
-            d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
-            # d3dsimplices, _ = pygdel3d.triangulate(sites_np)
+            d3dsimplices, _ = pygdel3d.triangulate(sites_np)
             d3dsimplices = np.array(d3dsimplices)
 
         if args.w_cvt > 0:
@@ -304,7 +302,6 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
                 continue
             if d3dsimplices is None:
-                # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites.detach().cpu().numpy().reshape(-1))
                 d3dsimplices, _ = pygdel3d.triangulate(sites_np)
                 d3dsimplices = np.array(d3dsimplices)
 
@@ -460,7 +457,7 @@ def extract_mesh(sites, model, target_pc, args, state="", d3dsimplices=None, t=t
 
     if d3dsimplices is None:
         sites_np = sites.detach().cpu().numpy()
-        d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1] * sites_np.shape[0]))
+        d3dsimplices, _ = pygdel3d.triangulate(sites_np)
         d3dsimplices = np.array(d3dsimplices)
 
     if args.w_chamfer > 0:

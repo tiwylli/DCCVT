@@ -2,7 +2,6 @@ from scipy.spatial import Delaunay, Voronoi
 import numpy as np
 from sklearn.cluster import KMeans
 import torch
-import diffvoronoi  # delaunay3d bindings
 import pygdel3d
 
 # import diffvoronoi  # delaunay3d bindings

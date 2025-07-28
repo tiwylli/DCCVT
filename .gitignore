@@ -45,3 +45,4 @@ old/*.ini
 /mesh/*
 *.blend
 *.so
+venv/

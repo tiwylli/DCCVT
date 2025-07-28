@@ -8,7 +8,6 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import polyscope as ps
-import diffvoronoi
 import pygdel3d
 import sdfpred_utils.sdfpred_utils as su
 import sdfpred_utils.loss_functions as lf
