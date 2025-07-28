@@ -2,13 +2,14 @@ from scipy.spatial import Delaunay, Voronoi
 import numpy as np
 from sklearn.cluster import KMeans
 import torch
-import diffvoronoi  # delaunay3d bindings
+# import diffvoronoi  # delaunay3d bindings
 import math
 from numba import njit, prange
 from collections import defaultdict
 from pytorch3d.loss import chamfer_distance
 import trimesh
 from scipy.spatial import cKDTree
+import pygdel3d
 
 device = torch.device("cuda:0")
 
@@ -1486,10 +1487,18 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
     if d3dsimplices is None:
         print("Computing Delaunay simplices...")
         sites_np = sites.detach().cpu().numpy()
-        d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1] * sites_np.shape[0]))
-        d3dsimplices = np.array(d3dsimplices)
+        # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1] * sites_np.shape[0]))
+        d3dsimplices, _ = pygdel3d.triangulate(sites_np)
+        print("Number of Delaunay simplices:", len(d3dsimplices))
+        print("Delaunay simplices shape:", d3dsimplices)
+        print("Max vertex index in simplices:", d3dsimplices.max())
+        print("Min vertex index in simplices:", d3dsimplices.min())
+        print("Site index range:", sites_np.shape[0])
+        
+        # d3dsimplices = np.array(d3dsimplices)
 
-    d3d = torch.tensor(d3dsimplices).to(device).detach()  # (M,4)
+    d3d = torch.tensor(d3dsimplices).to(device).detach()   # (M,4)
+    # d3d = torch.clamp(d3d, min=0, max=sites.shape[0] - 1)  # Ensure indices are valid
 
     if build_mesh:
         # print("-> tracing mesh")
@@ -1701,7 +1710,7 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
 
     # Build edge list (ridge points)
 
-    all_tets = torch.as_tensor(simplices, device=device)
+    all_tets = torch.as_tensor(simplices, device=device).long()
 
     edges = torch.cat(
         [

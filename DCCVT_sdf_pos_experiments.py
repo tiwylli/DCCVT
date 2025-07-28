@@ -9,10 +9,11 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import polyscope as ps
-import diffvoronoi
+# import diffvoronoi
 import sdfpred_utils.sdfpred_utils as su
 import sdfpred_utils.loss_functions as lf
 from pytorch3d.loss import chamfer_distance
+import pygdel3d
 
 import sys
 
@@ -28,9 +29,9 @@ torch.manual_seed(69)
 
 
 DEFAULTS = {
-    "output": "/home/wylliam/dev/Kyushu_experiments/outputs/",
-    "mesh": "/home/wylliam/dev/Kyushu_experiments/mesh/",
-    "trained_HotSpot": "/home/wylliam/dev/Kyushu_experiments/hotspots_model/",
+    "output": "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/outputs/",
+    "mesh": "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/mesh/",
+    "trained_HotSpot": "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/hotspots_model/",
     "input_dims": 3,
     "num_iterations": 1000,
     "num_centroids": 16,  # ** input_dims
@@ -194,9 +195,10 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
 
         if args.w_cvt > 0 or args.w_chamfer > 0:
             sites_np = sites.detach().cpu().numpy()
-            d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
-            d3dsimplices = np.array(d3dsimplices)
-
+            #d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
+            #d3dsimplices = np.array(d3dsimplices)
+            d3dsimplices, _ = pygdel3d.triangulate(sites_np)
+            
         if args.w_cvt > 0:
             cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
             sites_sdf_grads = su.sdf_space_grad_pytorch_diego(
@@ -257,8 +259,11 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
                 continue
             if d3dsimplices is None:
-                d3dsimplices = diffvoronoi.get_delaunay_simplices(sites.detach().cpu().numpy().reshape(-1))
-                d3dsimplices = np.array(d3dsimplices)
+                # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites.detach().cpu().numpy().reshape(-1))
+                # d3dsimplices = np.array(d3dsimplices)
+                d3dsimplices, _ = pygdel3d.triangulate(sites.detach().cpu().numpy())
+                # Convert to int64
+                # d3dsimplices = d3dsimplices.astype(np.int64)
 
             if args.w_chamfer > 0:
                 sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
@@ -394,20 +399,20 @@ def build_arg_list(m_list=["gargoyle", "gargoyle_unconverged", "bunny", "chair"]
             ]
         )
         # Voroloss vs DCCVT : upsampling
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}{m}.pth",
-                "--output",
-                f"{DEFAULTS['output']}{m}",
-                "--w_voroloss",
-                "1000",
-                "--upsampling",
-                "10",
-            ]
-        )
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_voroloss",
+        #         "1000",
+        #         "--upsampling",
+        #         "10",
+        #     ]
+        # )
         arg_list.append(
             [
                 "--mesh",
