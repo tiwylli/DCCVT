@@ -42,3 +42,6 @@ Resources/*
 utils/*.ini
 old/*.ini
 /mesh/*.ply
+/mesh/*
+*.blend
+*.so
