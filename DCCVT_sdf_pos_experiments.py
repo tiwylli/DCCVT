@@ -10,11 +10,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import polyscope as ps
 import diffvoronoi
+import pygdel3d
 import sdfpred_utils.sdfpred_utils as su
 import sdfpred_utils.loss_functions as lf
 from pytorch3d.loss import chamfer_distance
 
-import sys
 
 sys.path.append("3rdparty/HotSpot")
 from dataset import shape_3d
@@ -194,7 +194,8 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
 
         if args.w_cvt > 0 or args.w_chamfer > 0:
             sites_np = sites.detach().cpu().numpy()
-            d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
+            # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
+            d3dsimplices, _ = pygdel3d.triangulate(sites_np)
             d3dsimplices = np.array(d3dsimplices)
 
         if args.w_cvt > 0:
@@ -257,7 +258,8 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
                 continue
             if d3dsimplices is None:
-                d3dsimplices = diffvoronoi.get_delaunay_simplices(sites.detach().cpu().numpy().reshape(-1))
+                # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites.detach().cpu().numpy().reshape(-1))
+                d3dsimplices, _ = pygdel3d.triangulate(sites_np)
                 d3dsimplices = np.array(d3dsimplices)
 
             if args.w_chamfer > 0:
