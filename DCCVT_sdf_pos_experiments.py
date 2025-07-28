@@ -9,11 +9,16 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import polyscope as ps
+<<<<<<< HEAD
 import diffvoronoi
 import pygdel3d
+=======
+# import diffvoronoi
+>>>>>>> 385d7cdb6b092af0c09485cfd283504d3b48bd1e
 import sdfpred_utils.sdfpred_utils as su
 import sdfpred_utils.loss_functions as lf
 from pytorch3d.loss import chamfer_distance
+import pygdel3d
 
 
 sys.path.append("3rdparty/HotSpot")
@@ -25,7 +30,6 @@ import models.Net as Net
 device = torch.device("cuda:0")
 print("Using device: ", torch.cuda.get_device_name(device))
 torch.manual_seed(69)
-
 
 DEFAULTS = {
     "output": "/home/wylliam/dev/Kyushu_experiments/outputs/",
@@ -45,6 +49,12 @@ DEFAULTS = {
     "upsampling": 0,  # 0
     "lr_sites": 0.0005,
 }
+
+# if user name is beltegeuse, use the defaults
+if os.getenv("USER") == "beltegeuse":
+    DEFAULTS["output"] = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/outputs/"
+    DEFAULTS["mesh"] = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/mesh/"
+    DEFAULTS["trained_HotSpot"] = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/hotspots_model/"
 
 import argparse
 
@@ -194,10 +204,17 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
 
         if args.w_cvt > 0 or args.w_chamfer > 0:
             sites_np = sites.detach().cpu().numpy()
+<<<<<<< HEAD
             # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
             d3dsimplices, _ = pygdel3d.triangulate(sites_np)
             d3dsimplices = np.array(d3dsimplices)
 
+=======
+            #d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
+            #d3dsimplices = np.array(d3dsimplices)
+            d3dsimplices, _ = pygdel3d.triangulate(sites_np)
+            
+>>>>>>> 385d7cdb6b092af0c09485cfd283504d3b48bd1e
         if args.w_cvt > 0:
             cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
             sites_sdf_grads = su.sdf_space_grad_pytorch_diego(
@@ -259,8 +276,15 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 continue
             if d3dsimplices is None:
                 # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites.detach().cpu().numpy().reshape(-1))
+<<<<<<< HEAD
                 d3dsimplices, _ = pygdel3d.triangulate(sites_np)
                 d3dsimplices = np.array(d3dsimplices)
+=======
+                # d3dsimplices = np.array(d3dsimplices)
+                d3dsimplices, _ = pygdel3d.triangulate(sites.detach().cpu().numpy())
+                # Convert to int64
+                # d3dsimplices = d3dsimplices.astype(np.int64)
+>>>>>>> 385d7cdb6b092af0c09485cfd283504d3b48bd1e
 
             if args.w_chamfer > 0:
                 sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
