@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.cluster import KMeans
 import torch
 import diffvoronoi  # delaunay3d bindings
+import pygdel3d
 import math
 from numba import njit, prange
 from collections import defaultdict
@@ -1026,6 +1027,156 @@ def upsampling_curvature_vectorized_sites_sites_sdf(
     return updated_sites, updated_sites_sdf
 
 
+def upsampling_density_curvature_vectorized_sites_sites_sdf(
+    sites: torch.Tensor,  # (N,3)
+    simplices=None,  # np.ndarray (M,4) tetrahedra
+    model=None,  # SDFGrid | nn.Module | Tensor (N,)
+    sites_sdf_grads=None,
+    spacing_target: float = None,
+    alpha_high: float = 1.5,
+    alpha_low: float = 1.1,
+    curv_pct: float = 0.75,
+    growth_cap: float = 0.10,
+    knn_k: int = 16,
+    beta: float = 1.0,  # density weight
+    gamma: float = 1.0,  # curvature weight
+    eps: float = 1e-12,
+):
+    device = sites.device
+    N = sites.shape[0]
+
+    # ------------------------------ SDF Evaluation ------------------------------ #
+    if model is None:
+        raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
+    if model.__class__.__name__ == "SDFGrid":
+        sdf_values = model.sdf(sites)
+    elif isinstance(model, torch.Tensor):
+        sdf_values = model.to(device)
+    else:
+        sdf_values = model(sites).detach()
+    sdf_values = sdf_values.squeeze()  # (N,)
+
+    all_tets = torch.as_tensor(simplices, device=device)
+
+    edges = torch.cat(
+        [
+            all_tets[:, [0, 1]],
+            all_tets[:, [1, 2]],
+            all_tets[:, [2, 3]],
+            all_tets[:, [3, 0]],
+            all_tets[:, [0, 2]],
+            all_tets[:, [1, 3]],
+        ],
+        dim=0,
+    )
+    neighbors, _ = torch.sort(edges, dim=1)
+    neighbors = torch.unique(neighbors, dim=0)  # (E,2)
+
+    # ------------------------------ Local Spacing ------------------------------ #
+    edge_vec = sites[neighbors[:, 1]] - sites[neighbors[:, 0]]  # (E,3)
+    edge_len = torch.norm(edge_vec, dim=1)  # (E,)
+    idx_all = torch.cat([neighbors[:, 0], neighbors[:, 1]])
+    dists_all = torch.cat([edge_len, edge_len])
+    min_dists = torch.full((N,), float("inf"), device=device)
+    min_dists = min_dists.scatter_reduce(0, idx_all, dists_all, reduce="amin")  # (N,)
+
+    # ------------------------ Gradient and Curvature -------------------------- #
+    if sites_sdf_grads is not None:
+        print("Using provided SDF gradients")
+        grad_est = sites_sdf_grads.detach()
+        counts = torch.zeros((N,), device=device)
+        counts = counts.index_add(0, neighbors[:, 0], torch.ones_like(neighbors[:, 0], dtype=torch.float32))
+        counts = counts.index_add(0, neighbors[:, 1], torch.ones_like(neighbors[:, 1], dtype=torch.float32))
+        counts = counts.clamp(min=1.0)
+    else:
+        sdf_diff = sdf_values[neighbors[:, 1]] - sdf_values[neighbors[:, 0]]
+        sdf_diff = sdf_diff.unsqueeze(1)
+        edge_norm2 = (edge_vec**2).sum(1, keepdim=True) + eps
+        contrib = sdf_diff * edge_vec / edge_norm2
+
+        grad_est = torch.zeros_like(sites)
+        grad_est = grad_est.index_add(0, neighbors[:, 0], contrib)
+        grad_est = grad_est.index_add(0, neighbors[:, 1], contrib)
+
+        counts = torch.zeros((N, 1), device=device)
+        ones = torch.ones_like(sdf_diff)
+        counts = counts.index_add(0, neighbors[:, 0], ones)
+        counts = counts.index_add(0, neighbors[:, 1], ones)
+        grad_est /= counts.clamp(min=1.0)
+
+    unit_n = grad_est / (grad_est.norm(dim=1, keepdim=True) + eps)
+    dn2 = ((unit_n[neighbors[:, 0]] - unit_n[neighbors[:, 1]]) ** 2).sum(1)
+    curv_score = torch.zeros(N, device=device)
+    curv_score = curv_score.index_add(0, neighbors[:, 0], dn2)
+    curv_score = curv_score.index_add(0, neighbors[:, 1], dn2)
+    curv_score /= counts.squeeze()
+
+    # ------------------------ Zero Crossing Sites ----------------------------- #
+    sdf_i, sdf_j = sdf_values[neighbors[:, 0]], sdf_values[neighbors[:, 1]]
+    mask_zc = sdf_i * sdf_j <= 0
+    zc_sites = torch.unique(neighbors[mask_zc].reshape(-1))
+
+    # --------------------------- k-NN Density Score --------------------------- #
+    # brute-force fallback if torch_cluster is not available
+    with torch.no_grad():
+        dists = torch.cdist(sites, sites)  # (N,N)
+        d_knn = torch.topk(dists, k=knn_k + 1, dim=1, largest=False).values[:, 1:]  # skip self
+        avg_knn_dist = d_knn.mean(dim=1)  # (N,)
+        density_score = 1.0 / (avg_knn_dist + eps)  # inverse: low → sparse, high → dense
+
+    median_min_dists = torch.median(min_dists)
+    if spacing_target is None:
+        spacing_target = median_min_dists * 0.8
+
+    print(f"Median min distance: {median_min_dists:.4f}, Target spacing: {spacing_target:.4f}")
+
+    # ------------------------- Regime Selection -------------------------- #
+    if median_min_dists > spacing_target * alpha_high:
+        print("Uniform upsampling regime")
+        cand = zc_sites[min_dists[zc_sites] > spacing_target]
+
+    elif median_min_dists > spacing_target * alpha_low:
+        print("Hybrid upsampling regime")
+        norm_density = 1.0 / (density_score[zc_sites] + eps)
+        norm_density /= norm_density.median()
+        norm_curv = curv_score[zc_sites] / (torch.median(curv_score) + eps)
+        score = norm_density.pow(beta) * norm_curv.pow(gamma)
+
+        M = int(min(max(1, growth_cap * N), score.numel()))
+        topk = torch.topk(score, k=M, largest=True).indices
+        cand = zc_sites[topk]
+
+    else:
+        print("Curvature upsampling regime")
+        norm_density = 1.0 / (density_score[zc_sites] + eps)
+        norm_density /= norm_density.median()
+        norm_curv = curv_score[zc_sites] / (torch.median(curv_score) + eps)
+        score = norm_density.pow(beta) * norm_curv.pow(gamma)
+
+        thresh = torch.quantile(score, curv_pct)
+        mask = (score > thresh) & (min_dists[zc_sites] > spacing_target * 0.5)
+        cand = zc_sites[mask]
+
+    # --------------------------- Offspring Sites --------------------------- #
+    tetr_dirs = torch.as_tensor(
+        [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
+        dtype=torch.float32,
+        device=device,
+    )
+    centroids = sites[cand]
+    scale = (min_dists[cand] / 4).unsqueeze(1)
+    new_sites = (centroids.unsqueeze(1) + tetr_dirs.unsqueeze(0) * scale.unsqueeze(1)).reshape(-1, 3)
+
+    cent_grad = grad_est[cand]
+    delta = new_sites.reshape(-1, 4, 3) - centroids.unsqueeze(1)
+    new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)
+
+    updated_sites = torch.cat([sites, new_sites], dim=0)
+    updated_sdf = torch.cat([sdf_values, new_sdf], dim=0)
+
+    return updated_sites, updated_sdf
+
+
 def sample_mesh_points_heitz(vertices: torch.Tensor, faces: torch.LongTensor, num_samples: int) -> torch.Tensor:
     """
     Uniformly (area weighted) sample points on a triangular mesh
@@ -1487,6 +1638,8 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
         print("Computing Delaunay simplices...")
         sites_np = sites.detach().cpu().numpy()
         d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1] * sites_np.shape[0]))
+        # d3dsimplices, _ = pygdel3d.triangulate(sites_np)
+
         d3dsimplices = np.array(d3dsimplices)
 
     d3d = torch.tensor(d3dsimplices).to(device).detach()  # (M,4)
@@ -1760,8 +1913,11 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     if spacing_target is None:
         spacing_target = median_min_dists * 0.8  # heuristic default
 
+    print(f"Median min distance: {median_min_dists:.4f}, Target spacing: {spacing_target:.4f}")
+    print(median_min_dists, spacing_target * alpha_high, spacing_target * alpha_low)
+
     # --- UNIFORM ---------------------------------------------------- #
-    if median_min_dists > spacing_target * alpha_high or spacing_target * alpha_high == float("inf"):
+    if median_min_dists > spacing_target * alpha_high:
         print("Uniform upsampling regime")
         cand = zc_sites[min_dists[zc_sites] > spacing_target]
         print(f"Number of candidates in uniform regime: {cand.numel()}")
@@ -1810,109 +1966,6 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     return updated_sites, updated_sites_sdf
 
 
-# def upsampling_chamfer_vectorized_sites_sites_sdf(
-#     sites: torch.Tensor,  # (N,3)
-#     simplices=None,  # np.ndarray (M,4) if tri is None
-#     model=None,  # SDFGrid | nn.Module | Tensor (N,)
-#     target_pts: torch.Tensor = None,
-#     growth_cap: float = 0.10,
-#     eps: float = 1e-12,
-# ):
-#     device = sites.device
-#     N = sites.shape[0]
-
-#     # SDF at original sites
-#     if model is None:
-#         raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
-#     if model.__class__.__name__ == "SDFGrid":
-#         sdf_values = model.sdf(sites)
-#     elif isinstance(model, torch.Tensor):
-#         sdf_values = model.to(device)
-#     else:  # nn.Module / callable
-#         sdf_values = model(sites).detach()
-#     sdf_values = sdf_values.squeeze()  # (N,)
-
-#     # Build edge list (ridge points)
-
-#     all_tets = torch.as_tensor(simplices, device=device)
-
-#     edges = torch.cat(
-#         [
-#             all_tets[:, [0, 1]],
-#             all_tets[:, [1, 2]],
-#             all_tets[:, [2, 3]],
-#             all_tets[:, [3, 0]],
-#             all_tets[:, [0, 2]],
-#             all_tets[:, [1, 3]],
-#         ],
-#         dim=0,
-#     )
-#     neighbors, _ = torch.sort(edges, dim=1)
-#     neighbors = torch.unique(neighbors, dim=0)  # (E,2)
-
-#     # Zero-crossing sites
-#     sdf_i, sdf_j = sdf_values[neighbors[:, 0]], sdf_values[neighbors[:, 1]]
-#     mask_zc = sdf_i * sdf_j <= 0
-#     zc_sites = neighbors[mask_zc]
-
-#     t = sdf_i[mask_zc] / (sdf_i[mask_zc] - sdf_j[mask_zc] + eps)  # (R0,)
-#     pts = sites[zc_sites[:, 0]] + (sites[zc_sites[:, 1]] - sites[zc_sites[:, 0]]) * t.unsqueeze(1)  # (R0,3)
-
-#     dist_pred2tgt, _ = chamfer_distance(pts.unsqueeze(0), target_pts.detach())  # (1, R0)
-#     print("dist_pred2tgt shape:", dist_pred2tgt.shape)
-#     scores = dist_pred2tgt.squeeze(0)
-
-#     M = min(int(growth_cap * N), scores.numel())
-#     worst_idx = torch.topk(scores, k=M, largest=True).indices  # (M,)
-#     bad_pairs = zc_sites[worst_idx]  # (M,2)
-#     cand = torch.unique(bad_pairs.reshape(-1))  # (K,)
-
-#     # Insert 4 off-spring per selected site (regular tetrahedron)
-#     tetr_dirs = torch.as_tensor(
-#         [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
-#         dtype=torch.float32,
-#         device=device,
-#     )  # (4,3)
-
-#     edge_vec = sites[neighbors[:, 1]] - sites[neighbors[:, 0]]  # (E,3)
-#     edge_len = torch.norm(edge_vec, dim=1)  # (E,)
-#     idx_all = torch.cat([neighbors[:, 0], neighbors[:, 1]])
-#     dists_all = torch.cat([edge_len, edge_len])
-#     min_dists = torch.full((N,), float("inf"), device=device)
-#     min_dists = min_dists.scatter_reduce(0, idx_all, dists_all, reduce="amin")  # (N,)
-
-#     # Gradient ∇φ and curvature proxy κᵢ  (1-ring normal variation)
-#     # ∇φ estimate (scatter-add of finite-difference contributions)
-#     sdf_diff = sdf_values[neighbors[:, 1]] - sdf_values[neighbors[:, 0]]
-#     sdf_diff = sdf_diff.unsqueeze(1)  # (E,1)
-#     edge_norm2 = (edge_vec**2).sum(1, keepdim=True) + eps
-#     contrib = sdf_diff * edge_vec / edge_norm2  # (E,3)
-
-#     grad_est = torch.zeros_like(sites)  # (N,3)
-#     grad_est = grad_est.index_add(0, neighbors[:, 0], contrib)
-#     grad_est = grad_est.index_add(0, neighbors[:, 1], contrib)
-
-#     counts = torch.zeros((N, 1), device=device)
-#     ones = torch.ones_like(sdf_diff)
-#     counts = counts.index_add(0, neighbors[:, 0], ones)
-#     counts = counts.index_add(0, neighbors[:, 1], ones)
-#     grad_est /= counts.clamp(min=1.0)
-
-#     centroids = sites[cand]  # (K,3)
-#     scale = (min_dists[cand] / 4).unsqueeze(1)  # (K,1)
-#     new_sites = (centroids.unsqueeze(1) + tetr_dirs.unsqueeze(0) * scale.unsqueeze(1)).reshape(-1, 3)  # (4K,3)
-#     print("Before upsampling, number of sites:", sites.shape[0], "amount added:", new_sites.shape[0])
-#     # First-order SDF interpolation φ(new) = φ(old) + ∇φ·δ
-#     cent_grad = grad_est[cand]  # (K,3)
-#     delta = new_sites.reshape(-1, 4, 3) - centroids.unsqueeze(1)  # (K,4,3)
-#     new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
-
-#     # Concatenate & return
-#     updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
-#     updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
-
-
-#     return updated_sites, updated_sites_sdf
 def save_obj(filename, vertices, faces):
     """
     Save a mesh to an OBJ file.
