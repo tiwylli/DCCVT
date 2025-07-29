@@ -91,6 +91,7 @@ std::vector<int> tetrahedra_index(const pybind11::array_t<int>& tetrahedra_array
     std::vector<int> tetrahedra_indices_for_points(points.shape(0), -1);
 
     // For all points
+    int count_site_assigned = 0;
     for (ssize_t i = 0; i < points.shape(0); ++i) {
         // Load the point position
         float3 p = {
@@ -113,10 +114,10 @@ std::vector<int> tetrahedra_index(const pybind11::array_t<int>& tetrahedra_array
                     // Check if the tetrahedron contains the point
                     if (tetra_index != -1) {
                         // Get the vertices of the tetrahedron (4 vertices, 3D coordinates)
-                        auto v0 = points(tetrahedra(tetra_index, 0), 0);
-                        auto v1 = points(tetrahedra(tetra_index, 1), 0);
-                        auto v2 = points(tetrahedra(tetra_index, 2), 0);
-                        auto v3 = points(tetrahedra(tetra_index, 3), 0);
+                        auto v0 = tetrahedra(tetra_index, 0);
+                        auto v1 = tetrahedra(tetra_index, 1);
+                        auto v2 = tetrahedra(tetra_index, 2);
+                        auto v3 = tetrahedra(tetra_index, 3);
 
                         // Load the site coordinates
                         float3 a = {
@@ -163,9 +164,13 @@ std::vector<int> tetrahedra_index(const pybind11::array_t<int>& tetrahedra_array
                 // If no tetrahedron was found for the point, it remains -1
                 // but emit an warning
                 if (tetrahedra_indices_for_points[i] == -1) {
-                    std::cout << "Warning: No tetrahedron found for point index " 
-                              << i << " with site index " << site_index 
-                              << " at offset " << offset << std::endl;
+                    count_site_assigned += 1;
+                    // std::cout << "Warning: No tetrahedron found for point index " 
+                    //           << i << " with site index " << site_index 
+                    //           << " at offset " << offset << std::endl;
+                    // std::cout << "Point coordinate " << p.x << ", " 
+                    //           << p.y << ", " << p.z << std::endl;
+
                 }
             } else {
                 std::cout << "Warning: Offset " << offset << " is out of bounds for tetrahedra_indices array." << std::endl;
@@ -173,7 +178,16 @@ std::vector<int> tetrahedra_index(const pybind11::array_t<int>& tetrahedra_array
         } else {
             std::cout << "Warning: Site index " << site_index << " is out of bounds for site array." << std::endl;
         }
-    }   
+    }
+
+    if (count_site_assigned > 0) {
+        std::cout << "Warning: " << count_site_assigned 
+                  << " points were not assigned to any tetrahedron." << std::endl;
+        // Pourcentage of site
+        float percentage = static_cast<float>(count_site_assigned) / points.shape(0) * 100.0f;
+        std::cout << "Percentage of points not assigned to any tetrahedron: "
+                  << percentage << "%" << std::endl;
+    }
     
 
     return tetrahedra_indices_for_points;

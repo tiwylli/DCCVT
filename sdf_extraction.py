@@ -136,6 +136,7 @@ if __name__ == "__main__":
 
             # Compute delaunay triangulation
             d3dsimplices, _ = pygdel3d.triangulate(np.array(sites))
+            # d3dsimplices = scipy.spatial.Delaunay(np.array(sites)).simplices
 
             # Go through all the simplices to found where the grid points 
             # by checking each tetrahedron if it contains the grid points
@@ -162,6 +163,10 @@ if __name__ == "__main__":
                                            sites.cpu().numpy(),  
                                            idx.cpu().numpy())
             index_points = torch.tensor(index_points, device=0, dtype=torch.int32)
+
+            # Filter all points with -1 index
+            # Not that the following code will run with -1 index but the interpolation will be invalid
+            valid_mask = index_points != -1
            
             sdf_values = torch.zeros(pnts.shape[0], device=0, dtype=torch.float32)
             
@@ -196,6 +201,8 @@ if __name__ == "__main__":
             tet_sdf_values = data["sdf_values"][d3dsimplices[index_points].cpu().numpy()]  # (N, 4)
             tet_sdf_values = torch.tensor(tet_sdf_values, device=0, dtype=torch.float32)
             sdf_values = (bary_coords * tet_sdf_values).sum(dim=1)
+
+            sdf_values[~valid_mask] = 1000.0  # Set invalid points to arbitrary large value
             sdf_values = sdf_values.cpu().numpy()
 
         else:
