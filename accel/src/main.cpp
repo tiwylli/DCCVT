@@ -85,7 +85,7 @@ std::vector<int> tetrahedra_index(const pybind11::array_t<int>& tetrahedra_array
     // Check which is the tetrahedra that contains the point
     auto points = points_array.unchecked<2>();
     auto site = site_array.unchecked<2>();
-    auto nearest_indices = nearest_indices_array.unchecked<1>();
+    auto nearest_indices = nearest_indices_array.unchecked<2>(); // N first closest sites
     // Output the tetrahedra index for each point
     // std::cout << "Computing tetrahedra index for each point..." << std::endl;
     std::vector<int> tetrahedra_indices_for_points(points.shape(0), -1);
@@ -100,83 +100,92 @@ std::vector<int> tetrahedra_index(const pybind11::array_t<int>& tetrahedra_array
             static_cast<float>(points(i, 2))
         };
         // Get the nearest site index for the point
-        int site_index = nearest_indices(i);
+        bool found_tetrahedra = false;
+        for(ssize_t k = 0; k < nearest_indices.shape(1) && !found_tetrahedra; ++k) {
+            int site_index = nearest_indices(i, k);
         
-        // Check if the site index is valid
-        if (site_index >= 0 && site_index < site_array.shape(0)) {
-            // Compute the offset of the tetrahedra indices for the site
-            int offset = cumulative_tetrahedra_count[site_index];
-            // Check if the offset is valid
-            if (offset < tetrahedra_indices.size()) {
-                // Check all tetrahedra indices for the site
-                for(int j = 0; j < site_tetrahedra_count[site_index]; ++j) {
-                    int tetra_index = tetrahedra_indices[offset + j];
-                    // Check if the tetrahedron contains the point
-                    if (tetra_index != -1) {
-                        // Get the vertices of the tetrahedron (4 vertices, 3D coordinates)
-                        auto v0 = tetrahedra(tetra_index, 0);
-                        auto v1 = tetrahedra(tetra_index, 1);
-                        auto v2 = tetrahedra(tetra_index, 2);
-                        auto v3 = tetrahedra(tetra_index, 3);
+            // Check if the site index is valid
+            if (site_index >= 0 && site_index < site_array.shape(0)) {
+                // Compute the offset of the tetrahedra indices for the site
+                int offset = cumulative_tetrahedra_count[site_index];
+                // Check if the offset is valid
+                if (offset < tetrahedra_indices.size()) {
+                    // Check all tetrahedra indices for the site
+                    for(int j = 0; j < site_tetrahedra_count[site_index]; ++j) {
+                        int tetra_index = tetrahedra_indices[offset + j];
+                        // Check if the tetrahedron contains the point
+                        if (tetra_index != -1) {
+                            // Get the vertices of the tetrahedron (4 vertices, 3D coordinates)
+                            auto v0 = tetrahedra(tetra_index, 0);
+                            auto v1 = tetrahedra(tetra_index, 1);
+                            auto v2 = tetrahedra(tetra_index, 2);
+                            auto v3 = tetrahedra(tetra_index, 3);
 
-                        // Load the site coordinates
-                        float3 a = {
-                            static_cast<float>(site(v0, 0)),
-                            static_cast<float>(site(v0, 1)),
-                            static_cast<float>(site(v0, 2))
-                        };
-                        float3 b = {
-                            static_cast<float>(site(v1, 0)),
-                            static_cast<float>(site(v1, 1)),
-                            static_cast<float>(site(v1, 2))
-                        };
-                        float3 c = {
-                            static_cast<float>(site(v2, 0)),
-                            static_cast<float>(site(v2, 1)),
-                            static_cast<float>(site(v2, 2))
-                        };
-                        float3 d = {
-                            static_cast<float>(site(v3, 0)),  
-                            static_cast<float>(site(v3, 1)),
-                            static_cast<float>(site(v3, 2))
-                        };
+                            // Load the site coordinates
+                            float3 a = {
+                                static_cast<float>(site(v0, 0)),
+                                static_cast<float>(site(v0, 1)),
+                                static_cast<float>(site(v0, 2))
+                            };
+                            float3 b = {
+                                static_cast<float>(site(v1, 0)),
+                                static_cast<float>(site(v1, 1)),
+                                static_cast<float>(site(v1, 2))
+                            };
+                            float3 c = {
+                                static_cast<float>(site(v2, 0)),
+                                static_cast<float>(site(v2, 1)),
+                                static_cast<float>(site(v2, 2))
+                            };
+                            float3 d = {
+                                static_cast<float>(site(v3, 0)),  
+                                static_cast<float>(site(v3, 1)),
+                                static_cast<float>(site(v3, 2))
+                            };
 
-                        // Check if the point is inside the tetrahedron
-                        // with the orientation test
-                        bool o1 = tetrahedron_orientation(b, c, d, a) * tetrahedron_orientation(b, c, d, p) >= 0;
-                        bool o2 = tetrahedron_orientation(a, c, d, b) * tetrahedron_orientation(a, c, d, p) >= 0;
-                        bool o3 = tetrahedron_orientation(a, b, d, c) * tetrahedron_orientation(a, b, d, p) >= 0;
-                        bool o4 = tetrahedron_orientation(a, b, c, d) * tetrahedron_orientation(a, b, c, p) >= 0;
+                            // Check if the point is inside the tetrahedron
+                            // with the orientation test
+                            bool o1 = tetrahedron_orientation(b, c, d, a) * tetrahedron_orientation(b, c, d, p) >= 0;
+                            bool o2 = tetrahedron_orientation(a, c, d, b) * tetrahedron_orientation(a, c, d, p) >= 0;
+                            bool o3 = tetrahedron_orientation(a, b, d, c) * tetrahedron_orientation(a, b, d, p) >= 0;
+                            bool o4 = tetrahedron_orientation(a, b, c, d) * tetrahedron_orientation(a, b, c, p) >= 0;
 
-                        // If all orientations are the same, the point is inside the tetrahedron
-                        if (o1 && o2 && o3 && o4) {
-                            // Store the tetrahedron index for the point
-                            tetrahedra_indices_for_points[i] = tetra_index;
-                            break; // Found the tetrahedron for this point, no need to check further
+                            // If all orientations are the same, the point is inside the tetrahedron
+                            if (o1 && o2 && o3 && o4) {
+                                // Store the tetrahedron index for the point
+                                tetrahedra_indices_for_points[i] = tetra_index;
+                                found_tetrahedra = true;
+                                break; // Found the tetrahedron for this point, no need to check further
+                            }
+                        } else {
+                            // Warning: Tetrahedron index is -1, which means it was not found
+                            std::cout << "Warning: Tetrahedron index is -1 for site index " 
+                                    << site_index << " at offset " << offset + j << std::endl;
                         }
-                    } else {
-                        // Warning: Tetrahedron index is -1, which means it was not found
-                        std::cout << "Warning: Tetrahedron index is -1 for site index " 
-                                  << site_index << " at offset " << offset + j << std::endl;
                     }
-                }
 
-                // If no tetrahedron was found for the point, it remains -1
-                // but emit an warning
-                if (tetrahedra_indices_for_points[i] == -1) {
-                    count_site_assigned += 1;
-                    // std::cout << "Warning: No tetrahedron found for point index " 
-                    //           << i << " with site index " << site_index 
-                    //           << " at offset " << offset << std::endl;
-                    // std::cout << "Point coordinate " << p.x << ", " 
-                    //           << p.y << ", " << p.z << std::endl;
-
+                    // If no tetrahedron was found for the point, it remains -1
+                    // but emit an warning
+                    // if (tetrahedra_indices_for_points[i] == -1) {
+                    //     count_site_assigned += 1;
+                    //     // std::cout << "Warning: No tetrahedron found for point index " 
+                    //     //           << i << " with site index " << site_index 
+                    //     //           << " at offset " << offset << std::endl;
+                    //     // std::cout << "Point coordinate " << p.x << ", " 
+                    //     //           << p.y << ", " << p.z << std::endl;
+                    // }
+                } else {
+                    std::cout << "Warning: Offset " << offset << " is out of bounds for tetrahedra_indices array." << std::endl;
                 }
             } else {
-                std::cout << "Warning: Offset " << offset << " is out of bounds for tetrahedra_indices array." << std::endl;
+                std::cout << "Warning: Site index " << site_index << " is out of bounds for site array." << std::endl;
             }
-        } else {
-            std::cout << "Warning: Site index " << site_index << " is out of bounds for site array." << std::endl;
+        }
+
+        if(!found_tetrahedra) {
+            // If no tetrahedron was found for the point, it remains -1
+            // Increment the count of site assigned
+            count_site_assigned += 1;
         }
     }
 

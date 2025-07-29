@@ -150,14 +150,14 @@ if __name__ == "__main__":
             _, idx, _ = pytorch3d.ops.knn_points(
                 pnts.unsqueeze(0), 
                 sites.unsqueeze(0), 
-                K=1, 
+                K=10, 
                 return_nn=True, 
-                return_sorted=False
+                return_sorted=True
             )
             t1 = time.time()
             print(f"Time to find closest tetrahedron: {t1 - t0:.4f} seconds")
-            idx = idx.squeeze(0).squeeze(1)  # (N, 1) -> (N,)
-        
+            idx = idx.squeeze(0)  # (N, 1) -> (N,)
+            print(idx.shape)
             index_points = voronoiaccel.tetrahedra_index(d3dsimplices.cpu().numpy(), 
                                            pnts.cpu().numpy(), 
                                            sites.cpu().numpy(),  
