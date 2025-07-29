@@ -25,3 +25,6 @@
 [submodule "3rdparty/gDel3D"]
 	path = 3rdparty/gDel3D
 	url = https://github.com/beltegeuse/gDel3D.git
+[submodule "accel/pybind11"]
+	path = accel/pybind11
+	url = https://github.com/pybind/pybind11.git

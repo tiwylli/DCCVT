@@ -10,6 +10,9 @@ import tqdm
 import kaolin
 import pygdel3d
 import scipy.spatial
+import voronoiaccel
+import pytorch3d.ops
+import time
 
 def grid_to_mesh(grid_dict, z, scale=1.0, translate=(0, 0, 0)):
     cell_width = grid_dict["xyz"][0][2] - grid_dict["xyz"][0][1]
@@ -93,24 +96,6 @@ def volume_tetrahedron(a, b, c, d):
     n = torch.cross(bd, cd)
     return torch.abs((ad * n).sum(dim=-1)) / 6.0
 
-def orientation(a, b, c, d):
-    return torch.sign(torch.einsum('ij,ij->i', torch.cross(b - a, c - a), d - a))
-
-def is_inside_tetrahedron(pnts, a, b, c, d):
-    # pnts: (N, 3)
-    N = pnts.shape[0]
-
-    a = a.expand(N, 3)
-    b = b.expand(N, 3)
-    c = c.expand(N, 3)
-    d = d.expand(N, 3)
-
-    o1 = orientation(b, c, d, a) * orientation(b, c, d, pnts) >= 0
-    o2 = orientation(a, c, d, b) * orientation(a, c, d, pnts) >= 0
-    o3 = orientation(a, b, d, c) * orientation(a, b, d, pnts) >= 0
-    o4 = orientation(a, b, c, d) * orientation(a, b, c, pnts) >= 0
-
-    return o1 & o2 & o3 & o4
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract mesh from SDF grid.")
@@ -156,25 +141,28 @@ if __name__ == "__main__":
             # by checking each tetrahedron if it contains the grid points
             sites = torch.tensor(sites, device=0, dtype=torch.float32)
             d3dsimplices = torch.tensor(d3dsimplices, device=0)
-            index_points = torch.zeros(pnts.shape[0], dtype=torch.int32, device=0)
             pnts = torch.tensor(pnts, device=0, dtype=torch.float32)
-
-            # Use marching tetrahedra to compute the SDF values at the grid points
-            # d3dsimplices = d3dsimplices[:10000]
-            for index, simplex in tqdm.tqdm(enumerate(d3dsimplices), total=len(d3dsimplices)):
-                tet_points = sites[simplex]
-                
-                # Compute the tetrahedron barycentric coordinates 
-                # from tet_points using volume_thetahedron
-                tet_volume = volume_tetrahedron(
-                    tet_points[0], tet_points[1], tet_points[2], tet_points[3]
-                )
-
-                is_inside = is_inside_tetrahedron(pnts, tet_points[0], tet_points[1], tet_points[2], tet_points[3])
-                index_points[is_inside] = index
-
-            print(index_points)
-            print(torch.max(index_points), torch.min(index_points))
+            
+            # Found the index of the closest tetrahedron for each point 
+            # using pytorch3d with knn=1
+            t0 = time.time()
+            _, idx, _ = pytorch3d.ops.knn_points(
+                pnts.unsqueeze(0), 
+                sites.unsqueeze(0), 
+                K=1, 
+                return_nn=True, 
+                return_sorted=False
+            )
+            t1 = time.time()
+            print(f"Time to find closest tetrahedron: {t1 - t0:.4f} seconds")
+            idx = idx.squeeze(0).squeeze(1)  # (N, 1) -> (N,)
+        
+            index_points = voronoiaccel.tetrahedra_index(d3dsimplices.cpu().numpy(), 
+                                           pnts.cpu().numpy(), 
+                                           sites.cpu().numpy(),  
+                                           idx.cpu().numpy())
+            index_points = torch.tensor(index_points, device=0, dtype=torch.int32)
+           
             sdf_values = torch.zeros(pnts.shape[0], device=0, dtype=torch.float32)
             
             # Get all tet points vectorized based of index_points
