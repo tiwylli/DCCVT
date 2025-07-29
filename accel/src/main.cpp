@@ -15,15 +15,11 @@ using namespace linalg::aliases;
 // Returns a positive value if the tetrahedron is oriented counter-clockwise
 // Returns a negative value if the tetrahedron is oriented clockwise
 // Returns zero if the tetrahedron is degenerate (collinear points)
-float tetrahedron_orientation(const float3& v0, const float3& v1,
-                              const float3& v2, const float3& v3) {
-    // Compute the vectors from v0 to the other vertices
-    float3 a = v1 - v0;
-    float3 b = v2 - v0;
-    float3 c = v3 - v0;
+float tetrahedron_orientation(const float3& a, const float3& b,
+                              const float3& c, const float3& d) {
     // Compute the scalar triple product
     // This gives the signed volume of the tetrahedron
-    return dot(a, cross(b, c));
+    return dot(d - a, cross(b - a, c - a));
 }
 
 // Numpy array-like structure for tetrahedra (N, 4)
@@ -102,9 +98,9 @@ std::vector<int> tetrahedra_index(const pybind11::array_t<int>& tetrahedra_array
             static_cast<float>(points(i, 1)),
             static_cast<float>(points(i, 2))
         };
-
         // Get the nearest site index for the point
         int site_index = nearest_indices(i);
+        
         // Check if the site index is valid
         if (site_index >= 0 && site_index < site_array.shape(0)) {
             // Compute the offset of the tetrahedra indices for the site
