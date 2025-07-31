@@ -1421,6 +1421,7 @@ def interpolate_sdf_grad_of_vertices(
     tets: torch.LongTensor,  # (M, 4) indices of sites per tetrahedron
     sites: torch.Tensor,  # (N, 3) coordinates of the sites
     site_grads: torch.Tensor,  # (N, 3) spatial gradients ∇φ at each site
+    quaternion_slerp: bool = False,  # use quaternion SLERP for interpolation
 ) -> torch.Tensor:
     """
     Interpolates the SDF gradient at Voronoi vertices using barycentric coordinates,
@@ -1458,12 +1459,103 @@ def interpolate_sdf_grad_of_vertices(
     w0 = 1.0 - w123.sum(dim=1, keepdim=True)
     W = torch.cat([w0, w123], dim=1)  # (M, 4)
 
-    we = torch.abs(W).max(dim=1, keepdim=True)[0]  # (M, 1)
+    # we = torch.abs(W).max(dim=1, keepdim=True)[0]  # (M, 1)
 
-    # Weighted sum of gradients
-    grad_v = (W.unsqueeze(-1) * v_grad).sum(dim=1)  # (M, 3)
+    if quaternion_slerp:
+        # Use quaternion SLERP for interpolation
+        grad_v = quaternion_slerp_barycentric(v_grad, W)
+    else:
+        # Weighted sum of gradients
+        grad_v = (W.unsqueeze(-1) * v_grad).sum(dim=1)  # (M, 3)
 
     return grad_v
+
+
+import torch
+from pytorch3d.transforms import matrix_to_quaternion, quaternion_to_matrix
+
+
+def quaternion_slerp(q1: torch.Tensor, q2: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    """
+    Spherical linear interpolation between two quaternions.
+    q1, q2: (..., 4) quaternions (w, x, y, z)
+    t: (..., 1) interpolation factor in [0, 1]
+    Returns:
+        (..., 4) interpolated quaternion
+    """
+    # Normalize to ensure unit quaternions
+    q1 = torch.nn.functional.normalize(q1, dim=-1)
+    q2 = torch.nn.functional.normalize(q2, dim=-1)
+
+    dot = (q1 * q2).sum(dim=-1, keepdim=True)  # (..., 1)
+
+    # Ensure shortest path
+    q2 = torch.where(dot < 0, -q2, q2)
+    dot = torch.clamp(dot, -1.0, 1.0)
+
+    theta_0 = torch.acos(dot)  # angle between q1 and q2
+    sin_theta_0 = torch.sin(theta_0)
+
+    # Avoid division by 0
+    small_angle = sin_theta_0 < 1e-6
+
+    s1 = torch.where(small_angle, 1.0 - t, torch.sin((1.0 - t) * theta_0) / (sin_theta_0 + 1e-12))
+    s2 = torch.where(small_angle, t, torch.sin(t * theta_0) / (sin_theta_0 + 1e-12))
+
+    return s1 * q1 + s2 * q2  # (..., 4)
+
+
+def quaternion_slerp_barycentric(
+    v_grad: torch.Tensor,  # (M, 4, 3), SDF gradients at the tet corners
+    weights: torch.Tensor,  # (M, 4), barycentric weights
+) -> torch.Tensor:
+    """
+    Perform quaternion-based interpolation of gradients using SLERP.
+    Args:
+        v_grad: (M, 4, 3) per-tet gradients (assumed unit vectors)
+        weights: (M, 4) barycentric weights (sum to 1)
+    Returns:
+        (M, 3) interpolated unit gradients
+    """
+
+    # Normalize gradients (quaternions must be unit length vectors)
+    v_grad = torch.nn.functional.normalize(v_grad, dim=-1)  # (M, 4, 3)
+
+    # Convert each gradient to quaternion representation using axis-angle [θ * n] → quaternion
+    # We'll assume each 3D unit vector lies on the sphere and can be interpreted as a rotation from a canonical vector
+    # We'll pick [1,0,0] as canonical; rotation from it to each gradient gives the rotation quaternion
+
+    # Canonical vector
+    canonical = torch.tensor([1.0, 0.0, 0.0], device=v_grad.device).expand(v_grad.shape[0], 1, 3)  # (M,1,3)
+    q_rots = []
+
+    for i in range(4):
+        v_i = v_grad[:, i]  # (M, 3)
+        axis = torch.cross(canonical.squeeze(1), v_i, dim=1)  # (M,3)
+        axis = torch.nn.functional.normalize(axis, dim=1)
+        dot = (canonical.squeeze(1) * v_i).sum(dim=1, keepdim=True).clamp(-1, 1)  # (M,1)
+        angle = torch.acos(dot)  # (M,1)
+
+        half_angle = angle / 2
+        q = torch.cat(
+            [
+                torch.cos(half_angle),  # real part
+                axis * torch.sin(half_angle),  # imag part
+            ],
+            dim=1,
+        )  # (M,4)
+        q_rots.append(q)
+
+    # Slerp pairwise and combine
+    q01 = quaternion_slerp(q_rots[0], q_rots[1], weights[:, 1:2] / (weights[:, 0:1] + weights[:, 1:2] + 1e-12))
+    q012 = quaternion_slerp(q01, q_rots[2], weights[:, 2:3] / (weights[:, :3].sum(dim=1, keepdim=True) + 1e-12))
+    q_final = quaternion_slerp(q012, q_rots[3], weights[:, 3:4] / (weights.sum(dim=1, keepdim=True) + 1e-12))
+
+    # Convert quaternion to rotation matrix and rotate canonical vector
+    R = quaternion_to_matrix(q_final)  # (M, 3, 3)
+    grad_interp = torch.matmul(R, canonical.transpose(1, 2)).squeeze(-1)  # (M, 3)
+
+    return grad_interp
 
 
 def volume_tetrahedron(a, b, c, d):
@@ -1512,7 +1604,10 @@ def sdf_space_grad_pytorch_diego(sites, sdf, tets):
     G = torch.bmm(dX_T, dX)  # (M, 3, 3)
     # print("G shape:", G.shape)
     # Inverse G: (M, 3, 3)
+
     Ginv = torch.linalg.pinv(G)  # stable pseudo-inverse for singular cases
+    # Ginv = torch.linalg.inv(G)  # faster, uses LU
+
     # print("Ginv shape:", Ginv.shape)
 
     # Weights: Ginv @ dX^T -> (M, 3, 4)
@@ -1626,7 +1721,16 @@ def sphere_sdf_and_grad(
 #     return proj_vertices, new_faces, sdf_verts, grads, tet_probs
 
 
-def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None, build_mesh=False):
+def get_clipped_mesh_numba(
+    sites,
+    model,
+    d3dsimplices,
+    clip=True,
+    sites_sdf=None,
+    build_mesh=False,
+    quaternion_slerp=False,
+    barycentric_weights=False,
+):
     """
     sites:           (N,3) torch tensor (requires_grad)
     model:           SDF model: sites -> (N,1) tensor of signed distances
@@ -1635,6 +1739,10 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
     device = sites.device
     vertices_sdf = None
     vertices_sdf_grad = None
+    sdf_verts = None
+    grads = None
+    proj_vertices = None
+    tet_probs = None
     if d3dsimplices is None:
         print("Computing Delaunay simplices...")
         sites_np = sites.detach().cpu().numpy()
@@ -1671,15 +1779,21 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
             # print("-> clipping")
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
             sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)  # (M,3)
-            vertices_sdf_grad = interpolate_sdf_grad_of_vertices(all_vor_vertices, d3d, sites, sites_sdf_grad)
 
-            sdf_verts = vertices_sdf[sorted(used)]
-            grads = vertices_sdf_grad[sorted(used)]  # (M,3)
+            if barycentric_weights:
+                # Use barycentric weights for interpolation
+                vertices_sdf_grad = interpolate_sdf_grad_of_vertices(
+                    all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
+                )
+                sdf_verts = vertices_sdf[sorted(used)]
+                grads = vertices_sdf_grad[sorted(used)]
+                proj_vertices = newton_step_clipping(grads, sdf_verts, new_vertices)
+            else:
+                proj_vertices, tet_probs = tet_plane_clipping(
+                    d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
+                )
 
-            proj_vertices, tet_probs = tet_plane_clipping(
-                d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
-            )  # (M,3)
-            return proj_vertices, new_faces, sdf_verts, grads, tet_probs
+            return proj_vertices, new_faces, sites_sdf_grad, None, tet_probs
     else:
         # print("-> not tracing mesh")
         all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
@@ -1697,14 +1811,16 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
             # print("-> clipping")
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
             sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)
-            vertices_sdf_grad = interpolate_sdf_grad_of_vertices(all_vor_vertices, d3d, sites, sites_sdf_grad)
-
-            sdf_verts = vertices_sdf[used_tet]
-            grads = vertices_sdf_grad[used_tet]
-            proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
-
-            # print("-> computing bisectors")
-            # print(sites.shape, sites_sdf.shape, "bisectors shape", bisectors.shape, "bisectors_to_compute shape", bisectors_to_compute.shape)
+            if barycentric_weights:
+                # Use barycentric weights for interpolation
+                vertices_sdf_grad = interpolate_sdf_grad_of_vertices(
+                    all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
+                )
+                sdf_verts = vertices_sdf[used_tet]
+                grads = vertices_sdf_grad[used_tet]
+                proj_vertices = newton_step_clipping(grads, sdf_verts, vertices)
+            else:
+                proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
 
             bisectors_sdf = (sites_sdf[bisectors_to_compute[:, 0]] + sites_sdf[bisectors_to_compute[:, 1]]) / 2
             bisectors_sdf_grad = (
@@ -1715,7 +1831,7 @@ def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None
 
             proj_points = torch.cat((proj_vertices, proj_bisectors), 0)
 
-            return proj_points, None, sdf_verts, grads, tet_probs
+            return proj_points, None, sites_sdf_grad, None, tet_probs
 
 
 def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
@@ -2020,17 +2136,24 @@ def save_target_pc_ply(filename, points):
 def sample_points_on_mesh(mesh_path, n_points=100000):
     mesh = trimesh.load(mesh_path)
 
-    # Normalize mesh (centered and scaled uniformly)
-    bbox = mesh.bounds
-    center = mesh.centroid
-    scale = np.linalg.norm(bbox[1] - bbox[0])
-    mesh.apply_translation(-center)
-    mesh.apply_scale(1.0 / scale)
+    # # Normalize mesh (centered and scaled uniformly)
+    # bbox = mesh.bounds
+    # center = mesh.centroid
+    # scale = np.linalg.norm(bbox[1] - bbox[0])
+    # mesh.apply_translation(-center)
+    # mesh.apply_scale(1.0 / scale)
 
-    # Export normalized mesh
-    mesh.export(mesh_path.replace(".obj", ".obj"))
+    # # Export normalized mesh
+    # mesh.export(mesh_path.replace(".obj", ".obj"))
 
     points, _ = trimesh.sample.sample_surface(mesh, n_points)
+
+    # HotSpot shape 3d get_mnfld_points default
+    points = np.asarray(points, dtype=np.float32)
+    points = points - points.mean(axis=0)  # Center the point cloud
+    scale = np.abs(points).max()
+    points = points / scale  # Normalize to unit sphere
+
     return points, mesh
 
 
@@ -2056,3 +2179,17 @@ def chamfer_accuracy_completeness_f1(ours_pts, gt_pts, threshold=0.003):
     f1 = 2 * precision * recall / (precision + recall + 1e-8)
 
     return accuracy, completeness, chamfer, precision, recall, f1
+
+
+def zero_crossing_sdf_metric(true_sdf, sites, sites_sdf, d3dsimplices):
+    _, _, used_tet = compute_zero_crossing_vertices_3d(sites, None, None, d3dsimplices, sites_sdf)
+    d3d = torch.tensor(d3dsimplices, device=sites.device)
+    d3d = d3dsimplices[used_tet]
+    zc_sdf = sites_sdf[d3d]
+    zc_truesdf = true_sdf[d3d]
+
+    return (
+        torch.sum(zc_truesdf - zc_sdf).item(),
+        torch.mean(zc_truesdf - zc_sdf).item(),
+        torch.std(zc_truesdf - zc_sdf).item(),
+    )
