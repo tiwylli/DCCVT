@@ -12,6 +12,7 @@ import pygdel3d
 import sdfpred_utils.sdfpred_utils as su
 import sdfpred_utils.loss_functions as lf
 from pytorch3d.loss import chamfer_distance
+from pytorch3d.ops import knn_points, knn_gather
 
 
 sys.path.append("3rdparty/HotSpot")
@@ -39,8 +40,10 @@ DEFAULTS = {
     "w_voroloss": 0,  # 1000
     "w_chamfer": 0,  # 1000
     "w_bpa": 0,  # 1000
+    "w_min_dist": 0,  # 1000
     "upsampling": 0,  # 0
     "lr_sites": 0.0005,
+    "noise_level": 0.0,  # 0.1
 }
 
 # if user name is beltegeuse, use the defaults
@@ -50,8 +53,9 @@ if os.getenv("USER") == "beltegeuse":
     DEFAULTS["trained_HotSpot"] = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/hotspots_model/"
 
 
-def define_options_parser(arg_list=None):
+def define_options_parser():
     parser = argparse.ArgumentParser(description="DCCVT experiments")
+    parser.add_argument("--automatic", action=argparse.BooleanOptionalAction, default=False, help="Run automatically with predefined args")
     parser.add_argument("--input_dims", type=int, default=DEFAULTS["input_dims"], help="Dimensionality of the input")
     parser.add_argument("--output", type=str, default=DEFAULTS["output"], help="Output directory")
     parser.add_argument("--mesh", type=str, default=DEFAULTS["mesh"], help="Mesh directory")
@@ -79,12 +83,23 @@ def define_options_parser(arg_list=None):
         "--w_chamfer", type=float, default=DEFAULTS["w_chamfer"], help="Weight for Chamfer distance on points"
     )
     parser.add_argument("--w_bpa", type=float, default=DEFAULTS["w_bpa"], help="flag to use BPA instead of DCCVT")
+    parser.add_argument("--w_min_dist", type=float, default=DEFAULTS["w_min_dist"], help="Weight for minimum distance loss")
     parser.add_argument("--upsampling", type=int, default=DEFAULTS["upsampling"], help="Upsampling factor")
     parser.add_argument("--lr_sites", type=float, default=DEFAULTS["lr_sites"], help="Learning rate for sites")
     parser.add_argument(
         "--save_path", type=str, default=None, help="(optional) full save path; if omitted, computed from other flags"
     )
-    return parser.parse_args(arg_list)
+    parser.add_argument(
+        "--noise_level", type=float, default=DEFAULTS["noise_level"], help="Noise level for SDF initialization (0.0 = no noise)"
+    )
+    parser.add_argument(
+        "--polyscope", action=argparse.BooleanOptionalAction, default=False, help="Enable/disable Polyscope visualization"
+    )
+    parser.add_argument(
+        "--skip", action=argparse.BooleanOptionalAction, default=False, help="Skip the training if output files already exist"
+    )
+
+    return parser
 
 
 def load_model(mesh, target, trained_HotSpot):
@@ -185,10 +200,11 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
     chamfer_loss_mesh = 0
     voroloss_loss = 0
     sdf_loss = 0
+    min_distance_loss = 0
     d3dsimplices = None
     voroloss = lf.Voroloss_opt().to(device)
 
-    for epoch in tqdm(range(args.num_iterations)):
+    for epoch in tqdm.tqdm(range(args.num_iterations)):
         optimizer.zero_grad()
 
         if args.w_cvt > 0 or args.w_chamfer > 0:
@@ -200,31 +216,51 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
             # d3dsimplices = np.array(d3dsimplices)
 
+        # Linear to training from 0.1 to 0.0 for the half of the training
+        if args.noise_level > 0:
+            factor_noise = 1.0 - min(1.0, epoch / (args.num_iterations * 0.5))
+            sdf_site_noised = sites_sdf + torch.randn_like(sites_sdf) * args.noise_level * factor_noise
+        else:
+            # No noise on the site
+            sdf_site_noised = sites_sdf
+
         if args.w_cvt > 0:
             cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
             sites_sdf_grads = su.sdf_space_grad_pytorch_diego(
-                sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach()
+                sites, sdf_site_noised, torch.tensor(d3dsimplices).to(device).detach()
             )
             eik_loss = args.w_cvt / 10 * lf.discrete_tet_volume_eikonal_loss(sites, sites_sdf_grads, d3dsimplices)
-            shl = args.w_cvt / 0.1 * lf.smoothed_heaviside_loss(sites, sites_sdf, sites_sdf_grads, d3dsimplices)
+            shl = args.w_cvt / 0.1 * lf.smoothed_heaviside_loss(sites, sdf_site_noised, sites_sdf_grads, d3dsimplices)
             sdf_loss = eik_loss + shl
 
         if args.w_chamfer > 0:
             v_vect, f_vect, sdf_verts, sdf_verts_grads, _ = su.get_clipped_mesh_numba(
-                sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh
+                sites, None, d3dsimplices, args.clip, sdf_site_noised, args.build_mesh
             )
             if args.build_mesh:
                 triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_vect for i in range(1, len(f) - 1)]
                 triangle_faces = torch.tensor(triangle_faces, device=device)
-                hs_p = su.sample_mesh_points_heitz(v_vect, triangle_faces, num_samples=mnfld_points.shape[0])
-                chamfer_loss_mesh, _ = chamfer_distance(mnfld_points.detach(), hs_p.unsqueeze(0))
+                hs_p = su.sample_mesh_points_heitz(v_vect, triangle_faces, num_samples=target_pc.shape[0])
+                chamfer_loss_mesh, _ = chamfer_distance(target_pc.detach(), hs_p.unsqueeze(0))
             else:
-                chamfer_loss_mesh, _ = chamfer_distance(mnfld_points.detach(), v_vect.unsqueeze(0))
+                chamfer_loss_mesh, _ = chamfer_distance(target_pc.detach(), v_vect.unsqueeze(0))
 
         if args.w_voroloss > 0:
             voroloss_loss = voroloss(target_pc.squeeze(0), sites).mean()
 
-        sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
+        if args.w_min_dist > 0:
+            # compute min distance from v_vect
+            _, min_idx, _ = knn_points(
+                v_vect.unsqueeze(0), v_vect.unsqueeze(0), K=2, return_nn=True, return_sorted=True
+            )
+            # Make a force that pushes sites away from each other based on average distance
+            # which does not apply to biggest distance
+            v_vect_next = knn_gather(v_vect.unsqueeze(0), min_idx)
+            avg_min_dist = torch.norm(v_vect_next[0, :, 1, :] - v_vect, dim=-1).mean()
+            min_distance_loss = torch.mean(torch.maximum(avg_min_dist - torch.norm(v_vect_next[0, :, 1, :] - v_vect, dim=-1), 
+                                                         torch.tensor(0.0, device=device)))
+
+        sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss + args.w_min_dist * min_distance_loss
 
         loss = sites_loss + sdf_loss
         # print(f"Epoch {epoch}: loss = {loss.item()}")
@@ -664,56 +700,69 @@ def BPA_metrics(args):
         f1=f1,
     )
 
-
-if __name__ == "__main__":
-    arg_lists = build_arg_list()
+def run(args):
     start_time = time()
-    print(start_time)
-    for arg_list in arg_lists:
-        args = define_options_parser(arg_list)
 
-        if args.w_chamfer > 0 or args.w_voroloss > 0:
-            args.save_path = (
-                args.output
-                + f"/cdp{int(args.w_chamfer)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}_build{args.build_mesh}_upsampling{args.upsampling}_num_centroids{args.num_centroids}_target_size{args.target_size}"
-            )
-        else:
-            args.save_path = args.output + "/BPA"
+    if args.w_chamfer > 0 or args.w_voroloss > 0:
+        args.save_path = (
+            args.output
+            + f"/cdp{int(args.w_chamfer)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}_build{args.build_mesh}_upsampling{args.upsampling}_num_centroids{args.num_centroids}_target_size{args.target_size}"
+        )
+    else:
+        args.save_path = args.output + "/BPA"
 
-        if os.path.exists(args.save_path + "_final" + ".npz"):
-            print("File already exists, skipping...")
-            continue
+    if args.skip and os.path.exists(args.save_path + "_final" + ".npz"):
+        print("File already exists, skipping...")
+        return
 
-        print("args: ", args)
-        model, mnfld_points = load_model(args.mesh, args.target_size, args.trained_HotSpot)
-        sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
+    print("args: ", args)
+    model, mnfld_points = load_model(args.mesh, args.target_size, args.trained_HotSpot)
+    sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
 
-        if args.w_chamfer > 0:
-            sdf = init_sdf(model, sites)
-        else:
-            sdf = model
+    if args.w_chamfer > 0:
+        sdf = init_sdf(model, sites)
+    else:
+        sdf = model
 
-        if args.w_chamfer > 0 or args.w_voroloss > 0:
-            output_npz(sites, sdf, mnfld_points, args, "init")
+    if args.w_chamfer > 0 or args.w_voroloss > 0:
+        output_npz(sites, sdf, mnfld_points, args, "init")
+        if args.polyscope:
             output_image_polyscope("init")
-            t0 = time() - start_time
-            sites, sites_sdf = train_DCCVT(sites, sdf, mnfld_points, args)
-            ti = time() - t0 - start_time
-            output_npz(sites, sites_sdf, mnfld_points, args, "final", None, ti)
+        t0 = time() - start_time
+        sites, sites_sdf = train_DCCVT(sites, sdf, mnfld_points, args)
+        ti = time() - t0 - start_time
+        output_npz(sites, sites_sdf, mnfld_points, args, "final", None, ti)
 
-        else:
-            BPA_metrics(args)
+    else:
+        BPA_metrics(args)
+        if args.polyscope:
             output_image_polyscope("init")
 
+    if args.polyscope:
         output_image_polyscope("final")
 
-        # reset everything for the next iteration
-        for var_name in ["sites", "sites_sdf", "model", "mnfld_points"]:
-            if var_name in locals() and locals()[var_name] is not None:
-                del locals()[var_name]
-        torch.cuda.empty_cache()
+    # reset everything for the next iteration
+    for var_name in ["sites", "sites_sdf", "model", "mnfld_points"]:
+        if var_name in locals() and locals()[var_name] is not None:
+            del locals()[var_name]
+    torch.cuda.empty_cache()
 
-    output_results_figure()
+if __name__ == "__main__":
+    parser = define_options_parser()
+    args = parser.parse_args()
+    if args.automatic:
+        print("Running in automatic mode with predefined args")
+        arg_lists = build_arg_list()
+        start_time = time()
+        for arg_list in arg_lists:
+            args = define_options_parser().parse_args(arg_list)
+            run(args)
+    else:
+        run(args)
+
+       
+
+    # output_results_figure()
     # print(generate_latex_table_from_npz(args.output))
 
     # open_everything_polyscope()
