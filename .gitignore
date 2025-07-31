@@ -46,3 +46,5 @@ old/*.ini
 *.blend
 *.so
 venv/
+accel/build/
+accel/voronoiaccel.egg-info/
