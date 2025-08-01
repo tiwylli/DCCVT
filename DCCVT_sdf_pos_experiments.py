@@ -13,6 +13,8 @@ import sdfpred_utils.sdfpred_utils as su
 import sdfpred_utils.loss_functions as lf
 from pytorch3d.loss import chamfer_distance
 from pytorch3d.ops import knn_points, knn_gather
+from scipy.spatial import Delaunay
+import kaolin
 
 
 sys.path.append("3rdparty/HotSpot")
@@ -23,8 +25,14 @@ import models.Net as Net
 # cuda devices
 device = torch.device("cuda:0")
 print("Using device: ", torch.cuda.get_device_name(device))
-torch.manual_seed(69)
 
+# Improve reproducibility
+torch.manual_seed(69)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+np.random.seed(69)
+
+# Default parameters for the experiments
 DEFAULTS = {
     "output": "/home/wylliam/dev/Kyushu_experiments/outputs/",
     "mesh": "/home/wylliam/dev/Kyushu_experiments/mesh/",
@@ -98,6 +106,26 @@ def define_options_parser():
     parser.add_argument(
         "--skip", action=argparse.BooleanOptionalAction, default=False, help="Skip the training if output files already exist"
     )
+    parser.add_argument(
+        "--name", type=str, default="", help="override the name"
+    )
+    # Initialization for site (grid, random, gaussian, perturbed_grid)
+    # perturbed_grid is a grid with random noise, and default choice
+    parser.add_argument(
+        "--init_sites",
+        type=str,
+        default="perturbed_grid",
+        choices=["grid", "random", "gaussian", "perturbed_grid"],
+        help="Initialization method for sites",
+    )
+
+    parser.add_argument(
+        "--marching_tetrahedra",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable/disable marching_tetrahedra",
+    )
+
 
     return parser
 
@@ -147,19 +175,27 @@ def load_model(mesh, target, trained_HotSpot):
     return model, mnfld_points
 
 
-def init_sites(mnfld_points, num_centroids, sample_near, input_dims):
+def init_sites(mnfld_points, num_centroids, sample_near, input_dims, init_strategy="perturbed_grid"):
     noise_scale = 0.005
     domain_limit = 1
     if input_dims == 2:
         # throw error not yet implemented
         raise NotImplementedError("2D not yet implemented")
     elif input_dims == 3:
-        x = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
-        y = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
-        z = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
-        meshgrid = torch.meshgrid(x, y, z)
-        meshgrid = torch.stack(meshgrid, dim=3).view(-1, 3)
-        meshgrid += torch.randn_like(meshgrid) * noise_scale
+        if init_strategy == "grid" or init_strategy == "perturbed_grid":
+            x = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
+            y = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
+            z = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
+            meshgrid = torch.meshgrid(x, y, z)
+            meshgrid = torch.stack(meshgrid, dim=3).view(-1, 3)
+            if init_strategy == "perturbed_grid":
+                meshgrid += torch.randn_like(meshgrid) * noise_scale
+        elif init_strategy == "random":
+            meshgrid = torch.rand(num_centroids**input_dims, input_dims) * 2 - 1
+        elif init_strategy == "gaussian":
+            meshgrid = torch.randn(num_centroids**input_dims, input_dims) * 0.2
+        else:
+            raise ValueError(f"Unknown initialization strategy: {init_strategy}")
 
     sites = meshgrid.to(device, dtype=torch.float32).requires_grad_(True)
     # add mnfld points with random noise to sites
@@ -204,14 +240,33 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
     d3dsimplices = None
     voroloss = lf.Voroloss_opt().to(device)
 
-    for epoch in tqdm.tqdm(range(args.num_iterations)):
+    for epoch in tqdm.tqdm(range(args.num_iterations), desc="Training", dynamic_ncols=True):
+        tqdm_desc = {
+            "cvt": lambda: float(cvt_loss) if isinstance(cvt_loss, (float, int)) else args.w_cvt * cvt_loss.item() if hasattr(cvt_loss, "item") else 0,
+            "chamfer": lambda: float(chamfer_loss_mesh) if isinstance(chamfer_loss_mesh, (float, int)) else args.w_chamfer * chamfer_loss_mesh.item() if hasattr(chamfer_loss_mesh, "item") else 0,
+            "voroloss": lambda: float(voroloss_loss) if isinstance(voroloss_loss, (float, int)) else args.w_voroloss * voroloss_loss.item() if hasattr(voroloss_loss, "item") else 0,
+            "sdf": lambda: float(sdf_loss) if isinstance(sdf_loss, (float, int)) else sdf_loss.item() if hasattr(sdf_loss, "item") else 0,
+            "min_dist": lambda: float(min_distance_loss) if isinstance(min_distance_loss, (float, int)) else args.w_min_dist * min_distance_loss.item() if hasattr(min_distance_loss, "item") else 0,
+        }
+        tqdm.tqdm.write(
+            f"Epoch {epoch:4d} | "
+            f"cvt: {tqdm_desc['cvt']():.4f} | "
+            f"chamfer: {tqdm_desc['chamfer']():.4f} | "
+            f"voroloss: {tqdm_desc['voroloss']():.4f} | "
+            f"sdf: {tqdm_desc['sdf']():.4f} | "
+            f"min_dist: {tqdm_desc['min_dist']():.4f}"
+        )
         optimizer.zero_grad()
 
         if args.w_cvt > 0 or args.w_chamfer > 0:
             sites_np = sites.detach().cpu().numpy()
             # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
-            d3dsimplices, _ = pygdel3d.triangulate(sites_np)
-            d3dsimplices = np.array(d3dsimplices)
+            if args.marching_tetrahedra:
+                d3dsimplices = Delaunay(sites_np).simplices
+            else:
+                d3dsimplices, _ = pygdel3d.triangulate(sites_np)
+                d3dsimplices = np.array(d3dsimplices)
+
 
             # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
             # d3dsimplices = np.array(d3dsimplices)
@@ -234,9 +289,18 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             sdf_loss = eik_loss + shl
 
         if args.w_chamfer > 0:
-            v_vect, f_vect, sdf_verts, sdf_verts_grads, _ = su.get_clipped_mesh_numba(
-                sites, None, d3dsimplices, args.clip, sdf_site_noised, args.build_mesh
-            )
+            if args.marching_tetrahedra:
+                d3dsimplices = torch.tensor(d3dsimplices, device=device)
+                marching_tetrehedra_mesh = kaolin.ops.conversions.marching_tetrahedra(
+                    sites.unsqueeze(0), d3dsimplices, sites_sdf.unsqueeze(0), return_tet_idx=False
+                )
+                vertices_list, faces_list = marching_tetrehedra_mesh
+                v_vect = vertices_list[0]
+                f_vect = faces_list[0]
+            else:
+                v_vect, f_vect, sites_sdf_grads, _, _ = su.get_clipped_mesh_numba(
+                    sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh
+                )
             if args.build_mesh:
                 triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_vect for i in range(1, len(f) - 1)]
                 triangle_faces = torch.tensor(triangle_faces, device=device)
@@ -297,8 +361,11 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 continue
             if d3dsimplices is None:
                 # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites.detach().cpu().numpy().reshape(-1))
-                d3dsimplices, _ = pygdel3d.triangulate(sites_np)
-                d3dsimplices = np.array(d3dsimplices)
+                if args.marching_tetrahedra:
+                    d3dsimplices = Delaunay(sites_np).simplices
+                else:
+                    d3dsimplices, _ = pygdel3d.triangulate(sites_np)
+                    d3dsimplices = np.array(d3dsimplices)
                 # Convert to int64
                 # d3dsimplices = d3dsimplices.astype(np.int64)
 
@@ -337,10 +404,21 @@ def output_npz(sites, model, target_pc, args, state="", d3dsimplices=None, t=tim
 
     sdf_values = sdf_values.squeeze()  # (N,)
 
-    v_vect, f_vect, _, _, _ = su.get_clipped_mesh_numba(sites, None, d3dsimplices, args.clip, sdf_values, True)
-    # Compute metrics on mesh : CD and F1
-    # hs_p = su.sample_mesh_points_heitz(v_vect, torch.tensor(f_vect), num_samples=target_pc.shape[0])
-    # chamfer_loss_mesh, _ = chamfer_distance(target_pc.detach(), hs_p.unsqueeze(0))
+    if args.marching_tetrahedra:
+        d3dsimplices = d3dsimplices = Delaunay(sites.detach().cpu().numpy()).simplices
+        d3dsimplices = torch.tensor(d3dsimplices, device=device)
+        marching_tetrehedra_mesh = kaolin.ops.conversions.marching_tetrahedra(
+            sites.unsqueeze(0), d3dsimplices, sdf_values.unsqueeze(0), return_tet_idx=False
+        )
+        vertices_list, faces_list = marching_tetrehedra_mesh
+        v_vect = vertices_list[0]
+        f_vect = faces_list[0]
+        f_vect = f_vect.detach().cpu().numpy()
+    else:
+        v_vect, f_vect, _, _, _ = su.get_clipped_mesh_numba(sites, None, d3dsimplices, args.clip, sdf_values, True)
+        # Compute metrics on mesh : CD and F1
+        # hs_p = su.sample_mesh_points_heitz(v_vect, torch.tensor(f_vect), num_samples=target_pc.shape[0])
+        # chamfer_loss_mesh, _ = chamfer_distance(target_pc.detach(), hs_p.unsqueeze(0))
 
     output_obj_file = f"{args.save_path}_{state}.obj"
 
@@ -703,13 +781,20 @@ def BPA_metrics(args):
 def run(args):
     start_time = time()
 
-    if args.w_chamfer > 0 or args.w_voroloss > 0:
+    if args.name:
         args.save_path = (
             args.output
-            + f"/cdp{int(args.w_chamfer)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}_build{args.build_mesh}_upsampling{args.upsampling}_num_centroids{args.num_centroids}_target_size{args.target_size}"
+            + f"/{args.name}"
         )
     else:
-        args.save_path = args.output + "/BPA"
+        if args.w_chamfer > 0 or args.w_voroloss > 0:
+            args.save_path = (
+                args.output
+                + f"/cdp{int(args.w_chamfer)}_v{int(args.w_voroloss)}_cvt{int(args.w_cvt)}_clip{args.clip}_build{args.build_mesh}_upsampling{args.upsampling}_num_centroids{args.num_centroids}_target_size{args.target_size}"
+                + f"_min_dist{int(args.w_min_dist)}_lr{args.lr_sites}_noise{args.noise_level}"
+            )
+        else:
+            args.save_path = args.output + "/BPA"
 
     if args.skip and os.path.exists(args.save_path + "_final" + ".npz"):
         print("File already exists, skipping...")
@@ -717,7 +802,7 @@ def run(args):
 
     print("args: ", args)
     model, mnfld_points = load_model(args.mesh, args.target_size, args.trained_HotSpot)
-    sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
+    sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims, args.init_sites)
 
     if args.w_chamfer > 0:
         sdf = init_sdf(model, sites)

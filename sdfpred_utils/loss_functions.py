@@ -330,6 +330,8 @@ def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None):
     penalties = torch.where(abs(sites - centroids) < 0.1, sites - centroids, torch.tensor(0.0, device=sites.device))
     
     # cvt_loss = torch.mean(penalties**2)
+    # Use euclidian distance for loss
+    # cvt_loss = torch.mean(torch.norm(penalties, p=2, dim=1))
     cvt_loss = torch.mean(torch.abs(penalties))
     return cvt_loss
 
