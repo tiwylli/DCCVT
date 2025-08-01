@@ -221,12 +221,12 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
     if args.w_chamfer > 0:
         optimizer = torch.optim.Adam(
             [
-                {"params": [sites], "lr": args.lr_sites},
-                {"params": [sites_sdf], "lr": args.lr_sites},
+                {"params": [sites], "lr": args.lr_sites, "betas": (0.8, 0.95)},
+                {"params": [sites_sdf], "lr": args.lr_sites, "betas": (0.8, 0.95)},
             ]
         )
     else:
-        optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
+        optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites, "betas": (0.8, 0.95)}])
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=1.0)
 
     upsampled = 0.0
@@ -375,14 +375,14 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 sites_sdf = sites_sdf.detach().requires_grad_(True)
                 optimizer = torch.optim.Adam(
                     [
-                        {"params": [sites], "lr": args.lr_sites},
-                        {"params": [sites_sdf], "lr": args.lr_sites},
+                        {"params": [sites], "lr": args.lr_sites, "betas": (0.8, 0.95)},
+                        {"params": [sites_sdf], "lr": args.lr_sites, "betas": (0.8, 0.95)},
                     ]
                 )
             else:
                 sites, _ = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
                 sites = sites.detach().requires_grad_(True)
-                optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
+                optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites, "betas": (0.8, 0.95)}])
             upsampled += 1.0
             print("sites length AFTER: ", len(sites))
     return sites, sites_sdf
