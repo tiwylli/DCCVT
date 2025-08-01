@@ -271,6 +271,9 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
             # d3dsimplices = np.array(d3dsimplices)
 
+        # Temperature from 0.5 to 0.0 during training
+        temperature = 1.0 * (1 - min(1.0, epoch / (args.num_iterations * 0.5)))
+
         # Linear to training from 0.1 to 0.0 for the half of the training
         if args.noise_level > 0:
             factor_noise = 1.0 - min(1.0, epoch / (args.num_iterations * 0.5))
@@ -299,7 +302,7 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 f_vect = faces_list[0]
             else:
                 v_vect, f_vect, sites_sdf_grads, _, _ = su.get_clipped_mesh_numba(
-                    sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh
+                    sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh, temperature=temperature
                 )
             if args.build_mesh:
                 triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_vect for i in range(1, len(f) - 1)]

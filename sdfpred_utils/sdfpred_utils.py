@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.cluster import KMeans
 import torch
 import pygdel3d
+import torch.nn.functional as F
 
 # import diffvoronoi  # delaunay3d bindings
 import math
@@ -138,52 +139,6 @@ def octahedral_grid_points(
     vertices = unique_int.float() / scale
     return vertices
 
-
-# # def get_delaunay_neighbors_list(sites):
-# #     # Detach and convert to NumPy for Delaunay triangulation
-# #     points_np = sites.detach().cpu().numpy()
-
-# #     # Compute the Delaunay triangulation
-# #     tri = Delaunay(points_np)
-
-# #     # Find the neighbors of each point
-# #     neighbors = {i: set() for i in range(len(points_np))}
-# #     for simplex in tri.simplices:
-# #         # Each simplex is a triangle of three points; each point is a neighbor of the other two
-# #         for i in range(3):
-# #             for j in range(i + 1, 3):
-# #                 neighbors[simplex[i]].add(simplex[j])
-# #                 neighbors[simplex[j]].add(simplex[i])
-
-# #     # Convert neighbor sets to lists for easier reading
-# #     neighbors = {key: list(value) for key, value in neighbors.items()}
-# #     return neighbors
-
-# def compute_vertices_index(neighbors):
-#     vertices_index_to_compute = []
-#     for site, adjacents in neighbors.items():
-#         for i in adjacents:
-#             for n in adjacents:
-#                 if n != site and n != i and n in neighbors[i]:
-#                     vertices_index_to_compute.append([i,site,n])
-
-#     # Set to store the canonical (sorted) version of each triplet
-#     seen_triplets = set()
-#     # Filtered list to store the unique triplets
-#     filtered_triplets = []
-#     # Process each triplet and keep only one permutation
-#     for triplet in vertices_index_to_compute:
-#         # Convert the triplet to a canonical form by sorting it
-#         canonical_triplet = tuple(sorted(triplet, key=str))
-#         # Check if this canonical triplet has been seen before
-#         if canonical_triplet not in seen_triplets:
-#             # If not seen, add it to the set and keep the triplet
-#             seen_triplets.add(canonical_triplet)
-#             filtered_triplets.append(triplet)
-
-#     return filtered_triplets
-
-
 def compute_zero_crossing_vertices(sites, model):
     """
     Computes the indices of the sites composing vertices where neighboring sites have opposite or zero SDF values.
@@ -251,7 +206,7 @@ def compute_zero_crossing_vertices(sites, model):
     return zero_crossing_vertices_index, zero_crossing_pairs
 
 
-def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None, model=None):
+def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None, model=None, temperature=0.5):
     """
     Computes the indices of the sites composing vertices where neighboring sites have opposite or zero SDF values.
 
@@ -312,19 +267,34 @@ def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None,
 
         zero_crossing_pairs = compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values)
 
-    # Check if vertices has a pair of zero crossing sites
-    sdf_0 = sdf_values[all_tetrahedra[:, 0]]  # First site in each pair
-    sdf_1 = sdf_values[all_tetrahedra[:, 1]]  # Second site in each pair
-    sdf_2 = sdf_values[all_tetrahedra[:, 2]]  # Third site in each pair
-    sdf_3 = sdf_values[all_tetrahedra[:, 3]]  # Fourth site in each pair
-    mask_zero_crossing_faces = (
-        (sdf_0 * sdf_1 <= 0).squeeze()
-        | (sdf_0 * sdf_2 <= 0).squeeze()
-        | (sdf_0 * sdf_3 <= 0).squeeze()
-        | (sdf_1 * sdf_2 <= 0).squeeze()
-        | (sdf_1 * sdf_3 <= 0).squeeze()
-        | (sdf_2 * sdf_3 <= 0).squeeze()
-    )
+    # Check if vertices has a pair of zero crossing sites using Gumbel-Softmax
+    sdf_0 = sdf_values[all_tetrahedra[:, 0]]
+    sdf_1 = sdf_values[all_tetrahedra[:, 1]]
+    sdf_2 = sdf_values[all_tetrahedra[:, 2]]
+    sdf_3 = sdf_values[all_tetrahedra[:, 3]]
+
+    k = min(5.0 / (temperature+0.0001), 100)  # sharpness for sign difference
+    
+
+    # For each edge in the tetrahedron, compute probability of zero crossing
+    def edge_gumbel_mask(sdf_a, sdf_b):
+        if temperature == 0:
+            return (sdf_a * sdf_b <= 0).squeeze()
+        else:
+            p = torch.sigmoid(-k * sdf_a * sdf_b)
+            logits = torch.stack([1 - p, p], dim=-1).log()
+            gumbel_sample = torch.nn.functional.gumbel_softmax(logits, tau=temperature, hard=True)
+            # Class 1 (index 1) means surface (zero crossing)
+            return gumbel_sample[..., 1].bool()
+
+    mask01 = edge_gumbel_mask(sdf_0, sdf_1)
+    mask02 = edge_gumbel_mask(sdf_0, sdf_2)
+    mask03 = edge_gumbel_mask(sdf_0, sdf_3)
+    mask12 = edge_gumbel_mask(sdf_1, sdf_2)
+    mask13 = edge_gumbel_mask(sdf_1, sdf_3)
+    mask23 = edge_gumbel_mask(sdf_2, sdf_3)
+
+    mask_zero_crossing_faces = mask01 | mask02 | mask03 | mask12 | mask13 | mask23
     zero_crossing_sites_making_verts = all_tetrahedra[mask_zero_crossing_faces]
 
     return (
@@ -1730,6 +1700,7 @@ def get_clipped_mesh_numba(
     build_mesh=False,
     quaternion_slerp=False,
     barycentric_weights=False,
+    temperature=0.0
 ):
     """
     sites:           (N,3) torch tensor (requires_grad)
@@ -1798,7 +1769,7 @@ def get_clipped_mesh_numba(
         # print("-> not tracing mesh")
         all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
         vertices_to_compute, bisectors_to_compute, used_tet = compute_zero_crossing_vertices_3d(
-            sites, None, None, d3dsimplices, sites_sdf
+            sites, None, None, d3dsimplices, sites_sdf, temperature=temperature
         )
         vertices = compute_vertices_3d_vectorized(sites, vertices_to_compute)
         bisectors = compute_all_bisectors_vectorized(sites, bisectors_to_compute)
