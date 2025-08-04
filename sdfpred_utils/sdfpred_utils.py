@@ -1562,7 +1562,7 @@ def volume_tetrahedron(a, b, c, d):
     ad = a - d
     bd = b - d
     cd = c - d
-    n = torch.cross(bd, cd)
+    n = torch.linalg.cross(bd, cd, dim=-1)
     return torch.abs((ad * n).sum(dim=-1)) / 6.0
 
 
@@ -1657,6 +1657,67 @@ def sphere_sdf_and_grad(
     sdf = dist.squeeze(-1) - radius  # (N,)
     grad = vec / (dist + 1e-8)  # (N, 3) unit vectors
     return sdf, grad
+
+
+def sdf_space_grad_pytorch_diego_sites_tets(sites, sdf, tets):
+    """
+    Compute the spatial gradient of the SDF at each site (vertex) and each tetrahedron.
+
+    Args:
+        sites: (N, 3) tensor of 3D vertex coordinates.
+        sdf: (N,) tensor of SDF values at each vertex.
+        tets: (M, 4) tensor of tetrahedral indices.
+
+    Returns:
+        grad_sdf: (N, 3) estimated SDF gradient at each site (vertex-wise average of surrounding tet gradients)
+        grad_sdf_tet: (M, 3) estimated SDF gradient inside each tetrahedron (constant per tet)
+    """
+    M = tets.shape[0]
+    tet_ids = tets
+    a, b, c, d = (
+        sites[tet_ids[:, 0]],
+        sites[tet_ids[:, 1]],
+        sites[tet_ids[:, 2]],
+        sites[tet_ids[:, 3]],
+    )
+    sdf_a, sdf_b, sdf_c, sdf_d = (
+        sdf[tet_ids[:, 0]],
+        sdf[tet_ids[:, 1]],
+        sdf[tet_ids[:, 2]],
+        sdf[tet_ids[:, 3]],
+    )
+
+    center = (a + b + c + d) / 4
+    sdf_center = (sdf_a + sdf_b + sdf_c + sdf_d) / 4
+
+    volume = volume_tetrahedron(a, b, c, d)  # (M,)
+
+    X = torch.stack([a, b, c, d], dim=1)  # (M, 4, 3)
+    dX = X - center[:, None, :]  # (M, 4, 3)
+    dX_T = dX.transpose(1, 2)  # (M, 3, 4)
+
+    G = torch.bmm(dX_T, dX)  # (M, 3, 3)
+    Ginv = torch.linalg.pinv(G)  # (M, 3, 3)
+
+    W = torch.einsum("mij,mnj->mni", Ginv, dX)  # (M, 4, 3)
+
+    sdf_stack = torch.stack([sdf_a, sdf_b, sdf_c, sdf_d], dim=1)  # (M, 4)
+    sdf_diff = sdf_stack - sdf_center[:, None]  # (M, 4)
+
+    grad_sdf_tet = torch.einsum("mi,mij->mj", sdf_diff, W)  # (M, 3)
+
+    grad_sdf = torch.zeros_like(sites)  # (N, 3)
+    weights_tot = torch.zeros_like(sdf)  # (N,)
+
+    for i in range(4):
+        ids = tet_ids[:, i]  # (M,)
+        grad_contrib = grad_sdf_tet * volume[:, None]  # (M, 3)
+        grad_sdf.index_add_(0, ids, grad_contrib)
+        weights_tot.index_add_(0, ids, volume)
+
+    grad_sdf /= weights_tot.clamp(min=1e-8).unsqueeze(1)
+
+    return grad_sdf, grad_sdf_tet, W
 
 
 # def get_clipped_mesh_numba(sites, model, d3dsimplices, clip=True, sites_sdf=None, build_mesh=False):
@@ -1778,7 +1839,7 @@ def get_clipped_mesh_numba(
         else:
             # print("-> clipping")
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
-            sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)  # (M,3)
+            sites_sdf_grad, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3d)  # (M,3)
 
             if barycentric_weights:
                 # Use barycentric weights for interpolation
@@ -1793,7 +1854,7 @@ def get_clipped_mesh_numba(
                     d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
                 )
 
-            return proj_vertices, new_faces, sites_sdf_grad, None, tet_probs
+            return proj_vertices, new_faces, sites_sdf_grad, tets_sdf_grads, W
     else:
         # print("-> not tracing mesh")
         all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
@@ -1810,7 +1871,7 @@ def get_clipped_mesh_numba(
         else:
             # print("-> clipping")
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
-            sites_sdf_grad = sdf_space_grad_pytorch_diego(sites, sites_sdf, d3d)
+            sites_sdf_grad, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3d)
             if barycentric_weights:
                 # Use barycentric weights for interpolation
                 vertices_sdf_grad = interpolate_sdf_grad_of_vertices(
@@ -1831,7 +1892,7 @@ def get_clipped_mesh_numba(
 
             proj_points = torch.cat((proj_vertices, proj_bisectors), 0)
 
-            return proj_points, None, sites_sdf_grad, None, tet_probs
+            return proj_points, None, sites_sdf_grad, tets_sdf_grads, W
 
 
 def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
@@ -2060,9 +2121,6 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     median_min_dists = torch.median(min_dists)  # global spacing
     if spacing_target is None:
         spacing_target = median_min_dists * 0.8  # heuristic default
-
-    print(f"Median min distance: {median_min_dists:.4f}, Target spacing: {spacing_target:.4f}")
-    print(median_min_dists, spacing_target * alpha_high, spacing_target * alpha_low)
 
     # --- UNIFORM ---------------------------------------------------- #
     if median_min_dists > spacing_target * alpha_high:
