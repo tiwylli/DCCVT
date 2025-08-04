@@ -626,9 +626,8 @@ def tet_sdf_grad_eikonal_loss(sites, tet_sdf_grad, tets: torch.Tensor) -> torch.
     d = sites[tets[:, 3]]
 
     volume = su.volume_tetrahedron(a, b, c, d)
-    grad_norm = tet_sdf_grad.norm(dim=1)  # (M,)
-
-    loss = 0.5 * torch.mean(volume * (grad_norm**2 - 1) ** 2)
+    grad_norm2 = (tet_sdf_grad**2).sum(dim=1)  # (M,)
+    loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)  # (M,)
 
     return loss
 
@@ -665,7 +664,7 @@ def tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, tets) -> torch.Tenso
     d = sites[tets[:, 3]]
     volume = su.volume_tetrahedron(a, b, c, d)  # (M,)
 
-    return torch.mean(volume * torch.abs(grad_norm))
+    return torch.mean(volume * grad_norm)
 
 
 # def heaviside_derivative(phi: torch.Tensor, eps_H: float) -> torch.Tensor:
