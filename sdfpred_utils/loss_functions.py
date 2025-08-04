@@ -274,9 +274,9 @@ def circumcenter_torch(points, simplices):
         len_DA = torch.sum(DA**2, axis=1, keepdims=True)
 
         # Compute cross products
-        cross_CD = torch.cross(CA, DA)  # Shape: (M, 3)
-        cross_DB = torch.cross(DA, BA)
-        cross_BC = torch.cross(BA, CA)
+        cross_CD = torch.linalg.cross(CA, DA)  # Shape: (M, 3)
+        cross_DB = torch.linalg.cross(DA, BA)
+        cross_BC = torch.linalg.cross(BA, CA)
 
         # Compute denominator (scalar for each tetrahedron)
         denominator = 0.5 / torch.sum(BA * cross_CD, axis=1, keepdims=True)  # Shape: (M, 1)
@@ -326,12 +326,8 @@ def compute_voronoi_cell_centers_index_based_torch(points, delau, simplices=None
 
 def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None):
     centroids = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices).to(device)
-    # print("95 percentile of penalties: ", torch.quantile(torch.abs(sites - centroids), 0.95).item())
     penalties = torch.where(abs(sites - centroids) < 0.1, sites - centroids, torch.tensor(0.0, device=sites.device))
-    
     # cvt_loss = torch.mean(penalties**2)
-    # Use euclidian distance for loss
-    # cvt_loss = torch.mean(torch.norm(penalties, p=2, dim=1))
     cvt_loss = torch.mean(torch.abs(penalties))
     return cvt_loss
 
@@ -593,83 +589,131 @@ def update_div_weight(current_iteration, n_iterations, lambda_div, divdecay="lin
     return lambda_div
 
 
-def discrete_tet_volume_eikonal_loss(sites, grad_sdf, tets: torch.Tensor) -> torch.Tensor:
-    """
-    Eikonal regularization loss.
+# def discrete_tet_volume_eikonal_loss(sites, grad_sdf, tets: torch.Tensor) -> torch.Tensor:
+#     """
+#     Eikonal regularization loss.
 
-    Args:
-        grad_sdf: Tensor of shape (N, 3) containing ∇φ at each site.
-        variant: 'a' for E1a: ½ mean((||∇φ|| - 1)²)
-    Returns:
-        A scalar tensor containing the eikonal loss.
-    """
-    grad_a = grad_sdf[tets[:, 0]]  # (M,3)
-    grad_b = grad_sdf[tets[:, 1]]  # (M,3)
-    grad_c = grad_sdf[tets[:, 2]]  # (M,3)
-    grad_d = grad_sdf[tets[:, 3]]  # (M,3
+#     Args:
+#         grad_sdf: Tensor of shape (N, 3) containing ∇φ at each site.
+#         variant: 'a' for E1a: ½ mean((||∇φ|| - 1)²)
+#     Returns:
+#         A scalar tensor containing the eikonal loss.
+#     """
+#     grad_a = grad_sdf[tets[:, 0]]  # (M,3)
+#     grad_b = grad_sdf[tets[:, 1]]  # (M,3)
+#     grad_c = grad_sdf[tets[:, 2]]  # (M,3)
+#     grad_d = grad_sdf[tets[:, 3]]  # (M,3
 
-    grad_avg = (grad_a + grad_b + grad_c + grad_d) / 4.0
-    grad_norm2 = (grad_avg**2).sum(dim=-1)
+#     grad_avg = (grad_a + grad_b + grad_c + grad_d) / 4.0
+#     grad_norm2 = (grad_avg**2).sum(dim=-1)
 
+#     a = sites[tets[:, 0]]
+#     b = sites[tets[:, 1]]
+#     c = sites[tets[:, 2]]
+#     d = sites[tets[:, 3]]
+
+#     volume = su.volume_tetrahedron(a, b, c, d)
+
+#     loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)
+
+#     return loss
+
+
+def tet_sdf_grad_eikonal_loss(sites, tet_sdf_grad, tets: torch.Tensor) -> torch.Tensor:
     a = sites[tets[:, 0]]
     b = sites[tets[:, 1]]
     c = sites[tets[:, 2]]
     d = sites[tets[:, 3]]
 
     volume = su.volume_tetrahedron(a, b, c, d)
-
-    loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)
+    grad_norm2 = (tet_sdf_grad**2).sum(dim=1)  # (M,)
+    loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)  # (M,)
 
     return loss
 
 
-def heaviside_derivative(phi: torch.Tensor, eps_H: float) -> torch.Tensor:
-    """
-    Derivative H'(φ̂) of the smoothed Heaviside function.
-    """
-    H_prime = torch.zeros_like(phi)
+def smoothed_heaviside(phi, eps_H):
+    H = torch.zeros_like(phi)
+    mask1 = phi < -eps_H
+    mask2 = phi > eps_H
+    mask3 = (~mask1) & (~mask2)
+    phi_clip = phi[mask3]
+    H[mask1] = 0
+    H[mask2] = 1
+    H[mask3] = 0.5 + phi_clip / (2 * eps_H) + (1 / (2 * np.pi)) * torch.sin(np.pi * phi_clip / eps_H)
+    return H
 
-    inside = (phi >= -eps_H) & (phi <= eps_H)
-    H_prime[inside] = 1 / (2 * eps_H) + (1 / (2 * math.pi * eps_H)) * torch.cos(math.pi * phi[inside] / eps_H)
 
-    return H_prime
+def tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, tets) -> torch.Tensor:
+    sdf_H = smoothed_heaviside(sites_sdf, eps_H=0.07)  # (M,)
+    sdf_H_a = sdf_H[tets[:, 0]]
+    sdf_H_b = sdf_H[tets[:, 1]]
+    sdf_H_c = sdf_H[tets[:, 2]]
+    sdf_H_d = sdf_H[tets[:, 3]]
+    sdf_H_stack = torch.stack([sdf_H_a, sdf_H_b, sdf_H_c, sdf_H_d], dim=1)  # (M, 4)
 
+    sdf_H_center = sdf_H_stack.mean(dim=1, keepdim=True)  # (M, 1)
+    sdf_H_diff = sdf_H_stack - sdf_H_center  # (M, 4)
 
-def smoothed_heaviside_loss(sites, sdf, grad_sdf, tets, eps_H=0.07, eps_grad=1e-8):
-    """
-    Fast approximation of E2 = ∑_t |∇H(φ̂)| * Volume(t)
-    using average of chain-rule gradients.
-    """
-    # 1. Compute ∇φ at each site
-    grad_phi = grad_sdf  # su.sdf_space_grad_pytorch_diego(sites, sdf, tets)  # (N,3)
+    grad_H_tet = torch.einsum("mi,mij->mj", sdf_H_diff, W)  # (M, 3)
+    grad_norm = grad_H_tet.norm(dim=1)  # (M, 1)
 
-    # 2. Compute H'(φ̂) at each site
-    H_prime = heaviside_derivative(sdf, eps_H)  # (N,)
-
-    # 3. Multiply: ∇H = H'(φ̂) · ∇φ
-    grad_H = grad_phi * H_prime[:, None]  # (N,3)
-
-    # 4. Gather per tet: average over 4 sites
-    g0 = grad_H[tets[:, 0]]
-    g1 = grad_H[tets[:, 1]]
-    g2 = grad_H[tets[:, 2]]
-    g3 = grad_H[tets[:, 3]]
-    grad_H_avg = (g0 + g1 + g2 + g3) / 4  # (M,3)
-
-    # 5. Norm of gradient
-    grad_norm = grad_H_avg.norm(dim=1)  # (M,)
-
-    # 6. Compute volume
     a = sites[tets[:, 0]]
     b = sites[tets[:, 1]]
     c = sites[tets[:, 2]]
     d = sites[tets[:, 3]]
     volume = su.volume_tetrahedron(a, b, c, d)  # (M,)
 
-    # 7. Mask small gradients
-    mask = grad_norm >= eps_grad
+    return torch.mean(volume * grad_norm)
 
-    return torch.mean(volume[mask] * grad_norm[mask])
+
+# def heaviside_derivative(phi: torch.Tensor, eps_H: float) -> torch.Tensor:
+#     """
+#     Derivative H'(φ̂) of the smoothed Heaviside function.
+#     """
+#     H_prime = torch.zeros_like(phi)
+
+#     inside = (phi >= -eps_H) & (phi <= eps_H)
+#     H_prime[inside] = 1 / (2 * eps_H) + (1 / (2 * math.pi * eps_H)) * torch.cos(math.pi * phi[inside] / eps_H)
+
+#     return H_prime
+
+
+# def smoothed_heaviside_loss(sites, sdf, grad_sdf, tets, eps_H=0.07, eps_grad=1e-8):
+#     """
+#     Fast approximation of E2 = ∑_t |∇H(φ̂)| * Volume(t)
+#     using average of chain-rule gradients.
+#     """
+#     # 1. Compute ∇φ at each site
+#     grad_phi = grad_sdf  # su.sdf_space_grad_pytorch_diego(sites, sdf, tets)  # (N,3)
+
+#     # 2. Compute H'(φ̂) at each site
+#     H_prime = heaviside_derivative(sdf, eps_H)  # (N,)
+
+#     # 3. Multiply: ∇H = H'(φ̂) · ∇φ
+#     grad_H = grad_phi * H_prime[:, None]  # (N,3)
+
+#     # 4. Gather per tet: average over 4 sites
+#     g0 = grad_H[tets[:, 0]].norm(dim=1)
+#     g1 = grad_H[tets[:, 1]].norm(dim=1)
+#     g2 = grad_H[tets[:, 2]].norm(dim=1)
+#     g3 = grad_H[tets[:, 3]].norm(dim=1)
+#     grad_H_avg = (g0 + g1 + g2 + g3) / 4  # (M,3)
+
+#     # 5. Norm of gradient
+#     # grad_norm = grad_H_avg.norm(dim=1)  # (M,)
+
+#     # 6. Compute volume
+#     a = sites[tets[:, 0]]
+#     b = sites[tets[:, 1]]
+#     c = sites[tets[:, 2]]
+#     d = sites[tets[:, 3]]
+#     volume = su.volume_tetrahedron(a, b, c, d)  # (M,)
+
+#     # 7. Mask small gradients
+#     mask = grad_H_avg >= eps_grad
+
+#     return torch.mean(volume[mask] * grad_H_avg[mask])
 
 
 class Voroloss_opt(nn.Module):
