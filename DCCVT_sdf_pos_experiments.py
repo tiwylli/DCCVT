@@ -44,7 +44,8 @@ DEFAULTS = {
     "target_size": 32,  # 32 # ** input_dims
     "clip": False,
     "build_mesh": False,
-    "w_cvt": 0,  # 10
+    "w_cvt": 0,  # 100
+    "w_sdf": 0,  # 100
     "w_voroloss": 0,  # 1000
     "w_chamfer": 0,  # 1000
     "w_bpa": 0,  # 1000
@@ -86,6 +87,7 @@ def define_options_parser():
         help="Enable/disable build mesh",
     )
     parser.add_argument("--w_cvt", type=float, default=DEFAULTS["w_cvt"], help="Weight for CVT regularization")
+    parser.add_argument("--w_sdf", type=float, default=DEFAULTS["w_sdf"], help="Weight for SDF regularization")
     parser.add_argument("--w_voroloss", type=float, default=DEFAULTS["w_voroloss"], help="Weight for Voronoi loss")
     parser.add_argument(
         "--w_chamfer", type=float, default=DEFAULTS["w_chamfer"], help="Weight for Chamfer distance on points"
@@ -245,7 +247,7 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             "cvt": lambda: float(cvt_loss) if isinstance(cvt_loss, (float, int)) else args.w_cvt * cvt_loss.item() if hasattr(cvt_loss, "item") else 0,
             "chamfer": lambda: float(chamfer_loss_mesh) if isinstance(chamfer_loss_mesh, (float, int)) else args.w_chamfer * chamfer_loss_mesh.item() if hasattr(chamfer_loss_mesh, "item") else 0,
             "voroloss": lambda: float(voroloss_loss) if isinstance(voroloss_loss, (float, int)) else args.w_voroloss * voroloss_loss.item() if hasattr(voroloss_loss, "item") else 0,
-            "sdf": lambda: float(sdf_loss) if isinstance(sdf_loss, (float, int)) else sdf_loss.item() if hasattr(sdf_loss, "item") else 0,
+            "sdf": lambda: float(sdf_loss) if isinstance(sdf_loss, (float, int)) else args.w_sdf * sdf_loss.item() if hasattr(sdf_loss, "item") else 0,
             "min_dist": lambda: float(min_distance_loss) if isinstance(min_distance_loss, (float, int)) else args.w_min_dist * min_distance_loss.item() if hasattr(min_distance_loss, "item") else 0,
         }
         tqdm.tqdm.write(
@@ -281,11 +283,13 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
 
         if args.w_cvt > 0:
             cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
+        
+        if args.w_sdf > 0:
             sites_sdf_grads = su.sdf_space_grad_pytorch_diego(
                 sites, sdf_site_noised, torch.tensor(d3dsimplices).to(device).detach()
             )
-            eik_loss = args.w_cvt / 10 * lf.discrete_tet_volume_eikonal_loss(sites, sites_sdf_grads, d3dsimplices)
-            shl = args.w_cvt / 0.1 * lf.smoothed_heaviside_loss(sites, sdf_site_noised, sites_sdf_grads, d3dsimplices)
+            eik_loss = 0.1 * torch.mean((sites_sdf_grads**2 - 1)**2) #lf.discrete_tet_volume_eikonal_loss(sites, sites_sdf_grads, d3dsimplices)
+            shl = 10 * lf.smoothed_heaviside_loss(sites, sdf_site_noised, sites_sdf_grads, d3dsimplices)
             sdf_loss = eik_loss + shl
 
         if args.w_chamfer > 0:
@@ -326,7 +330,7 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
 
         sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss + args.w_min_dist * min_distance_loss
 
-        loss = sites_loss + sdf_loss
+        loss = sites_loss + args.w_sdf * sdf_loss
         # print(f"Epoch {epoch}: loss = {loss.item()}")
         loss.backward()
         # print("-----------------")
