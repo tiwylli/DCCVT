@@ -14,6 +14,9 @@ if __name__ == "__main__":
     for file in files:
         filename = os.path.basename(file)
         
+        if "_init.npz" in filename:
+            continue
+
         data = np.load(file)
         data["chamfer"]
         names[filename] = {
