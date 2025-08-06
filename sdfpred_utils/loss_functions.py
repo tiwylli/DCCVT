@@ -292,42 +292,62 @@ def circumcenter_torch(points, simplices):
         raise ValueError("Only 2D (triangles) and 3D (tetrahedra) are supported.")
 
 
-def compute_voronoi_cell_centers_index_based_torch(points, delau, simplices=None):
+def compute_voronoi_cell_centers_index_based_torch(sites, delau, simplices=None):
     """Compute Voronoi cell centers (circumcenters) for 2D or 3D Delaunay triangulation in PyTorch."""
     # simplices = torch.tensor(delaunay.simplices, dtype=torch.long)
     if simplices is None:
         simplices = delau.simplices
 
     # points = torch.tensor(delaunay.points, dtype=torch.float32)
-    points = points.detach().cpu().numpy()
+    points = sites.detach().cpu().numpy()
 
     # Compute all circumcenters at once (supports both 2D & 3D)
     circumcenters_arr = circumcenter_torch(points, simplices)
     # Flatten simplices and repeat circumcenters to map them to the points
     indices = simplices.flatten()  # Flatten simplex indices
-    centers = circumcenters_arr.repeat_interleave(simplices.shape[1], dim=0)  # Repeat for each vertex in simplex
+    indices = torch.tensor(indices, dtype=torch.int64, device=sites.device)  # Convert to tensor
+
+    centers = circumcenters_arr.repeat_interleave(simplices.shape[1], dim=0).to(
+        sites.device
+    )  # Repeat for each vertex in simplex
 
     # Group circumcenters per point
-    # result = [centers[indices == i] for i in range(len(points))]
-    # centroids = torch.stack([torch.mean(c, dim=0) for c in result])
     M = len(points)
-    indices = torch.tensor(indices)
     # Compute the sum of centers for each index
-    centroids = torch.zeros(M, 3, dtype=torch.float32)
-    counts = torch.zeros(M, device=centers.device)
+    centroids = torch.zeros(M, 3, dtype=torch.float32, device=sites.device)
+    counts = torch.zeros(M, device=sites.device)
 
     centroids.index_add_(0, indices, centers)  # Sum centers per unique index
     counts.index_add_(0, indices, torch.ones(centers.shape[0], device=centers.device))  # Count occurrences
-
     centroids /= counts.clamp(min=1).unsqueeze(1)  # Avoid division by zero
 
-    return centroids
+    distances = torch.norm(centroids[indices] - centers, dim=1)
+    num_sites = centroids.shape[0]
+    max_dist_per_site = torch.full((num_sites,), float("-inf"), device=sites.device)
+    radius = max_dist_per_site.scatter_reduce(0, indices, distances, reduce="amax", include_self=True)
+
+    return centroids, radius
 
 
 def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None):
-    centroids = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices).to(device)
-    penalties = torch.where(abs(sites - centroids) < 0.1, sites - centroids, torch.tensor(0.0, device=sites.device))
+    centroids, _ = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices)
+    centroids = centroids.to(device)
+    diff = torch.linalg.norm(sites - centroids, dim=1)
+    penalties = torch.where(abs(diff) < 0.1, diff, torch.tensor(0.0, device=sites.device))
     # cvt_loss = torch.mean(penalties**2)
+    cvt_loss = torch.mean(torch.abs(penalties))
+    return cvt_loss
+
+
+def compute_cvt_loss_vectorized_delaunay_volume(sites, delaunay, simplices=None):
+    centroids, radius = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices)
+    centroids = centroids.to(device)
+    radius = radius.to(device)
+
+    cell_v_approx = ((4.0 / 3.0) * math.pi * radius**3).to(device)
+    diff = torch.linalg.norm(sites - centroids, dim=1)
+    penalties = torch.where(abs(diff) < 0.1, diff * cell_v_approx, torch.tensor(0.0, device=sites.device))
+    # cvt_loss = torch.mean(torch.abs(penalties))
     cvt_loss = torch.mean(torch.abs(penalties))
     return cvt_loss
 
@@ -626,7 +646,11 @@ def tet_sdf_grad_eikonal_loss(sites, tet_sdf_grad, tets: torch.Tensor) -> torch.
     d = sites[tets[:, 3]]
 
     volume = su.volume_tetrahedron(a, b, c, d)
+    # trim 5% biggest volumes
+    volume = torch.where(volume > torch.quantile(volume, 0.95), torch.tensor(0.0, device=sites.device), volume)
+
     grad_norm2 = (tet_sdf_grad**2).sum(dim=1)  # (M,)
+    # loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)  # (M,)
     loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)  # (M,)
 
     return loss
@@ -644,8 +668,29 @@ def smoothed_heaviside(phi, eps_H):
     return H
 
 
-def tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, tets) -> torch.Tensor:
-    sdf_H = smoothed_heaviside(sites_sdf, eps_H=0.07)  # (M,)
+def estimate_eps_H(sites, tets, multiplier=1.5):
+    # Get all unique edges
+    comb = torch.combinations(torch.arange(4), r=2)  # (6,2)
+    edges = tets[:, comb]  # (M, 6, 2)
+    edges = edges.reshape(-1, 2)  # (6M, 2)
+
+    v0 = sites[edges[:, 0]]
+    v1 = sites[edges[:, 1]]
+    edge_lengths = torch.norm(v0 - v1, dim=1)
+
+    # remove top 5% longest edges
+    edge_lengths = torch.where(
+        edge_lengths > torch.quantile(edge_lengths, 0.95), torch.tensor(0.0, device=sites.device), edge_lengths
+    )
+
+    avg_len = edge_lengths.mean()
+    return multiplier * avg_len
+
+
+def tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, tets, eps_H) -> torch.Tensor:
+    if eps_H is None:
+        eps_H = estimate_eps_H(sites, tets)  # adaptive bandwidth
+    sdf_H = smoothed_heaviside(sites_sdf, eps_H)  # (M,)
     sdf_H_a = sdf_H[tets[:, 0]]
     sdf_H_b = sdf_H[tets[:, 1]]
     sdf_H_c = sdf_H[tets[:, 2]]
@@ -663,8 +708,12 @@ def tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, tets) -> torch.Tenso
     c = sites[tets[:, 2]]
     d = sites[tets[:, 3]]
     volume = su.volume_tetrahedron(a, b, c, d)  # (M,)
+    # trim 5% biggest volumes
+    volume = torch.where(volume > torch.quantile(volume, 0.95), torch.tensor(0.0, device=sites.device), volume)
+    penalties = torch.mean(volume * grad_norm)
 
-    return torch.mean(volume * grad_norm)
+    # return torch.mean(volume * grad_norm)
+    return penalties
 
 
 # def heaviside_derivative(phi: torch.Tensor, eps_H: float) -> torch.Tensor:
