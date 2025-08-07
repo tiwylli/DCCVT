@@ -313,7 +313,7 @@ def compute_voronoi_cell_centers_index_based_torch(points, delau, simplices=None
     M = len(points)
     indices = torch.tensor(indices)
     # Compute the sum of centers for each index
-    centroids = torch.zeros(M, 3, dtype=torch.float32)
+    centroids = torch.zeros(M, points.shape[1], dtype=torch.float32)
     counts = torch.zeros(M, device=centers.device)
 
     centroids.index_add_(0, indices, centers)  # Sum centers per unique index
@@ -324,9 +324,9 @@ def compute_voronoi_cell_centers_index_based_torch(points, delau, simplices=None
     return centroids
 
 
-def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None):
+def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None,max_distance=0.1):
     centroids = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices).to(device)
-    penalties = torch.where(abs(sites - centroids) < 0.1, sites - centroids, torch.tensor(0.0, device=sites.device))
+    penalties = torch.where(abs(sites - centroids) < max_distance, sites - centroids, torch.tensor(0.0, device=sites.device))
     # cvt_loss = torch.mean(penalties**2)
     cvt_loss = torch.mean(torch.abs(penalties))
     return cvt_loss

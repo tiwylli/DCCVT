@@ -48,3 +48,4 @@ old/*.ini
 venv/
 accel/build/
 accel/voronoiaccel.egg-info/
+*.svg
