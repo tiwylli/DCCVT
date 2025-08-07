@@ -339,17 +339,48 @@ def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None):
     return cvt_loss
 
 
-def compute_cvt_loss_vectorized_delaunay_volume(sites, delaunay, simplices=None):
-    centroids, radius = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices)
-    centroids = centroids.to(device)
-    radius = radius.to(device)
+def compute_cvt_loss_CLIPPED_vertices(sites, sites_sdf, sites_sdf_grad, d3dsimplices, all_vor_vertices):
+    d3dsimplices = torch.tensor(d3dsimplices, device=sites.device).detach()
+    # all_vor_vertices = su.compute_vertices_3d_vectorized(sites, d3dsimplices)  # (M,3)
+    # vertices_to_compute, _, used_tet = su.compute_zero_crossing_vertices_3d(
+    #     sites, None, None, d3dsimplices.cpu().numpy(), sites_sdf
+    # )
+    # vertices = su.compute_vertices_3d_vectorized(sites, vertices_to_compute)
+    # clipped, _ = su.tet_plane_clipping(d3dsimplices[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
 
-    cell_v_approx = ((4.0 / 3.0) * math.pi * radius**3).to(device)
+    # # replace at used_tet index the vertices with the clipped ones
+    # all_vor_vertices[used_tet] = clipped
+
+    # compute centroids
+    indices = d3dsimplices.flatten()  # Flatten simplex indices
+    centers = all_vor_vertices.repeat_interleave(d3dsimplices.shape[1], dim=0).to(sites.device)
+    M = len(sites)
+    centroids = torch.zeros(M, 3, dtype=torch.float32, device=sites.device)
+    counts = torch.zeros(M, device=sites.device)
+
+    centroids.index_add_(0, indices, centers)  # Sum centers per unique index
+    counts.index_add_(0, indices, torch.ones(centers.shape[0], device=centers.device))  # Count occurrences
+    centroids /= counts.clamp(min=1).unsqueeze(1)  # Avoid division by zero
+
     diff = torch.linalg.norm(sites - centroids, dim=1)
-    penalties = torch.where(abs(diff) < 0.1, diff * cell_v_approx, torch.tensor(0.0, device=sites.device))
-    # cvt_loss = torch.mean(torch.abs(penalties))
+    penalties = torch.where(abs(diff) < 0.5, diff, torch.tensor(0.0, device=sites.device))
+    # print number of zero in penalties
+    # print("Number of zero in penalties: ", torch.sum(penalties == 0.0).item())
     cvt_loss = torch.mean(torch.abs(penalties))
     return cvt_loss
+
+
+# def compute_cvt_loss_vectorized_delaunay_volume(sites, delaunay, simplices=None):
+#     centroids, radius = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices)
+#     centroids = centroids.to(device)
+#     radius = radius.to(device)
+
+#     cell_v_approx = ((4.0 / 3.0) * math.pi * radius**3).to(device)
+#     diff = torch.linalg.norm(sites - centroids, dim=1)
+#     penalties = torch.where(abs(diff) < 0.1, diff * cell_v_approx, torch.tensor(0.0, device=sites.device))
+#     # cvt_loss = torch.mean(torch.abs(penalties))
+#     cvt_loss = torch.mean(torch.abs(penalties))
+#     return cvt_loss
 
 
 def sdf_weighted_min_distance_loss(model, sites):

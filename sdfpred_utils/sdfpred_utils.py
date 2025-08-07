@@ -1895,8 +1895,10 @@ def get_clipped_mesh_numba(
 
             proj_points = torch.cat((proj_vertices, proj_bisectors), 0)
 
+            vert_for_clipped_cvt = all_vor_vertices
+            vert_for_clipped_cvt[used_tet] = proj_vertices
             # proj_points = proj_vertices
-            return proj_points, None, sites_sdf_grad, tets_sdf_grads, W
+            return proj_points, vert_for_clipped_cvt, sites_sdf_grad, tets_sdf_grads, W
 
 
 def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
