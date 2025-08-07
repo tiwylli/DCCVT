@@ -348,8 +348,9 @@ def compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values):
     ).to(device)
     # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
     tetra_edges, _ = torch.sort(tetra_edges, dim=1)
-    # Get unique edges
-    neighbors = torch.unique(tetra_edges, dim=0)
+    # Get unique edges nevermind TODO
+    # neighbors = torch.unique(tetra_edges, dim=0)
+    neighbors = tetra_edges
 
     # Extract the SDF values for each site in the pair
     sdf_i = sdf_values[neighbors[:, 0]]  # First site in each pair
@@ -1883,6 +1884,8 @@ def get_clipped_mesh_numba(
             else:
                 proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
 
+            # TODO: dot product of grads
+            # TODO: in paper this will be considered a regularisation
             bisectors_sdf = (sites_sdf[bisectors_to_compute[:, 0]] + sites_sdf[bisectors_to_compute[:, 1]]) / 2
             bisectors_sdf_grad = (
                 sites_sdf_grad[bisectors_to_compute[:, 0]] + sites_sdf_grad[bisectors_to_compute[:, 1]]
@@ -1892,6 +1895,7 @@ def get_clipped_mesh_numba(
 
             proj_points = torch.cat((proj_vertices, proj_bisectors), 0)
 
+            # proj_points = proj_vertices
             return proj_points, None, sites_sdf_grad, tets_sdf_grads, W
 
 
@@ -2344,3 +2348,80 @@ def zero_crossing_sdf_metric(true_sdf, sites, sites_sdf, d3dsimplices):
         torch.mean(zc_truesdf - zc_sdf).item(),
         torch.std(zc_truesdf - zc_sdf).item(),
     )
+
+
+def NOT_mt_extraction(sites, sites_sdf, d3dsimplices):
+    d3dsimplices = torch.tensor(d3dsimplices, device=sites.device)  # (M,4)
+    sites_sdf_grads, _, _ = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3dsimplices)
+
+    tetra_edges = torch.cat(
+        [
+            d3dsimplices[:, [0, 1]],
+            d3dsimplices[:, [1, 2]],
+            d3dsimplices[:, [2, 3]],
+            d3dsimplices[:, [3, 0]],
+            d3dsimplices[:, [0, 2]],
+            d3dsimplices[:, [1, 3]],
+        ],
+        dim=0,
+    ).to(device)
+    # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
+    tetra_edges, _ = torch.sort(tetra_edges, dim=1)
+    # Extract the SDF values for each site in the pair
+    sdf_i = sites_sdf[tetra_edges[:, 0]]  # First site in each pair
+    sdf_j = sites_sdf[tetra_edges[:, 1]]  # Second site in each pair
+    # Find the indices where SDF values have opposing signs or one is zero
+    mask_zero_crossing_sites = (sdf_i * sdf_j <= 0).squeeze()
+    zero_crossing_pairs = tetra_edges[mask_zero_crossing_sites]
+
+    bisectors = compute_all_bisectors_vectorized(sites, zero_crossing_pairs)
+    print("Number of bisectors to compute:", bisectors.shape)
+    # build faces
+
+    bisectors_sorted = torch.sort(zero_crossing_pairs, dim=1)[0]  # Sort bisectors for consistency
+    print("Number of bisectors sorted:", bisectors_sorted.shape)
+    mesh = []
+    for tet in d3dsimplices:
+        face = []
+        for i, j in [
+            (tet[0], tet[1]),
+            (tet[0], tet[2]),
+            (tet[0], tet[3]),
+            (tet[1], tet[2]),
+            (tet[1], tet[3]),
+            (tet[2], tet[3]),
+        ]:
+            if sites_sdf[i] * sites_sdf[j] <= 0:
+                face.append((min(i.item(), j.item()), max(i.item(), j.item())))  # sorted tuple
+        if len(face) == 0:
+            continue
+        if len(face) == 3:
+            mesh.append(face)
+        if len(face) == 4:
+            face1 = (face[0], face[1], face[2])
+            face2 = (face[0], face[2], face[3])
+            mesh.append(face1)
+            mesh.append(face2)
+    print(len(mesh))
+
+    # First, build a lookup from pair -> index
+    # Convert each (i, j) pair into a single tuple (i, j), then to dictionary key
+    pair_to_index = {(i.item(), j.item()): idx for idx, (i, j) in enumerate(bisectors_sorted)}
+
+    # Now remap your mesh faces
+    indexed_faces = []
+    for face in mesh:
+        try:
+            # face is a list of 3 or 4 (i, j) sorted tuples
+            indexed_face = [pair_to_index[(i, j)] for (i, j) in face]
+            indexed_faces.append(indexed_face)
+        except KeyError:
+            print("Warning: a face contained a pair not in bisectors_sorted")
+        continue
+
+    bisectors_sdf = (sites_sdf[zero_crossing_pairs[:, 0]] + sites_sdf[zero_crossing_pairs[:, 1]]) / 2
+    bisectors_sdf_grad = (sites_sdf_grads[zero_crossing_pairs[:, 0]] + sites_sdf_grads[zero_crossing_pairs[:, 1]]) / 2
+    step = bisectors_sdf.unsqueeze(1) * bisectors_sdf_grad  # (M,3)
+    proj_bisectors = bisectors - step
+
+    return proj_bisectors.detach().cpu().numpy(), np.array(indexed_faces)
