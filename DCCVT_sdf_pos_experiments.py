@@ -223,12 +223,13 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
     if args.w_chamfer > 0:
         optimizer = torch.optim.Adam(
             [
-                {"params": [sites], "lr": args.lr_sites, "betas": (0.8, 0.95)},
-                {"params": [sites_sdf], "lr": args.lr_sites, "betas": (0.8, 0.95)},
-            ]
+                {"params": [sites], "lr": args.lr_sites},
+                {"params": [sites_sdf], "lr": args.lr_sites},
+            ],
+            betas=(0.8, 0.95),
         )
     else:
-        optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites, "betas": (0.8, 0.95)}])
+        optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=1.0)
 
     upsampled = 0.0
@@ -238,8 +239,8 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
     chamfer_loss_mesh = 0
     voroloss_loss = 0
     sdf_loss = 0
-    min_distance_loss = 0
     d3dsimplices = None
+    sites_sdf_grads = None
     voroloss = lf.Voroloss_opt().to(device)
 
     for epoch in tqdm.tqdm(range(args.num_iterations), desc="Training", dynamic_ncols=True):
@@ -248,7 +249,6 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             "chamfer": lambda: float(chamfer_loss_mesh) if isinstance(chamfer_loss_mesh, (float, int)) else args.w_chamfer * chamfer_loss_mesh.item() if hasattr(chamfer_loss_mesh, "item") else 0,
             "voroloss": lambda: float(voroloss_loss) if isinstance(voroloss_loss, (float, int)) else args.w_voroloss * voroloss_loss.item() if hasattr(voroloss_loss, "item") else 0,
             "sdf": lambda: float(sdf_loss) if isinstance(sdf_loss, (float, int)) else args.w_sdf * sdf_loss.item() if hasattr(sdf_loss, "item") else 0,
-            "min_dist": lambda: float(min_distance_loss) if isinstance(min_distance_loss, (float, int)) else args.w_min_dist * min_distance_loss.item() if hasattr(min_distance_loss, "item") else 0,
         }
         tqdm.tqdm.write(
             f"Epoch {epoch:4d} | "
@@ -256,41 +256,17 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             f"chamfer: {tqdm_desc['chamfer']():.4f} | "
             f"voroloss: {tqdm_desc['voroloss']():.4f} | "
             f"sdf: {tqdm_desc['sdf']():.4f} | "
-            f"min_dist: {tqdm_desc['min_dist']():.4f}"
         )
         optimizer.zero_grad()
 
         if args.w_cvt > 0 or args.w_chamfer > 0:
             sites_np = sites.detach().cpu().numpy()
-            # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
             if args.marching_tetrahedra:
                 d3dsimplices = Delaunay(sites_np).simplices
+
             else:
                 d3dsimplices, _ = pygdel3d.triangulate(sites_np)
                 d3dsimplices = np.array(d3dsimplices)
-
-
-            # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(args.input_dims * sites_np.shape[0]))
-            # d3dsimplices = np.array(d3dsimplices)
-
-        # Linear to training from 0.1 to 0.0 for the half of the training
-        if args.noise_level > 0:
-            factor_noise = 1.0 - min(1.0, epoch / (args.num_iterations * 0.5))
-            sdf_site_noised = sites_sdf + torch.randn_like(sites_sdf) * args.noise_level * factor_noise
-        else:
-            # No noise on the site
-            sdf_site_noised = sites_sdf
-
-        if args.w_cvt > 0:
-            cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
-        
-        if args.w_sdf > 0:
-            sites_sdf_grads = su.sdf_space_grad_pytorch_diego(
-                sites, sdf_site_noised, torch.tensor(d3dsimplices).to(device).detach()
-            )
-            eik_loss = 0.1 * torch.mean((sites_sdf_grads**2 - 1)**2) #lf.discrete_tet_volume_eikonal_loss(sites, sites_sdf_grads, d3dsimplices)
-            shl = 10 * lf.smoothed_heaviside_loss(sites, sdf_site_noised, sites_sdf_grads, d3dsimplices)
-            sdf_loss = eik_loss + shl
 
         if args.w_chamfer > 0:
             if args.marching_tetrahedra:
@@ -302,7 +278,7 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 v_vect = vertices_list[0]
                 f_vect = faces_list[0]
             else:
-                v_vect, f_vect, sites_sdf_grads, _, _ = su.get_clipped_mesh_numba(
+                v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
                     sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh
                 )
             if args.build_mesh:
@@ -316,21 +292,22 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
         if args.w_voroloss > 0:
             voroloss_loss = voroloss(target_pc.squeeze(0), sites).mean()
 
-        if args.w_min_dist > 0:
-            # compute min distance from v_vect
-            _, min_idx, _ = knn_points(
-                v_vect.unsqueeze(0), v_vect.unsqueeze(0), K=2, return_nn=True, return_sorted=True
-            )
-            # Make a force that pushes sites away from each other based on average distance
-            # which does not apply to biggest distance
-            v_vect_next = knn_gather(v_vect.unsqueeze(0), min_idx)
-            avg_min_dist = torch.norm(v_vect_next[0, :, 1, :] - v_vect, dim=-1).mean()
-            min_distance_loss = torch.mean(torch.maximum(avg_min_dist - torch.norm(v_vect_next[0, :, 1, :] - v_vect, dim=-1), 
-                                                         torch.tensor(0.0, device=device)))
+        if args.w_cvt > 0:
+            cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
+            # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay_tetrahedra(sites, None, d3dsimplices)
+        sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
-        sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss + args.w_min_dist * min_distance_loss
+        if args.w_sdf > 0:
+            if sites_sdf_grads is None:
+                sites_sdf_grads, tets_sdf_grads, W = su.sdf_space_grad_pytorch_diego_sites_tets(
+                    sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach()
+                )
+            eik_loss = args.w_sdf / 10 * lf.tet_sdf_grad_eikonal_loss(sites, tets_sdf_grads, d3dsimplices)
+            shl = args.w_sdf * 10 * lf.tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3dsimplices)
+            sdf_loss = eik_loss + shl
+            # sdf_loss = torch.mean(torch.abs(torch.sum(sites_sdf_grads**2, dim=-1) - 1))  # + shl
 
-        loss = sites_loss + args.w_sdf * sdf_loss
+        loss = sites_loss + sdf_loss
         # print(f"Epoch {epoch}: loss = {loss.item()}")
         loss.backward()
         # print("-----------------")
@@ -364,29 +341,31 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
                 continue
             if d3dsimplices is None:
-                # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites.detach().cpu().numpy().reshape(-1))
                 if args.marching_tetrahedra:
                     d3dsimplices = Delaunay(sites_np).simplices
                 else:
                     d3dsimplices, _ = pygdel3d.triangulate(sites_np)
                     d3dsimplices = np.array(d3dsimplices)
-                # Convert to int64
-                # d3dsimplices = d3dsimplices.astype(np.int64)
-
+            if sites_sdf_grads is None or sites_sdf_grads.shape[0] != sites_sdf.shape[0]:
+                sites_sdf_grads, tets_sdf_grads, W = su.sdf_space_grad_pytorch_diego_sites_tets(
+                    sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach().clone()
+                )
             if args.w_chamfer > 0:
-                sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
+                sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(
+                    sites, d3dsimplices, sites_sdf, sites_sdf_grads
+                )
                 sites = sites.detach().requires_grad_(True)
                 sites_sdf = sites_sdf.detach().requires_grad_(True)
                 optimizer = torch.optim.Adam(
                     [
-                        {"params": [sites], "lr": args.lr_sites, "betas": (0.8, 0.95)},
-                        {"params": [sites_sdf], "lr": args.lr_sites, "betas": (0.8, 0.95)},
+                        {"params": [sites], "lr": args.lr_sites},
+                        {"params": [sites_sdf], "lr": args.lr_sites},
                     ]
                 )
             else:
                 sites, _ = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
                 sites = sites.detach().requires_grad_(True)
-                optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites, "betas": (0.8, 0.95)}])
+                optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
             upsampled += 1.0
             print("sites length AFTER: ", len(sites))
     return sites, sites_sdf

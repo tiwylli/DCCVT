@@ -291,6 +291,46 @@ def circumcenter_torch(points, simplices):
     else:
         raise ValueError("Only 2D (triangles) and 3D (tetrahedra) are supported.")
 
+# WRONG: Need to compute the tetrahedra based on the vertices, not the sites
+# def compute_voronoi_cell_centers_index_based_torch_volume(points, delau, simplices=None):
+#     """Compute Voronoi cell centers (circumcenters) for 2D or 3D Delaunay triangulation in PyTorch."""
+#     # simplices = torch.tensor(delaunay.simplices, dtype=torch.long)
+#     if simplices is None:
+#         simplices = delau.simplices
+
+#     # Compute the volume of each simplex (triangle or tetrahedron)
+#     simplices = torch.tensor(simplices, dtype=torch.long, device=points.device)
+#     tetrahedra_points = points[simplices]  # Shape: (M, 4, 3) for tetrahedra
+#     if tetrahedra_points.shape[1] == 3:  # 2D case (triangles)
+#         a = tetrahedra_points[:, 0]
+#         b = tetrahedra_points[:, 1]
+#         c = tetrahedra_points[:, 2]
+#         area = 0.5 * torch.abs(
+#             a[:, 0] * (b[:, 1] - c[:, 1]) + b[:, 0] * (c[:, 1] - a[:, 1]) + c[:, 0] * (a[:, 1] - b[:, 1])
+#         )
+#         volumes = area  # Shape: (M,)
+#         centroid = (a + b + c) / 3.0  # Shape: (M, 3)
+#     elif tetrahedra_points.shape[1] == 4:  # 3D case (tetrahedra)
+#         a = tetrahedra_points[:, 0]
+#         b = tetrahedra_points[:, 1]
+#         c = tetrahedra_points[:, 2]
+#         d = tetrahedra_points[:, 3]
+#         volumes = su.volume_tetrahedron(a, b, c, d)  # Shape: (M,)
+#         centroid = (a + b + c + d) / 4.0  # Shape: (M, 3)
+
+#     M = len(points)
+#     site_centroids = torch.zeros(M, points.shape[1], dtype=torch.float32, device=points.device)
+#     site_volume = torch.zeros(M, device=points.device)
+
+#     for i in range(simplices.shape[1]):
+#         indices = simplices[:, i]  # Indices of the i-th vertex in each simplex
+#         site_centroids.index_add_(0, indices, centroid * volumes.unsqueeze(1))
+#         site_volume.index_add_(0, indices, volumes)
+
+#     centroids = site_centroids / site_volume.clamp(min=1).unsqueeze(1)  # Avoid division by zero
+
+#     return centroids
+
 
 def compute_voronoi_cell_centers_index_based_torch(points, delau, simplices=None):
     """Compute Voronoi cell centers (circumcenters) for 2D or 3D Delaunay triangulation in PyTorch."""
@@ -323,11 +363,124 @@ def compute_voronoi_cell_centers_index_based_torch(points, delau, simplices=None
 
     return centroids
 
+def intersection_plane_line(plane_ori, plane_dir, sites, directions):
+    num_sites = sites.shape[0]
+    num_neighbors = plane_ori.shape[1]
+    num_dirs = directions.shape[0]
+
+    directions_repeat = directions.view(1, 1, num_dirs, 2).expand(num_sites, num_neighbors, num_dirs, 2)
+    plane_dir_repeat = plane_dir.unsqueeze(2).expand(-1, -1, num_dirs, -1)
+    site_repeat2 = sites.unsqueeze(1).unsqueeze(2).expand(-1, num_neighbors, num_dirs, -1)
+    plane_ori_repeat = plane_ori.unsqueeze(2).expand(-1, -1, num_dirs, -1)
+
+    denom = torch.sum(plane_dir_repeat * directions_repeat, dim=-1)
+    parallel_mask = denom.abs() < 1e-8
+
+    numer = torch.sum(plane_dir_repeat * (plane_ori_repeat - site_repeat2), dim=-1)
+    t = torch.full_like(numer, float('inf'))
+    t[~parallel_mask] = numer[~parallel_mask] / (denom[~parallel_mask] + 1e-8)
+
+    valid = (t >= 0) & (~parallel_mask)
+    t[~valid] = float('inf')
+
+    # Compute intersection points
+    valid_mask = t.isfinite()
+    valid_t = torch.where(valid_mask, t, torch.zeros_like(t))
+    intersection_points = site_repeat2 + valid_t.unsqueeze(-1) * directions_repeat
+
+    # intersection points (ray starts from site)
+    distances = torch.full_like(t, float('inf'))
+    distances[valid_mask] = torch.norm(intersection_points[valid_mask] - site_repeat2[valid_mask], dim=-1)
+
+    min_distances, _ = torch.min(distances, dim=1)  # Shape: (num_sites, num_dirs)
+    return min_distances
+
+def compute_cvt_dist(sites, N=12, M=16, random=True, max_distance=0.1):
+    num_sites = sites.shape[0]
+    device = sites.device
+
+    # Get the N closest sites to each site (excluding self)
+    knn_indices = knn_points(sites.unsqueeze(0), sites.unsqueeze(0), K=N+1).idx.squeeze(0)[:, 1:]  # (num_sites, N)
+    knn_sites = knn_gather(sites.unsqueeze(0), knn_indices.unsqueeze(0)).squeeze(0)  # (num_sites, N, 2)
+
+    # Prepare planes (midpoints between site and neighbors)
+    sites_repeat = sites.unsqueeze(1).expand(-1, N, -1)  # (num_sites, N, 2)
+    plane_ori = (knn_sites + sites_repeat) * 0.5         # (num_sites, N, 2)
+    plane_dir = knn_sites - plane_ori
+    plane_dir = plane_dir / (torch.norm(plane_dir, dim=-1, keepdim=True) + 1e-8)
+
+    # Generate M directions (half circle + opposite)
+    angles = torch.linspace(0, math.pi, M, device=device) # half-circle
+    if random:
+        angles += torch.rand(M, device=device) * (math.pi / M)
+    directions = torch.stack((torch.cos(angles), torch.sin(angles)), dim=1)  # (M, 2)
+    directions_opp = -directions  # (M, 2)
+
+    # Forward and backward intersection distances
+    min_dir = intersection_plane_line(plane_ori, plane_dir, sites, directions)       # (num_sites, M)
+    min_dir_opp = intersection_plane_line(plane_ori, plane_dir, sites, directions_opp)
+
+    # Compute sample positions (intersection points from forward rays)
+    ray_points = sites.unsqueeze(1) + min_dir.unsqueeze(-1) * directions.unsqueeze(0)  # (num_sites, M, 2)
+    ray_points_opp = sites.unsqueeze(1) + min_dir_opp.unsqueeze(-1) * directions_opp.unsqueeze(0)  # (num_sites, M, 2)
+    
+    # Keep only directions that intersect in both directions
+    mask = (min_dir < float('inf')) & (min_dir_opp < float('inf'))
+    mask = mask & (torch.norm(ray_points - ray_points_opp, dim=-1) < max_distance)  # (num_sites, M)
+
+    # Return MSE between opposite directions and points
+    mse = torch.mean(torch.abs(min_dir[mask] - min_dir_opp[mask]))
+    return mse, ray_points[mask], ray_points_opp[mask]
+
+
 
 def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None,max_distance=0.1):
     centroids = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices).to(device)
     penalties = torch.where(abs(sites - centroids) < max_distance, sites - centroids, torch.tensor(0.0, device=sites.device))
     # cvt_loss = torch.mean(penalties**2)
+    cvt_loss = torch.mean(torch.abs(penalties))
+    return cvt_loss
+
+def compute_cvt_loss_vectorized_delaunay_tetrahedra(sites, delaunay, simplices=None,max_distance=0.1):
+    # Compute all tetrahedra centroid 
+    simplices = torch.tensor(simplices, dtype=torch.long, device=sites.device)
+    tetrahedra_points = sites[simplices]  # Shape: (M, 4, 3) for tetrahedra
+    if tetrahedra_points.shape[1] == 3:  # 2D case (triangles)
+        a = tetrahedra_points[:, 0]
+        b = tetrahedra_points[:, 1]
+        c = tetrahedra_points[:, 2]
+        area = 0.5 * torch.abs(
+            a[:, 0] * (b[:, 1] - c[:, 1]) + b[:, 0] * (c[:, 1] - a[:, 1]) + c[:, 0] * (a[:, 1] - b[:, 1])
+        )
+        centroid = (a + b + c) / 3.0  # Shape: (M, 3)
+    elif tetrahedra_points.shape[1] == 4:  # 3D case (tetrahedra)
+        a = tetrahedra_points[:, 0]
+        b = tetrahedra_points[:, 1]
+        c = tetrahedra_points[:, 2]
+        d = tetrahedra_points[:, 3]
+        centroid = (a + b + c + d) / 4.0  # Shape: (M, 3)
+
+    # Compute squared norms of each point
+    squared_norms = (tetrahedra_points**2).sum(dim=2, keepdim=True)  # Shape: (M, 4, 1)
+
+    # Construct the 4x4 matrices in batch
+    ones_col = torch.ones_like(squared_norms)  # Column of ones for homogeneous coordinates
+
+    A = torch.cat([tetrahedra_points, ones_col], dim=2)  # Shape: (M, 4, 4)
+    Dx = torch.cat([squared_norms, tetrahedra_points[:, :, 1:], ones_col], dim=2)
+    Dy = torch.cat([tetrahedra_points[:, :, :1], squared_norms, tetrahedra_points[:, :, 2:], ones_col], dim=2)
+    Dz = torch.cat([tetrahedra_points[:, :, :2], squared_norms, ones_col], dim=2)
+
+    # Compute determinants in batch
+    detA = torch.linalg.det(A)  # Shape: (M,)
+    detDx = torch.linalg.det(Dx)
+    detDy = torch.linalg.det(Dy)  # todo, removed Negative due to orientation
+    # detDz = torch.linalg.det(Dz)
+
+    # Compute circumcenters
+    circumcenters = 0.5 * torch.stack([detDx / detA, detDy / detA], dim=1)
+
+    penalties = torch.where(abs(centroid - circumcenters) < max_distance, centroid - circumcenters, torch.tensor(0.0, device=sites.device))
     cvt_loss = torch.mean(torch.abs(penalties))
     return cvt_loss
 
@@ -627,7 +780,7 @@ def tet_sdf_grad_eikonal_loss(sites, tet_sdf_grad, tets: torch.Tensor) -> torch.
 
     volume = su.volume_tetrahedron(a, b, c, d)
     grad_norm2 = (tet_sdf_grad**2).sum(dim=1)  # (M,)
-    loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)  # (M,)
+    loss = torch.mean((grad_norm2 - 1) ** 2)  # (M,)
 
     return loss
 
@@ -662,9 +815,9 @@ def tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, tets) -> torch.Tenso
     b = sites[tets[:, 1]]
     c = sites[tets[:, 2]]
     d = sites[tets[:, 3]]
-    volume = su.volume_tetrahedron(a, b, c, d)  # (M,)
+    # volume = su.volume_tetrahedron(a, b, c, d)  # (M,)
 
-    return torch.mean(volume * grad_norm)
+    return torch.mean(grad_norm)
 
 
 # def heaviside_derivative(phi: torch.Tensor, eps_H: float) -> torch.Tensor:
