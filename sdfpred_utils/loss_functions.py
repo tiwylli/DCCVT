@@ -363,18 +363,18 @@ def compute_voronoi_cell_centers_index_based_torch(points, delau, simplices=None
 
     return centroids
 
-def intersection_plane_line(plane_ori, plane_dir, sites, directions):
+def intersection_plane_line(plane_ori, plane_dir, sites, directions, dimension):
     num_sites = sites.shape[0]
     num_neighbors = plane_ori.shape[1]
     num_dirs = directions.shape[0]
 
     # Here move to the same direction for all the planes and sites
-    # (num_sites, num_neighbors, num_dirs, 2)
-    directions_repeat = directions.view(1, 1, num_dirs, 2).expand(num_sites, num_neighbors, num_dirs, 2)
+    # (num_sites, num_neighbors, num_dirs, dimension)
+    directions_repeat = directions.view(1, 1, num_dirs, dimension).expand(num_sites, num_neighbors, num_dirs, dimension)
     plane_dir_repeat = plane_dir.unsqueeze(2).expand(-1, -1, num_dirs, -1)
     plane_ori_repeat = plane_ori.unsqueeze(2).expand(-1, -1, num_dirs, -1)
     # All rays are originating from the sites (batched) and for all directions
-    ray_origin_repeat = sites.view(num_sites, 1, 1, 2).expand(-1, num_neighbors, num_dirs, -1)
+    ray_origin_repeat = sites.view(num_sites, 1, 1, dimension).expand(-1, num_neighbors, num_dirs, -1)
 
     #### Plane intersection with rays ####
     # (n . d)
@@ -402,8 +402,7 @@ def intersection_plane_line(plane_ori, plane_dir, sites, directions):
     min_distances, _ = torch.min(distances, dim=1) 
     return min_distances
 
-def compute_cvt_dist(sites, N=12, M=16, random=True, max_distance=0.1):
-    num_sites = sites.shape[0]
+def compute_cvt_dist(sites, N=12, M=16, random=True, max_distance=0.1, dimension=2):
     device = sites.device
 
     # Get the N closest sites to each site (excluding self)
@@ -419,23 +418,50 @@ def compute_cvt_dist(sites, N=12, M=16, random=True, max_distance=0.1):
     plane_dir = plane_dir / (torch.norm(plane_dir, dim=-1, keepdim=True) + 1e-8)
 
     # Generate M directions (half circle + opposite)
-    angles = torch.linspace(0, math.pi, M, device=device) # half-circle
-    if random:
-        angles += torch.rand(M, device=device) * (math.pi / M)
-    directions = torch.stack((torch.cos(angles), torch.sin(angles)), dim=1)  # (M, 2)
-    directions_opp = -directions.clone()  # (M, 2)
+    if dimension == 2:
+        angles = torch.linspace(0, math.pi, M, device=device) # half-circle
+        if random:
+            angles += torch.rand(1, device=device) * (math.pi / M)
+        directions = torch.stack((torch.cos(angles), torch.sin(angles)), dim=1)  # (M, 2)
+        directions_opp = -directions.clone()  # (M, 2)
+    elif dimension == 3:
+        # Fibonnaci sphere sampling for 3D directions
+        phi = (1 + math.sqrt(5)) / 2  # Golden ratio
+        indices = torch.arange(M, device=device)
+        theta = 2 * math.pi * indices / phi  # Azimuthal angle
+        y = 1 - (indices / (M - 1)) * 2 # y goes from 1 to -1
+        radius = torch.sqrt(1 - y**2)  # Radius in the xy-plane
+        directions = torch.stack((radius * torch.cos(theta), radius * torch.sin(theta), y), dim=1)
+
+        # Randomly pertub the directions with random rotation XYX
+        if random:
+            angles = torch.rand(3, device=device) * (math.pi / M)
+            # Compute rotation matrix for random angles XYX
+            rot_X = torch.tensor([[1, 0, 0],
+                                  [0, torch.cos(angles[0]), -torch.sin(angles[0])],
+                                  [0, torch.sin(angles[0]), torch.cos(angles[0])]], device=device)
+            rot_Y = torch.tensor([[torch.cos(angles[1]), 0, torch.sin(angles[1])],
+                                  [0, 1, 0],
+                                  [-torch.sin(angles[1]), 0, torch.cos(angles[1])]], device=device)
+            rot_X2 = torch.tensor([[1, 0, 0],
+                                   [0, torch.cos(angles[2]), -torch.sin(angles[2])],
+                                   [0, torch.sin(angles[2]), torch.cos(angles[2])]], device=device)
+            rotation_matrix = torch.matmul(rot_X, torch.matmul(rot_Y, rot_X2))
+            directions = torch.matmul(directions.unsqueeze(1), rotation_matrix).squeeze(1)
+        directions_opp = -directions.clone()  # (M, 3)
+    else:
+        raise ValueError("Only 2D and 3D dimensions are supported.")
 
     # Forward and backward intersection distances
-    min_dir = intersection_plane_line(plane_ori, plane_dir, sites, directions)       # (num_sites, M)
-    min_dir_opp = intersection_plane_line(plane_ori, plane_dir, sites, directions_opp)
+    min_dir = intersection_plane_line(plane_ori, plane_dir, sites, directions, dimension)       # (num_sites, M)
+    min_dir_opp = intersection_plane_line(plane_ori, plane_dir, sites, directions_opp, dimension)
 
     # Compute sample positions (intersection points from forward rays)
     ray_points = sites.unsqueeze(1) + min_dir.unsqueeze(-1) * directions.unsqueeze(0)  # (num_sites, M, 2)
     ray_points_opp = sites.unsqueeze(1) + min_dir_opp.unsqueeze(-1) * directions_opp.unsqueeze(0)  # (num_sites, M, 2)
     
     # Keep only directions that intersect in both directions
-    mask = (min_dir < float('inf')) & (min_dir_opp < float('inf'))
-    mask = mask & (torch.norm(ray_points - ray_points_opp, dim=-1) < max_distance)  # (num_sites, M)
+    mask = (min_dir < max_distance) & (min_dir_opp < max_distance)
 
     # Return MSE between opposite directions and points
     mse = torch.mean(torch.abs(min_dir[mask] - min_dir_opp[mask]))
