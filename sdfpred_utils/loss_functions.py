@@ -640,20 +640,20 @@ def update_div_weight(current_iteration, n_iterations, lambda_div, divdecay="lin
     return lambda_div
 
 
-# def discrete_tet_volume_eikonal_loss(sites, grad_sdf, tets: torch.Tensor) -> torch.Tensor:
+# def discrete_tet_volume_eikonal_loss(sites, sites_sdf_grad, tets: torch.Tensor) -> torch.Tensor:
 #     """
 #     Eikonal regularization loss.
 
 #     Args:
-#         grad_sdf: Tensor of shape (N, 3) containing ∇φ at each site.
+#         sites_sdf_grad: Tensor of shape (N, 3) containing ∇φ at each site.
 #         variant: 'a' for E1a: ½ mean((||∇φ|| - 1)²)
 #     Returns:
 #         A scalar tensor containing the eikonal loss.
 #     """
-#     grad_a = grad_sdf[tets[:, 0]]  # (M,3)
-#     grad_b = grad_sdf[tets[:, 1]]  # (M,3)
-#     grad_c = grad_sdf[tets[:, 2]]  # (M,3)
-#     grad_d = grad_sdf[tets[:, 3]]  # (M,3
+#     grad_a = sites_sdf_grad[tets[:, 0]]  # (M,3)
+#     grad_b = sites_sdf_grad[tets[:, 1]]  # (M,3)
+#     grad_c = sites_sdf_grad[tets[:, 2]]  # (M,3)
+#     grad_d = sites_sdf_grad[tets[:, 3]]  # (M,3)
 
 #     grad_avg = (grad_a + grad_b + grad_c + grad_d) / 4.0
 #     grad_norm2 = (grad_avg**2).sum(dim=-1)
@@ -682,7 +682,8 @@ def tet_sdf_grad_eikonal_loss(sites, tet_sdf_grad, tets: torch.Tensor) -> torch.
 
     grad_norm2 = (tet_sdf_grad**2).sum(dim=1)  # (M,)
     # loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)  # (M,)
-    loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)  # (M,)
+    # loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)  # (M,)
+    loss = 0.5 * torch.mean((grad_norm2 - 1) ** 2)  # (M,)
 
     return loss
 
@@ -741,7 +742,8 @@ def tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, tets, eps_H) -> torc
     volume = su.volume_tetrahedron(a, b, c, d)  # (M,)
     # trim 5% biggest volumes
     volume = torch.where(volume > torch.quantile(volume, 0.95), torch.tensor(0.0, device=sites.device), volume)
-    penalties = torch.mean(volume * grad_norm)
+    # penalties = torch.mean(volume * grad_norm)
+    penalties = torch.mean(grad_norm)
 
     # return torch.mean(volume * grad_norm)
     return penalties
