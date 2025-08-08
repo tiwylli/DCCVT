@@ -368,31 +368,38 @@ def intersection_plane_line(plane_ori, plane_dir, sites, directions):
     num_neighbors = plane_ori.shape[1]
     num_dirs = directions.shape[0]
 
+    # Here move to the same direction for all the planes and sites
+    # (num_sites, num_neighbors, num_dirs, 2)
     directions_repeat = directions.view(1, 1, num_dirs, 2).expand(num_sites, num_neighbors, num_dirs, 2)
     plane_dir_repeat = plane_dir.unsqueeze(2).expand(-1, -1, num_dirs, -1)
-    site_repeat2 = sites.unsqueeze(1).unsqueeze(2).expand(-1, num_neighbors, num_dirs, -1)
     plane_ori_repeat = plane_ori.unsqueeze(2).expand(-1, -1, num_dirs, -1)
+    # All rays are originating from the sites (batched) and for all directions
+    ray_origin_repeat = sites.view(num_sites, 1, 1, 2).expand(-1, num_neighbors, num_dirs, -1)
 
+    #### Plane intersection with rays ####
+    # (n . d)
     denom = torch.sum(plane_dir_repeat * directions_repeat, dim=-1)
-    parallel_mask = denom.abs() < 1e-8
-
-    numer = torch.sum(plane_dir_repeat * (plane_ori_repeat - site_repeat2), dim=-1)
+    parallel_mask = denom.abs() < 1e-8 # avoid parallel rays (unstable)
+    # (n . (p - o))
+    numer = torch.sum(plane_dir_repeat * (plane_ori_repeat - ray_origin_repeat), dim=-1)
+    # Compute the intersection distance
     t = torch.full_like(numer, float('inf'))
     t[~parallel_mask] = numer[~parallel_mask] / (denom[~parallel_mask] + 1e-8)
-
-    valid = (t >= 0) & (~parallel_mask)
+    valid = (t >= 0) & (~parallel_mask) # Filter valid intersections
     t[~valid] = float('inf')
 
     # Compute intersection points
-    valid_mask = t.isfinite()
-    valid_t = torch.where(valid_mask, t, torch.zeros_like(t))
-    intersection_points = site_repeat2 + valid_t.unsqueeze(-1) * directions_repeat
+    valid_mask = t.isfinite() # will be false for all invalid intersection (marked as infinit)
+    valid_t = torch.where(valid_mask, t, torch.zeros_like(t)) # replace invalid t with 0 to avoid NaN in autodiff
+    intersection_points = ray_origin_repeat + valid_t.unsqueeze(-1) * directions_repeat
 
-    # intersection points (ray starts from site)
+    # intersection points (ray starts from site) -- only retain valid intersections
     distances = torch.full_like(t, float('inf'))
-    distances[valid_mask] = torch.norm(intersection_points[valid_mask] - site_repeat2[valid_mask], dim=-1)
+    distances[valid_mask] = torch.norm(intersection_points[valid_mask] - ray_origin_repeat[valid_mask], dim=-1)
 
-    min_distances, _ = torch.min(distances, dim=1)  # Shape: (num_sites, num_dirs)
+    # Find the minimum distance for each site to all directions
+    # here 1 is because the distance vector is (num_sites, num_neighbors, num_dirs)
+    min_distances, _ = torch.min(distances, dim=1) 
     return min_distances
 
 def compute_cvt_dist(sites, N=12, M=16, random=True, max_distance=0.1):
@@ -400,12 +407,14 @@ def compute_cvt_dist(sites, N=12, M=16, random=True, max_distance=0.1):
     device = sites.device
 
     # Get the N closest sites to each site (excluding self)
-    knn_indices = knn_points(sites.unsqueeze(0), sites.unsqueeze(0), K=N+1).idx.squeeze(0)[:, 1:]  # (num_sites, N)
-    knn_sites = knn_gather(sites.unsqueeze(0), knn_indices.unsqueeze(0)).squeeze(0)  # (num_sites, N, 2)
+    knn_indices = knn_points(sites.unsqueeze(0), sites.unsqueeze(0), K=N+1).idx.squeeze(0)[:, 1:] 
+    knn_sites = knn_gather(sites.unsqueeze(0), knn_indices.unsqueeze(0)).squeeze(0)
 
     # Prepare planes (midpoints between site and neighbors)
-    sites_repeat = sites.unsqueeze(1).expand(-1, N, -1)  # (num_sites, N, 2)
-    plane_ori = (knn_sites + sites_repeat) * 0.5         # (num_sites, N, 2)
+    # It will be N planes for each site
+    # (num_sites, N, 2)
+    sites_repeat = sites.unsqueeze(1).expand(-1, N, -1) 
+    plane_ori = (knn_sites + sites_repeat) * 0.5       
     plane_dir = knn_sites - plane_ori
     plane_dir = plane_dir / (torch.norm(plane_dir, dim=-1, keepdim=True) + 1e-8)
 
@@ -414,7 +423,7 @@ def compute_cvt_dist(sites, N=12, M=16, random=True, max_distance=0.1):
     if random:
         angles += torch.rand(M, device=device) * (math.pi / M)
     directions = torch.stack((torch.cos(angles), torch.sin(angles)), dim=1)  # (M, 2)
-    directions_opp = -directions  # (M, 2)
+    directions_opp = -directions.clone()  # (M, 2)
 
     # Forward and backward intersection distances
     min_dir = intersection_plane_line(plane_ori, plane_dir, sites, directions)       # (num_sites, M)
