@@ -1,5 +1,5 @@
 import torch
-from scipy.spatial import Voronoi
+from scipy.spatial import Voronoi, Delaunay
 import numpy as np
 import math
 import sdfpred_utils.sdfpred_utils as su
@@ -7,6 +7,7 @@ import sdfpred_utils.sdfpred_utils as su
 from pytorch3d.ops import knn_points, knn_gather
 import torch
 from torch import nn
+import pygdel3d
 
 device = torch.device("cuda:0")
 
@@ -467,7 +468,53 @@ def compute_cvt_dist(sites, N=12, M=16, random=True, max_distance=0.1, dimension
     mse = torch.mean(torch.abs(min_dir[mask] - min_dir_opp[mask]))
     return mse, ray_points[mask], ray_points_opp[mask]
 
+# Compute CVT loss
+def compute_cvt_loss_true(sites, d3d):
+    vertices = su.compute_vertices_3d_vectorized(sites, d3d)
+    
+    # Concat sites and vertices to compute the Voronoi diagram
+    points = torch.concatenate((sites, vertices), axis=0)
+    d3dsimplices, _ = pygdel3d.triangulate(points.detach().cpu().numpy())
+    # d3dsimplices = Delaunay(points.detach().cpu().numpy()).simplices
+    d3dsimplices = torch.tensor(d3dsimplices, dtype=torch.int64, device=sites.device)
+   
+    ############ 2D Case (Triangles) ############ 
+    # Compute the areas of all simplices (in 2D triangles)
+    # a = points[d3dsimplices[:, 0]]
+    # b = points[d3dsimplices[:, 1]]
+    # c = points[d3dsimplices[:, 2]]
+    # # areas_simplices = torch.linalg.norm(torch.cross(b - a, c - a), dim=1) / 2.0
+    # triangle_areas = torch.linalg.norm(b - a, dim=1) * torch.linalg.norm(c - a, dim=1) / 2.0
+    # triangle_center = (a + b + c) / 3.0
+    # # print(triangle_areas.shape, triangle_center.shape)
+    ############ 3D Case (Tetrahedra) ############
+    a = points[d3dsimplices[:, 0]]
+    b = points[d3dsimplices[:, 1]]
+    c = points[d3dsimplices[:, 2]]
+    d = points[d3dsimplices[:, 3]]
+    
+    tetrahedra_volume = su.volume_tetrahedron(a, b, c, d)
+    tetrahedra_center = (a + b + c + d) / 4.0  # Shape: (M, 3)
+    
+    # Create a centroid for each sites
+    centroids = torch.zeros_like(sites)
+    volumes = torch.ones(sites.shape[0], dtype=torch.float32, device=sites.device) * 1e-8  # Avoid division by zero
+    for i in range(3):
+        # Filter simplices that are valid (i.e., not out of bounds)
+        # We assume that the first N points are the sites
+        mask = d3dsimplices[:, i] < sites.shape[0]
+        # Uses index_add for atomic addition
+        centroids.index_add_(0, d3dsimplices[mask, i], tetrahedra_center[mask] * tetrahedra_volume[mask].unsqueeze(1))
+        volumes.index_add_(0, d3dsimplices[mask, i], tetrahedra_volume[mask])
+    centroids /= volumes.unsqueeze(1)
 
+    cvt_loss = torch.mean(torch.norm(sites - centroids, dim=1))
+
+    # print("Centroids shape:", centroids.shape)
+    # print("Sites shape:", sites.shape)
+    # return centroids, vertices
+    return cvt_loss
+    
 
 def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None,max_distance=0.1):
     centroids = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices).to(device)
