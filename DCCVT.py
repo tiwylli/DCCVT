@@ -28,8 +28,11 @@ import models.Net as Net
 # cuda devices
 device = torch.device("cuda:0")
 print("Using device: ", torch.cuda.get_device_name(device))
+# Improve reproducibility
 torch.manual_seed(69)
-
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+np.random.seed(69)
 
 # Generate a timestamp string for unique output folders
 import datetime
@@ -60,38 +63,38 @@ DEFAULTS = {
     "upsampling": 0,  # 0
     "lr_sites": 0.0005,
     "mesh_ids": [64764],
-    #     "252119",
-    #     "313444",
-    #     "316358",
-    #     "354371",
-    #     "398259",
-    #     "441708",
-    #     "44234",
-    #     "47984",
-    #     "527631",
-    #     "53159",
-    #     "58168",
-    #     "64444",
-    #     "64764",
-    #     "68380",
-    #     "68381",
-    #     "72870",
-    #     "72960",
-    #     "73075",
-    #     "75496",
-    #     "75655",
-    #     "75656",
-    #     "75662",
-    #     "75665",
-    #     "76277",
-    #     "77245",
-    #     "78671",
-    #     "79241",
-    #     "90889",
-    #     "92763",
-    #     "92880",
-    #     "95444",
-    #     "96481",
+    # "252119",
+    # "313444",
+    # "316358",
+    # "354371",
+    # "398259",
+    # "441708",
+    # "44234",
+    # "47984",
+    # "527631",
+    # "53159",
+    # "58168",
+    # "64444",
+    # "64764",
+    # "68380",
+    # "68381",
+    # "72870",
+    # "72960",
+    # "73075",
+    # "75496",
+    # "75655",
+    # "75656",
+    # "75662",
+    # "75665",
+    # "76277",
+    # "77245",
+    # "78671",
+    # "79241",
+    # "90889",
+    # "92763",
+    # "92880",
+    # "95444",
+    # "96481",
     # ],
 }
 
@@ -102,7 +105,7 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
     arg_list = []
     for m in m_list:
         # # Voroloss vs DCCVT vs MT : baseline
-        # # Voroloss
+        # Voroloss
         # arg_list.append(
         #     [
         #         "--mesh",
@@ -115,6 +118,20 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "1000",
         #         "--num_centroids",
         #         "32",
+        #     ]
+        # )
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_voroloss",
+        #         "1000",
+        #         "--num_centroids",
+        #         "64",
         #     ]
         # )
 
@@ -138,11 +155,31 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
                 "--clip",
                 "--w_mt",
                 "1",
-                "--w_mc",
-                "1",
             ]
         )
         # DCCVT + cvt + sdfreg + upsampling
+        arg_list.append(
+            [
+                "--mesh",
+                f"{DEFAULTS['mesh']}{m}",
+                "--trained_HotSpot",
+                f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+                "--output",
+                f"{DEFAULTS['output']}{m}",
+                "--w_chamfer",
+                "1000",
+                "--w_cvt",
+                "100",
+                "--w_sdfsmooth",
+                "100",
+                "--upsampling",
+                "10",
+                "--clip",
+                "--w_mt",
+                "1",
+            ]
+        )
+        # DCCVT+cvt
         # arg_list.append(
         #     [
         #         "--mesh",
@@ -155,6 +192,64 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "1000",
         #         "--w_cvt",
         #         "100",
+        #         "--num_centroids",
+        #         "32",
+        #         "--clip",
+        #         "--w_mt",
+        #         "1",
+        #     ]
+        # )
+        # DCCVT + cvt + upsampling
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_chamfer",
+        #         "1000",
+        #         "--w_cvt",
+        #         "100",
+        #         "--upsampling",
+        #         "10",
+        #         "--clip",
+        #         "--w_mt",
+        #         "1",
+        #     ]
+        # )
+        # DCCVT+sdfreg
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_chamfer",
+        #         "1000",
+        #         "--w_sdfsmooth",
+        #         "100",
+        #         "--num_centroids",
+        #         "32",
+        #         "--clip",
+        #         "--w_mt",
+        #         "1",
+        #     ]
+        # )
+        # DCCVT + sdfreg + upsampling
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_chamfer",
+        #         "1000",
         #         "--w_sdfsmooth",
         #         "100",
         #         "--upsampling",
@@ -162,32 +257,28 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "--clip",
         #         "--w_mt",
         #         "1",
-        #         "--w_mc",
-        #         "1",
         #     ]
         # )
         # # MT
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
-                "--output",
-                f"{DEFAULTS['output']}{m}",
-                "--w_chamfer",
-                "1000",
-                "--upsampling",
-                "0",
-                "--clip",
-                "--marching_tetrahedra",
-                "--w_mt",
-                "1",
-                "--w_mc",
-                "1",
-            ]
-        )
-        # MT + upsampling
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_chamfer",
+        #         "1000",
+        #         "--upsampling",
+        #         "0",
+        #         "--clip",
+        #         "--marching_tetrahedra",
+        #         "--w_mt",
+        #         "1",
+        #     ]
+        # )
+        # # MT + upsampling
         # arg_list.append(
         #     [
         #         "--mesh",
@@ -203,8 +294,6 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "--clip",
         #         "--marching_tetrahedra",
         #         "--w_mt",
-        #         "1",
-        #         "--w_mc",
         #         "1",
         #     ]
         # )
@@ -225,7 +314,66 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "32",
         #     ]
         # )
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_voroloss",
+        #         "1000",
+        #         "--num_centroids",
+        #         "64",
+        #     ]
+        # )
         # DCCVT+cvt+sdfreg
+        arg_list.append(
+            [
+                "--mesh",
+                f"{DEFAULTS['mesh']}{m}",
+                "--trained_HotSpot",
+                f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
+                "--output",
+                f"{DEFAULTS['output']}unconverged_{m}",
+                "--w_chamfer",
+                "1000",
+                "--w_cvt",
+                "100",
+                "--w_sdfsmooth",
+                "100",
+                "--num_centroids",
+                "32",
+                "--clip",
+                "--w_mt",
+                "1",
+            ]
+        )
+
+        # DCCVT+cvt+sdfreg+upsampling
+        arg_list.append(
+            [
+                "--mesh",
+                f"{DEFAULTS['mesh']}{m}",
+                "--trained_HotSpot",
+                f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
+                "--output",
+                f"{DEFAULTS['output']}unconverged_{m}",
+                "--w_chamfer",
+                "1000",
+                "--w_cvt",
+                "100",
+                "--w_sdfsmooth",
+                "100",
+                "--upsampling",
+                "10",
+                "--clip",
+                "--w_mt",
+                "1",
+            ]
+        )
+        # DCCVT+cvt
         # arg_list.append(
         #     [
         #         "--mesh",
@@ -238,6 +386,45 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "1000",
         #         "--w_cvt",
         #         "100",
+        #         "--num_centroids",
+        #         "32",
+        #         "--clip",
+        #         "--w_mt",
+        #         "1",
+        #     ]
+        # )
+
+        # DCCVT+cvt+upsampling
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}unconverged_{m}",
+        #         "--w_chamfer",
+        #         "1000",
+        #         "--w_cvt",
+        #         "100",
+        #         "--upsampling",
+        #         "10",
+        #         "--clip",
+        #         "--w_mt",
+        #         "1",
+        #     ]
+        # )
+        # DCCVT+sdfreg
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}unconverged_{m}",
+        #         "--w_chamfer",
+        #         "1000",
         #         "--w_sdfsmooth",
         #         "100",
         #         "--num_centroids",
@@ -245,12 +432,10 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "--clip",
         #         "--w_mt",
         #         "1",
-        #         "--w_mc",
-        #         "1",
         #     ]
         # )
 
-        # DCCVT+cvt+sdfreg+upsampling
+        # DCCVT+sdfreg+upsampling
         # arg_list.append(
         #     [
         #         "--mesh",
@@ -261,16 +446,12 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         f"{DEFAULTS['output']}unconverged_{m}",
         #         "--w_chamfer",
         #         "1000",
-        #         "--w_cvt",
-        #         "100",
         #         "--w_sdfsmooth",
         #         "100",
         #         "--upsampling",
         #         "10",
         #         "--clip",
         #         "--w_mt",
-        #         "1",
-        #         "--w_mc",
         #         "1",
         #     ]
         # )
@@ -291,11 +472,9 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "--marching_tetrahedra",
         #         "--w_mt",
         #         "1",
-        #         "--w_mc",
-        #         "1",
         #     ]
         # )
-        # # # MT+upsampling
+        # # # # MT+upsampling
         # arg_list.append(
         #     [
         #         "--mesh",
@@ -312,35 +491,33 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "--marching_tetrahedra",
         #         "--w_mt",
         #         "1",
-        #         "--w_mc",
-        #         "1",
         #     ]
         # )
 
         # Ablation study:
         # DCCVT + cvt + sdfreg, already done above
         # DCCVT + cvt
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
-                "--output",
-                f"{DEFAULTS['output']}{m}",
-                "--w_chamfer",
-                "1000",
-                "--w_cvt",
-                "100",
-                "--num_centroids",
-                "32",
-                "--clip",
-                "--w_mt",
-                "1",
-                "--w_mc",
-                "1",
-            ]
-        )
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_chamfer",
+        #         "1000",
+        #         "--w_cvt",
+        #         "100",
+        #         "--num_centroids",
+        #         "32",
+        #         "--clip",
+        #         "--w_mt",
+        #         "1",
+        #         "--w_mc",
+        #         "1",
+        #     ]
+        # )
         # arg_list.append(
         #     [
         #         "--mesh",
@@ -363,27 +540,27 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #     ]
         # )
         # # DCCVT + sdfreg
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
-                "--output",
-                f"{DEFAULTS['output']}{m}",
-                "--w_chamfer",
-                "1000",
-                "--w_sdfsmooth",
-                "100",
-                "--num_centroids",
-                "32",
-                "--clip",
-                "--w_mt",
-                "1",
-                "--w_mc",
-                "1",
-            ]
-        )
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_chamfer",
+        #         "1000",
+        #         "--w_sdfsmooth",
+        #         "100",
+        #         "--num_centroids",
+        #         "32",
+        #         "--clip",
+        #         "--w_mt",
+        #         "1",
+        #         "--w_mc",
+        #         "1",
+        #     ]
+        # )
         # arg_list.append(
         #     [
         #         "--mesh",
@@ -620,13 +797,13 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 )
                 vertices_list, faces_list = marching_tetrehedra_mesh
                 v_vect = vertices_list[0]
-                f_vect = faces_list[0]
+                # f_vect = faces_list[0]
             else:
-                v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
+                v_vect, f_or_clipped_v, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
                     sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh
                 )
             if args.build_mesh:
-                triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_vect for i in range(1, len(f) - 1)]
+                triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_or_clipped_v for i in range(1, len(f) - 1)]
                 triangle_faces = torch.tensor(triangle_faces, device=device)
                 hs_p = su.sample_mesh_points_heitz(v_vect, triangle_faces, num_samples=mnfld_points.shape[0])
                 chamfer_loss_mesh, _ = chamfer_distance(mnfld_points.detach(), hs_p.unsqueeze(0))
@@ -637,17 +814,32 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             voroloss_loss = voroloss(target_pc.squeeze(0), sites).mean()
 
         if args.w_cvt > 0:
-            cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
+            # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
+            # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay_volume(sites, None, d3dsimplices)
+            cvt_loss = lf.compute_cvt_loss_CLIPPED_vertices(
+                sites, sites_sdf, sites_sdf_grads, d3dsimplices, f_or_clipped_v
+            )
 
-        sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
+        sites_loss = args.w_cvt / 10 * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
         if args.w_sdfsmooth > 0:
             if sites_sdf_grads is None:
                 sites_sdf_grads, tets_sdf_grads, W = su.sdf_space_grad_pytorch_diego_sites_tets(
                     sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach()
                 )
-            eik_loss = args.w_sdfsmooth / 10 * lf.tet_sdf_grad_eikonal_loss(sites, tets_sdf_grads, d3dsimplices)
-            shl = args.w_sdfsmooth * 10 * lf.tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3dsimplices)
+            if epoch % 100 == 0 and epoch <= 500:
+                eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 5).detach()
+                print("Estimated eps_H: ", eps_H)
+            elif epoch % 100 == 0 and epoch <= 800:
+                eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 2).detach()
+                print("Estimated eps_H: ", eps_H)
+
+            eik_loss = args.w_sdfsmooth / 1000 * lf.tet_sdf_grad_eikonal_loss(sites, tets_sdf_grads, d3dsimplices)
+            shl = (
+                args.w_sdfsmooth
+                / 1000
+                * lf.tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3dsimplices, eps_H)
+            )
             sdf_loss = eik_loss + shl
 
         loss = sites_loss + sdf_loss
@@ -678,6 +870,8 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                             {"params": [sites_sdf], "lr": args.lr_sites},
                         ]
                     )
+                    eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 3).detach()
+                    print("Estimated eps_H: ", eps_H)
                 else:
                     optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
 
@@ -705,6 +899,8 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                         {"params": [sites_sdf], "lr": args.lr_sites},
                     ]
                 )
+                eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 5).detach()
+                print("Estimated eps_H: ", eps_H)
             else:
                 sites, _ = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
                 sites = sites.detach().requires_grad_(True)
@@ -757,7 +953,7 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
             sites, None, d3dsimplices, args.clip, sdf_values, True
         )
-        output_obj_file = f"{args.save_path}/voromesh_{args.upsampling}_{state}_DCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        output_obj_file = f"{args.save_path}/voromesh_{args.num_centroids}_{state}_DCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
         save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
         su.save_obj(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
     if args.w_mc > 0:
@@ -791,9 +987,18 @@ def save_npz(sites, sites_sdf, time, args, output_file):
     )
 
 
+def copy_script():
+    script_path = os.path.abspath(__file__)
+    script_copy_path = os.path.join(DEFAULTS["output"], script_path.split("/")[-1])
+    os.makedirs(DEFAULTS["output"], exist_ok=True)
+    with open(script_copy_path, "w") as f:
+        f.write(open(script_path).read())
+
+
 if __name__ == "__main__":
     arg_lists = build_arg_list()
     start_time = time()
+    copy_script()
     for arg_list in arg_lists:
         args = define_options_parser(arg_list)
         args.save_path = f"{args.output}" if args.save_path is None else args.save_path

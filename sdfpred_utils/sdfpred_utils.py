@@ -348,8 +348,9 @@ def compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values):
     ).to(device)
     # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
     tetra_edges, _ = torch.sort(tetra_edges, dim=1)
-    # Get unique edges
-    neighbors = torch.unique(tetra_edges, dim=0)
+    # Get unique edges nevermind TODO
+    # neighbors = torch.unique(tetra_edges, dim=0)
+    neighbors = tetra_edges
 
     # Extract the SDF values for each site in the pair
     sdf_i = sdf_values[neighbors[:, 0]]  # First site in each pair
@@ -1850,8 +1851,11 @@ def get_clipped_mesh_numba(
                 grads = vertices_sdf_grad[sorted(used)]
                 proj_vertices = newton_step_clipping(grads, sdf_verts, new_vertices)
             else:
-                proj_vertices, tet_probs = tet_plane_clipping(
-                    d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
+                # proj_vertices, tet_probs = tet_plane_clipping(
+                #     d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
+                # )
+                proj_vertices = tet_grads_clipping(
+                    new_vertices, vertices_sdf[sorted(used)], tets_sdf_grads[sorted(used)]
                 )
 
             return proj_vertices, new_faces, sites_sdf_grad, tets_sdf_grads, W
@@ -1863,7 +1867,6 @@ def get_clipped_mesh_numba(
         )
         vertices = compute_vertices_3d_vectorized(sites, vertices_to_compute)
         bisectors = compute_all_bisectors_vectorized(sites, bisectors_to_compute)
-        # TODO:idea use bisectors as center of face and use knn to do the face connectivity to the vertices
         # points = torch.cat((vertices, bisectors), 0)
         if not clip:
             # print("-> not clipping")
@@ -1881,8 +1884,10 @@ def get_clipped_mesh_numba(
                 grads = vertices_sdf_grad[used_tet]
                 proj_vertices = newton_step_clipping(grads, sdf_verts, vertices)
             else:
-                proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
+                # proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
+                proj_vertices = tet_grads_clipping(vertices, vertices_sdf[used_tet], tets_sdf_grads[used_tet])
 
+            # in paper this will be considered a regularisation
             bisectors_sdf = (sites_sdf[bisectors_to_compute[:, 0]] + sites_sdf[bisectors_to_compute[:, 1]]) / 2
             bisectors_sdf_grad = (
                 sites_sdf_grad[bisectors_to_compute[:, 0]] + sites_sdf_grad[bisectors_to_compute[:, 1]]
@@ -1892,7 +1897,10 @@ def get_clipped_mesh_numba(
 
             proj_points = torch.cat((proj_vertices, proj_bisectors), 0)
 
-            return proj_points, None, sites_sdf_grad, tets_sdf_grads, W
+            vert_for_clipped_cvt = all_vor_vertices
+            vert_for_clipped_cvt[used_tet] = proj_vertices
+            # proj_points = proj_vertices
+            return proj_points, vert_for_clipped_cvt, sites_sdf_grad, tets_sdf_grads, W
 
 
 def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
@@ -1969,7 +1977,7 @@ def tet_plane_clipping(
     sdf_grads: torch.Tensor,  # (N, 3)
     voronoi_vertices: torch.Tensor,  # (M, 3)
 ) -> torch.Tensor:
-    eps = 1e-12
+    eps = 1e-8
     # Gather tet-specific data
     tet_sites = sites[tets]  # (M, 4, 3)
     tet_sdf = sdf_values[tets]  # (M, 4)
@@ -2005,6 +2013,16 @@ def tet_plane_clipping(
     projected_verts = voronoi_vertices - steps_verts  # (M, 3)
 
     return projected_verts, (site_step_dir, vert_step_dir, tet_sites)
+
+
+def tet_grads_clipping(voronoi_vertices, vor_vert_sdf_values, tets_grads):
+    eps = 1e-8
+    grad_norm2 = torch.sqrt((tets_grads**2).sum(dim=-1, keepdim=True) + eps)  # (M, 4, 1)
+    vert_step_dir = tets_grads / grad_norm2  # (M, 4, 3)
+    steps = vor_vert_sdf_values.unsqueeze(-1) * vert_step_dir  # (M, 4, 3)
+    projected_verts = voronoi_vertices - steps  # (M, 3)
+
+    return projected_verts
 
 
 def build_tangent_frame(normals):  # normals: (B, 3)
@@ -2344,3 +2362,151 @@ def zero_crossing_sdf_metric(true_sdf, sites, sites_sdf, d3dsimplices):
         torch.mean(zc_truesdf - zc_sdf).item(),
         torch.std(zc_truesdf - zc_sdf).item(),
     )
+
+
+def NOT_mt_extraction(sites, sites_sdf, d3dsimplices):
+    d3dsimplices = torch.tensor(d3dsimplices, device=sites.device)  # (M,4)
+    sites_sdf_grads, _, _ = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3dsimplices)
+
+    tetra_edges = torch.cat(
+        [
+            d3dsimplices[:, [0, 1]],
+            d3dsimplices[:, [1, 2]],
+            d3dsimplices[:, [2, 3]],
+            d3dsimplices[:, [3, 0]],
+            d3dsimplices[:, [0, 2]],
+            d3dsimplices[:, [1, 3]],
+        ],
+        dim=0,
+    ).to(device)
+    # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
+    tetra_edges, _ = torch.sort(tetra_edges, dim=1)
+    # Extract the SDF values for each site in the pair
+    sdf_i = sites_sdf[tetra_edges[:, 0]]  # First site in each pair
+    sdf_j = sites_sdf[tetra_edges[:, 1]]  # Second site in each pair
+    # Find the indices where SDF values have opposing signs or one is zero
+    mask_zero_crossing_sites = (sdf_i * sdf_j <= 0).squeeze()
+    zero_crossing_pairs = tetra_edges[mask_zero_crossing_sites]
+
+    bisectors = compute_all_bisectors_vectorized(sites, zero_crossing_pairs)
+    print("Number of bisectors to compute:", bisectors.shape)
+    # build faces
+
+    bisectors_sorted = torch.sort(zero_crossing_pairs, dim=1)[0]  # Sort bisectors for consistency
+    print("Number of bisectors sorted:", bisectors_sorted.shape)
+    mesh = []
+    for tet in d3dsimplices:
+        face = []
+        for i, j in [
+            (tet[0], tet[1]),
+            (tet[0], tet[2]),
+            (tet[0], tet[3]),
+            (tet[1], tet[2]),
+            (tet[1], tet[3]),
+            (tet[2], tet[3]),
+        ]:
+            if sites_sdf[i] * sites_sdf[j] <= 0:
+                face.append((min(i.item(), j.item()), max(i.item(), j.item())))  # sorted tuple
+        if len(face) == 0:
+            continue
+        if len(face) == 3:
+            mesh.append(face)
+        if len(face) == 4:
+            face1 = (face[0], face[1], face[2])
+            face2 = (face[0], face[2], face[3])
+            mesh.append(face1)
+            mesh.append(face2)
+    print(len(mesh))
+
+    # First, build a lookup from pair -> index
+    # Convert each (i, j) pair into a single tuple (i, j), then to dictionary key
+    pair_to_index = {(i.item(), j.item()): idx for idx, (i, j) in enumerate(bisectors_sorted)}
+
+    # Now remap your mesh faces
+    indexed_faces = []
+    for face in mesh:
+        try:
+            # face is a list of 3 or 4 (i, j) sorted tuples
+            indexed_face = [pair_to_index[(i, j)] for (i, j) in face]
+            indexed_faces.append(indexed_face)
+        except KeyError:
+            print("Warning: a face contained a pair not in bisectors_sorted")
+        continue
+
+    bisectors_sdf = (sites_sdf[zero_crossing_pairs[:, 0]] + sites_sdf[zero_crossing_pairs[:, 1]]) / 2
+    bisectors_sdf_grad = (sites_sdf_grads[zero_crossing_pairs[:, 0]] + sites_sdf_grads[zero_crossing_pairs[:, 1]]) / 2
+    step = bisectors_sdf.unsqueeze(1) * bisectors_sdf_grad  # (M,3)
+    proj_bisectors = bisectors - step
+
+    return proj_bisectors.detach().cpu().numpy(), np.array(indexed_faces)
+
+
+def cvt_extraction(sites, sites_sdf, d3dsimplices):
+    """
+    Extracts a mesh from the given sites and their SDF values.
+    """
+    d3d = torch.tensor(d3dsimplices, device=device)  # (M,4)
+    all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
+
+    all_vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
+
+    print("Voronoi vertices shape:", all_vor_vertices.shape, "SDF values shape:", all_vertices_sdf.shape)
+
+    vertices_to_compute, zero_crossing_sites_pairs, used_tet = compute_zero_crossing_vertices_3d(
+        sites, None, None, d3dsimplices, sites_sdf
+    )
+    vertices = compute_vertices_3d_vectorized(sites, vertices_to_compute)
+
+    sdf_verts = interpolate_sdf_of_vertices(vertices, d3d[used_tet], sites, sites_sdf)
+
+    print("Vertices to compute:", vertices.shape, "SDF values shape:", sdf_verts.shape)
+
+    tet_sites = sites[d3d[used_tet]]  # (M,4,3)
+    tet_sdf = sites_sdf[d3d[used_tet]]  # (M,4)
+    signs = torch.sign(tet_sdf)  # (M,4)
+    sign_sum = torch.abs(signs.sum(dim=1))  # (M,)
+    valid_mask = sign_sum < 4  # (M,) True if there's a sign change
+
+    cross_mask = signs.unsqueeze(2) * signs.unsqueeze(1) < 0  # (M,4,4)
+    site_mask = cross_mask.any(dim=2)  # (M,4) True if site has at least one sign change edge
+
+    # vectors_to_site = tet_sites - vertices.unsqueeze(1)  # (M, 4, 3)
+    # vectors_to_site[~site_mask] = 0.0  # Zero out vectors for non-crossing sites
+    # count = site_mask.sum(dim=1, keepdim=True).clamp(min=1)  # (M,1) avoid division by zero
+
+    # print("Vectors to site shape:", vectors_to_site.shape, "Count shape:", count.shape)
+
+    # avg_dir = vectors_to_site.sum(dim=1) / count  # (M,3)
+
+    # print("Average direction shape:", avg_dir.shape)
+
+    # eps = 1e-12
+    # norm2 = avg_dir.norm(dim=1, keepdim=True).clamp(min=eps)  # Avoid division by zero
+    # print("Norm2 shape:", norm2.shape)
+    # step = (avg_dir / norm2.squeeze(-1)).unsqueeze(-1) * sdf_verts  # (M,3)
+    # projected = vertices - step
+
+    eps = 1e-8
+    phi = torch.abs(tet_sdf) + eps  # (M, 4)
+    weights = 1.0 / phi  # (M, 4)
+    weights = weights / weights.sum(dim=1, keepdim=True)  # (M, 4)
+
+    predicted_zero_point = torch.sum(tet_sites * weights.unsqueeze(-1), dim=1)  # (M, 3)
+
+    projected = predicted_zero_point
+
+    print(vertices.shape, projected.shape)
+
+    faces = get_faces(d3dsimplices, sites, all_vor_vertices, None, sites_sdf)  # (R0, List of simplices)
+
+    # Compact the vertex list
+    used = {idx for face in faces for idx in face}
+    old2new = {old: new for new, old in enumerate(sorted(used))}
+    new_vertices = all_vor_vertices[sorted(used)]
+    new_faces = [[old2new[i] for i in face] for face in faces]
+
+    return projected, new_faces
+
+    # # Use barycentric weights for interpolation
+
+    # return mesh
