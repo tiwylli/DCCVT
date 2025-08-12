@@ -293,8 +293,10 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             voroloss_loss = voroloss(target_pc.squeeze(0), sites).mean()
 
         if args.w_cvt > 0:
-            cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
+            # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
             # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay_tetrahedra(sites, None, d3dsimplices)
+            cvt_loss = lf.compute_cvt_loss_true(sites, d3dsimplices)
+
         sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
         if args.w_sdf > 0:

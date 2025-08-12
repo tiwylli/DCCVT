@@ -474,6 +474,8 @@ def compute_cvt_loss_true(sites, d3d):
     
     # Concat sites and vertices to compute the Voronoi diagram
     points = torch.concatenate((sites, vertices), axis=0)
+    # Avoid to get coplanar tet which create issue if the current algorithm
+    points += (torch.rand_like(points) - 0.5) * 0.00001 # 0.001 % of the space ish 
     d3dsimplices, _ = pygdel3d.triangulate(points.detach().cpu().numpy())
     # d3dsimplices = Delaunay(points.detach().cpu().numpy()).simplices
     d3dsimplices = torch.tensor(d3dsimplices, dtype=torch.int64, device=sites.device)
@@ -499,7 +501,7 @@ def compute_cvt_loss_true(sites, d3d):
     # Create a centroid for each sites
     centroids = torch.zeros_like(sites)
     volumes = torch.ones(sites.shape[0], dtype=torch.float32, device=sites.device) * 1e-8  # Avoid division by zero
-    for i in range(3):
+    for i in range(4):
         # Filter simplices that are valid (i.e., not out of bounds)
         # We assume that the first N points are the sites
         mask = d3dsimplices[:, i] < sites.shape[0]
@@ -508,7 +510,8 @@ def compute_cvt_loss_true(sites, d3d):
         volumes.index_add_(0, d3dsimplices[mask, i], tetrahedra_volume[mask])
     centroids /= volumes.unsqueeze(1)
 
-    cvt_loss = torch.mean(torch.norm(sites - centroids, dim=1))
+    # cvt_loss = torch.mean(torch.norm(sites - centroids, dim=1))
+    cvt_loss = torch.mean(torch.abs(sites - centroids))
 
     # print("Centroids shape:", centroids.shape)
     # print("Sites shape:", sites.shape)
