@@ -19,7 +19,7 @@ np.random.seed(69)
 
 ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments/"
 GT_DIR = ROOT_DIR + "mesh/thingi32/"
-EXPERIMENTS_DIR = ROOT_DIR + "outputs/20250807_165832/"  # /thingi32/
+EXPERIMENTS_DIR = ROOT_DIR + "outputs/20250811_224347/"  # /thingi32/
 
 
 def generate_metrics_dict():
