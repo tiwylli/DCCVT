@@ -257,7 +257,6 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             f"voroloss: {tqdm_desc['voroloss']():.4f} | "
             f"sdf: {tqdm_desc['sdf']():.4f} | "
         )
-
         optimizer.zero_grad()
 
         if args.w_cvt > 0 or args.w_chamfer > 0:
@@ -294,11 +293,12 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             voroloss_loss = voroloss(target_pc.squeeze(0), sites).mean()
 
         if args.w_cvt > 0:
-            # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
-            # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay_volume(sites, None, d3dsimplices)
-            cvt_loss = lf.compute_cvt_loss_CLIPPED_vertices(
-                sites, sites_sdf, sites_sdf_grads, d3dsimplices, f_or_clipped_v
-            )
+            if args.w_voroloss > 0:
+                cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
+            else:
+                # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
+                # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay_volume(sites, None, d3dsimplices)
+                cvt_loss = lf.compute_cvt_loss_CLIPPED_vertices(sites, None, None, d3dsimplices, f_or_clipped_v)
 
         sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
@@ -314,12 +314,9 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 2).detach()
                 print("Estimated eps_H: ", eps_H)
 
-            eik_loss = args.w_sdf / 1000 * lf.tet_sdf_grad_eikonal_loss(sites, tets_sdf_grads, d3dsimplices)
-            shl = (
-                args.w_sdf
-                / 1000
-                * lf.tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3dsimplices, eps_H)
-            )
+            # eik_loss = args.w_sdfsmooth / 1000 * lf.tet_sdf_grad_eikonal_loss(sites, tets_sdf_grads, d3dsimplices)
+            eik_loss = args.w_sdf / 10 * lf.discrete_tet_volume_eikonal_loss(sites, sites_sdf_grads, d3dsimplices)
+            shl = args.w_sdf * lf.tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3dsimplices, eps_H)
             sdf_loss = eik_loss + shl
 
         loss = sites_loss + sdf_loss
