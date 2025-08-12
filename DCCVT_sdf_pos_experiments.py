@@ -257,6 +257,7 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
             f"voroloss: {tqdm_desc['voroloss']():.4f} | "
             f"sdf: {tqdm_desc['sdf']():.4f} | "
         )
+
         optimizer.zero_grad()
 
         if args.w_cvt > 0 or args.w_chamfer > 0:
@@ -276,13 +277,13 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 )
                 vertices_list, faces_list = marching_tetrehedra_mesh
                 v_vect = vertices_list[0]
-                f_vect = faces_list[0]
+                # f_vect = faces_list[0]
             else:
-                v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
+                v_vect, f_or_clipped_v, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
                     sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh
                 )
             if args.build_mesh:
-                triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_vect for i in range(1, len(f) - 1)]
+                triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_or_clipped_v for i in range(1, len(f) - 1)]
                 triangle_faces = torch.tensor(triangle_faces, device=device)
                 hs_p = su.sample_mesh_points_heitz(v_vect, triangle_faces, num_samples=target_pc.shape[0])
                 chamfer_loss_mesh, _ = chamfer_distance(target_pc.detach(), hs_p.unsqueeze(0))
@@ -294,8 +295,10 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
 
         if args.w_cvt > 0:
             # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
-            # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay_tetrahedra(sites, None, d3dsimplices)
-            cvt_loss = lf.compute_cvt_loss_true(sites, d3dsimplices)
+            # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay_volume(sites, None, d3dsimplices)
+            cvt_loss = lf.compute_cvt_loss_CLIPPED_vertices(
+                sites, sites_sdf, sites_sdf_grads, d3dsimplices, f_or_clipped_v
+            )
 
         sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
@@ -304,10 +307,20 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                 sites_sdf_grads, tets_sdf_grads, W = su.sdf_space_grad_pytorch_diego_sites_tets(
                     sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach()
                 )
-            eik_loss = args.w_sdf / 10 * lf.tet_sdf_grad_eikonal_loss(sites, tets_sdf_grads, d3dsimplices)
-            shl = args.w_sdf * 10 * lf.tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3dsimplices)
+            if epoch % 100 == 0 and epoch <= 500:
+                eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 5).detach()
+                print("Estimated eps_H: ", eps_H)
+            elif epoch % 100 == 0 and epoch <= 800:
+                eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 2).detach()
+                print("Estimated eps_H: ", eps_H)
+
+            eik_loss = args.w_sdf / 1000 * lf.tet_sdf_grad_eikonal_loss(sites, tets_sdf_grads, d3dsimplices)
+            shl = (
+                args.w_sdf
+                / 1000
+                * lf.tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3dsimplices, eps_H)
+            )
             sdf_loss = eik_loss + shl
-            # sdf_loss = torch.mean(torch.abs(torch.sum(sites_sdf_grads**2, dim=-1) - 1))  # + shl
 
         loss = sites_loss + sdf_loss
         # print(f"Epoch {epoch}: loss = {loss.item()}")
@@ -337,6 +350,8 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                             {"params": [sites_sdf], "lr": args.lr_sites},
                         ]
                     )
+                    eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 3).detach()
+                    print("Estimated eps_H: ", eps_H)
                 else:
                     optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
 
@@ -364,6 +379,8 @@ def train_DCCVT(sites, sites_sdf, target_pc, args):
                         {"params": [sites_sdf], "lr": args.lr_sites},
                     ]
                 )
+                eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 5).detach()
+                print("Estimated eps_H: ", eps_H)
             else:
                 sites, _ = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
                 sites = sites.detach().requires_grad_(True)
