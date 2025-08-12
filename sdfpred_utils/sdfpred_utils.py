@@ -1851,12 +1851,12 @@ def get_clipped_mesh_numba(
                 grads = vertices_sdf_grad[sorted(used)]
                 proj_vertices = newton_step_clipping(grads, sdf_verts, new_vertices)
             else:
-                # proj_vertices, tet_probs = tet_plane_clipping(
-                #     d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
-                # )
-                proj_vertices = tet_grads_clipping(
-                    new_vertices, vertices_sdf[sorted(used)], tets_sdf_grads[sorted(used)]
+                proj_vertices, tet_probs = tet_plane_clipping(
+                    d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
                 )
+                # proj_vertices = tet_grads_clipping(
+                #     new_vertices, vertices_sdf[sorted(used)], tets_sdf_grads[sorted(used)]
+                # )
 
             return proj_vertices, new_faces, sites_sdf_grad, tets_sdf_grads, W
     else:
@@ -1884,8 +1884,8 @@ def get_clipped_mesh_numba(
                 grads = vertices_sdf_grad[used_tet]
                 proj_vertices = newton_step_clipping(grads, sdf_verts, vertices)
             else:
-                # proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
-                proj_vertices = tet_grads_clipping(vertices, vertices_sdf[used_tet], tets_sdf_grads[used_tet])
+                proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
+                # proj_vertices = tet_grads_clipping(vertices, vertices_sdf[used_tet], tets_sdf_grads[used_tet])
 
             # in paper this will be considered a regularisation
             bisectors_sdf = (sites_sdf[bisectors_to_compute[:, 0]] + sites_sdf[bisectors_to_compute[:, 1]]) / 2
@@ -2441,7 +2441,7 @@ def NOT_mt_extraction(sites, sites_sdf, d3dsimplices):
     return proj_bisectors.detach().cpu().numpy(), np.array(indexed_faces)
 
 
-def cvt_extraction(sites, sites_sdf, d3dsimplices):
+def cvt_extraction(sites, sites_sdf, d3dsimplices, build_faces=False):
     """
     Extracts a mesh from the given sites and their SDF values.
     """
@@ -2450,7 +2450,7 @@ def cvt_extraction(sites, sites_sdf, d3dsimplices):
 
     all_vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
 
-    print("Voronoi vertices shape:", all_vor_vertices.shape, "SDF values shape:", all_vertices_sdf.shape)
+    # print("Voronoi vertices shape:", all_vor_vertices.shape, "SDF values shape:", all_vertices_sdf.shape)
 
     vertices_to_compute, zero_crossing_sites_pairs, used_tet = compute_zero_crossing_vertices_3d(
         sites, None, None, d3dsimplices, sites_sdf
@@ -2459,7 +2459,7 @@ def cvt_extraction(sites, sites_sdf, d3dsimplices):
 
     sdf_verts = interpolate_sdf_of_vertices(vertices, d3d[used_tet], sites, sites_sdf)
 
-    print("Vertices to compute:", vertices.shape, "SDF values shape:", sdf_verts.shape)
+    # print("Vertices to compute:", vertices.shape, "SDF values shape:", sdf_verts.shape)
 
     tet_sites = sites[d3d[used_tet]]  # (M,4,3)
     tet_sdf = sites_sdf[d3d[used_tet]]  # (M,4)
@@ -2485,27 +2485,61 @@ def cvt_extraction(sites, sites_sdf, d3dsimplices):
     # print("Norm2 shape:", norm2.shape)
     # step = (avg_dir / norm2.squeeze(-1)).unsqueeze(-1) * sdf_verts  # (M,3)
     # projected = vertices - step
+    # --------------------------------
+    # eps = 1e-8
+    # phi = torch.abs(tet_sdf) + eps  # (M, 4)
+    # weights = 1.0 / phi  # (M, 4)
+    # weights = weights / weights.sum(dim=1, keepdim=True)  # (M, 4)
 
+    # predicted_zero_point = torch.sum(tet_sites * weights.unsqueeze(-1), dim=1)  # (M, 3)
+
+    # projected = predicted_zero_point
+
+    # print(vertices.shape, projected.shape)
+
+    # -------------
+    # Broadcast vertex to shape (M, 4, 3)
+    v = vertices.unsqueeze(1)  # (M, 1, 3)
+    phi_v = sdf_verts.unsqueeze(1)  # (M, 1)
+
+    # Compute displacement vectors to sites
+    delta = tet_sites - v  # (M, 4, 3)
+    phi_i = tet_sdf  # (M, 4)
+
+    # Compute interpolation weights (M, 4, 1)
+    denom = (phi_v - phi_i).unsqueeze(-1)  # (M, 4, 1)
+    numer = phi_v.unsqueeze(-1)  # (M, 1, 1)
+
+    # Avoid division by zero
     eps = 1e-8
-    phi = torch.abs(tet_sdf) + eps  # (M, 4)
-    weights = 1.0 / phi  # (M, 4)
-    weights = weights / weights.sum(dim=1, keepdim=True)  # (M, 4)
+    denom = denom.clamp(min=-1e6, max=1e6)  # optional clamp for safety
 
-    predicted_zero_point = torch.sum(tet_sites * weights.unsqueeze(-1), dim=1)  # (M, 3)
+    t = numer / denom  # (M, 4, 1)
 
-    projected = predicted_zero_point
+    # Only keep valid projections: site must have opposite sign from vertex
+    signs_diff = (phi_v * phi_i) < 0  # (M, 4)
+    t[~signs_diff.unsqueeze(-1)] = 0.0  # zero out invalid
 
-    print(vertices.shape, projected.shape)
+    # Interpolated positions per site
+    p_i = v + t * delta  # (M, 4, 3)
+    valid_mask = signs_diff.unsqueeze(-1)  # (M, 4, 1)
 
-    faces = get_faces(d3dsimplices, sites, all_vor_vertices, None, sites_sdf)  # (R0, List of simplices)
+    # Average all valid interpolated positions
+    num_valid = valid_mask.sum(dim=1).clamp(min=1)  # (M, 1, 1)
+    projected = (p_i * valid_mask).sum(dim=1) / num_valid  # (M, 3)
+    # ------------
+    if build_faces:
+        faces = get_faces(d3dsimplices, sites, all_vor_vertices, None, sites_sdf)  # (R0, List of simplices)
+        # Compact the vertex list
+        used = {idx for face in faces for idx in face}
+        old2new = {old: new for new, old in enumerate(sorted(used))}
+        new_vertices = all_vor_vertices[sorted(used)]
+        new_faces = [[old2new[i] for i in face] for face in faces]
+        return projected, new_faces
 
-    # Compact the vertex list
-    used = {idx for face in faces for idx in face}
-    old2new = {old: new for new, old in enumerate(sorted(used))}
-    new_vertices = all_vor_vertices[sorted(used)]
-    new_faces = [[old2new[i] for i in face] for face in faces]
-
-    return projected, new_faces
+    vert_for_clipped_cvt = all_vor_vertices
+    vert_for_clipped_cvt[used_tet] = projected
+    return projected, vert_for_clipped_cvt
 
     # # Use barycentric weights for interpolation
 
