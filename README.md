@@ -11,24 +11,19 @@ conda env create -f env.yml
 
 ### Virtual Environment
 
+Dependencies:
+```bash
+pip install torch matplotlib pybind11 polyscope scipy scikit-image scikit-learn cython usd-core flask tornado comm ipyevents ipycanvas jupyter_client open3d numba trimesh pygltflib dataclasses-json torchvision
+```
+
 #### Cluster
 
 Load required modules:
 ```bash
-module load cuda python-build-bundle/2025a clang
+module load cuda python-build-bundle/2025a
 ```
 
-Virtual environment setup with no index to use the optimized versions:
-```bash
-pip install --no-index torch
-pip install --no-index matplotlib
-pip install --no-index pybind11
-pip install polyscope
-pip install --no-index scipy scikit-image
-pip install --no-index cython
-pip install usd-core flask tornado comm ipyevents ipycanvas jupyter_client
-pip install open3d
-```
+Need to do this before running a job. 
 
 #### Local Machine
 
