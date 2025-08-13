@@ -56,6 +56,7 @@ DEFAULTS = {
     "barycentric_grads": False,  # False
     "marching_tetrahedra": False,  # True
     "true_cvt": False,  # True
+    "extract_optim": False,  # True
     # "build_mesh": False,
     "w_cvt": 0,
     "w_sdfsmooth": 0,
@@ -782,6 +783,12 @@ def define_options_parser(arg_list=None):
         help="Enable/disable true CVT loss",
     )
     parser.add_argument(
+        "--extract_optim",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULTS["extract_optim"],
+        help="Enable/disable extraction optimization",
+    )
+    parser.add_argument(
         "--build_mesh",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -931,9 +938,13 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, args):
                 v_vect = vertices_list[0]
                 # f_vect = faces_list[0]
             else:
-                v_vect, f_or_clipped_v, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
-                    sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh, False, args.barycentric_grads
-                )
+                if args.extract_optim:
+                    v_vect, f_or_clipped_v = su.cvt_extraction(sites, sites_sdf, d3dsimplices, False)
+                else:
+                    v_vect, f_or_clipped_v, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
+                        sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh, False, args.barycentric_grads
+                    )
+
             if args.build_mesh:
                 triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_or_clipped_v for i in range(1, len(f) - 1)]
                 triangle_faces = torch.tensor(triangle_faces, device=device)
