@@ -1876,6 +1876,7 @@ def get_clipped_mesh_numba(
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
             sites_sdf_grad, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3d)
             if barycentric_weights:
+                print("-> using barycentric weights for interpolation")
                 # Use barycentric weights for interpolation
                 vertices_sdf_grad = interpolate_sdf_grad_of_vertices(
                     all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
