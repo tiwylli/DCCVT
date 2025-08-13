@@ -475,8 +475,9 @@ def compute_cvt_dist(sites, N=12, M=16, random=True, max_distance=0.1, dimension
     return mse, ray_points[mask], ray_points_opp[mask]
 
 # Compute CVT loss
-def compute_cvt_loss_true(sites, d3d):
-    vertices = su.compute_vertices_3d_vectorized(sites, d3d)
+def compute_cvt_loss_true(sites, d3d, vertices=None):
+    if vertices == None:
+        vertices = su.compute_vertices_3d_vectorized(sites, d3d)
     
     # Concat sites and vertices to compute the Voronoi diagram
     points = torch.concatenate((sites, vertices), axis=0)
@@ -577,7 +578,6 @@ def compute_cvt_loss_vectorized_delaunay_tetrahedra(sites, delaunay, simplices=N
     penalties = torch.where(abs(centroid - circumcenters) < max_distance, centroid - circumcenters, torch.tensor(0.0, device=sites.device))
     cvt_loss = torch.mean(torch.abs(penalties))
     return cvt_loss
-
 
 def compute_cvt_loss_CLIPPED_vertices(sites, sites_sdf, sites_sdf_grad, d3dsimplices, all_vor_vertices):
     d3dsimplices = torch.tensor(d3dsimplices, device=sites.device).detach()
