@@ -5,11 +5,11 @@ import argparse
 import tqdm as tqdm
 from time import time
 import torch
-import os
 import numpy as np
 import matplotlib.pyplot as plt
 import polyscope as ps
 import kaolin
+import shlex, re
 
 
 import pygdel3d
@@ -38,7 +38,9 @@ np.random.seed(69)
 import datetime
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-# timestamp = "20250730_125341"
+# timestamp = "cvt_true"
+# timestamp = "Voromesh"
+
 # Default parameters for the DCCVT experiments
 ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments"
 DEFAULTS = {
@@ -51,7 +53,9 @@ DEFAULTS = {
     "sample_near": 0,  # # ** input_dims
     "target_size": 32,  # 32 # ** input_dims
     "clip": False,
+    "barycentric_grads": False,  # False
     "marching_tetrahedra": False,  # True
+    "true_cvt": False,  # True
     # "build_mesh": False,
     "w_cvt": 0,
     "w_sdfsmooth": 0,
@@ -63,40 +67,109 @@ DEFAULTS = {
     "upsampling": 0,  # 0
     "lr_sites": 0.0005,
     "mesh_ids": [  # 64764],
-        "252119",
-        "313444",
-        "316358",
-        "354371",
-        # "398259", this mesh destroys our results
-        "441708",
-        "44234",
-        "47984",
-        "527631",
-        "53159",
-        "58168",
-        "64444",
-        "64764",
-        "68380",
-        "68381",
-        "72870",
-        "72960",
-        "73075",
-        "75496",
-        "75655",
-        "75656",
-        "75662",
-        "75665",
-        "76277",
-        "77245",
-        "78671",
-        "79241",
-        "90889",
-        "92763",
-        "92880",
-        "95444",
-        "96481",
+        # "252119",
+        # "313444",  # lucky cat
+        # "316358",
+        # "354371",
+        # # "398259", this mesh destroys our results
+        # "441708",  # bunny
+        # "44234",
+        # "47984",
+        # "527631",
+        # "53159",
+        # "58168",
+        # "64444",
+        "64764",  # gargoyle
+        # "68380",
+        # "68381",
+        # "72870",
+        # "72960",
+        # "73075",
+        # "75496",
+        # "75655",
+        # "75656",
+        # "75662",
+        # "75665",
+        # "76277",
+        # "77245",
+        # "78671",
+        # "79241",
+        # "90889",
+        # "92763",
+        # "92880",
+        # "95444",
+        # "96481",
     ],
 }
+
+import os, re, shlex
+
+
+class _SafeDict(dict):
+    def __missing__(self, key):
+        # leave unknown placeholders intact, e.g. "{mesh_id}"
+        return "{" + key + "}"
+
+
+def load_arg_lists_from_file(path: str, defaults: dict, mesh_ids=None):
+    if mesh_ids is None:
+        mesh_ids = list(defaults.get("mesh_ids", []))
+
+    arg_lists = []
+    active_mesh_ids = mesh_ids
+    buf = ""
+
+    def process_buffer(s: str):
+        nonlocal arg_lists, active_mesh_ids
+        s = s.strip()
+        if not s:
+            return
+
+        # handle directives (not part of continued blocks)
+        if s.lower().startswith("@mesh_ids"):
+            _, rhs = s.split(":", 1)
+            items = re.split(r"[,\s]+", rhs.strip())
+            active_mesh_ids = [it for it in items if it]
+            return
+
+        # 1) safely format known {placeholders} from defaults
+        templated = s.format_map(_SafeDict(**defaults))
+        # 2) expand env vars like $HOME
+        templated = os.path.expandvars(templated)
+
+        # 3) fan out over {mesh_id} if present
+        if "{mesh_id}" in templated:
+            for mid in active_mesh_ids:
+                filled = templated.replace("{mesh_id}", str(mid))
+                arg_lists.append(shlex.split(filled))
+        else:
+            arg_lists.append(shlex.split(templated))
+
+    with open(path, "r") as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            stripped = line.strip()
+            if not buf and (not stripped or stripped.startswith("#")):
+                continue
+
+            # continuation if there's an odd number of trailing backslashes
+            m = re.search(r"(\\+)$", line)
+            trailing_bs = len(m.group(1)) if m else 0
+            is_cont = trailing_bs % 2 == 1
+
+            if is_cont:
+                line = line[:-1]  # drop exactly one "\" for continuation
+                buf += line
+                continue
+            else:
+                buf += line
+                process_buffer(buf)  # complete logical line
+                buf = ""
+
+    if buf.strip():
+        process_buffer(buf)
+
+    return arg_lists
 
 
 # m_list=["gargoyle", "chair", "bunny"]
@@ -106,56 +179,6 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
     for m in m_list:
         # # Voroloss vs DCCVT vs MT : baseline
         # Voroloss
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
-                "--output",
-                f"{DEFAULTS['output']}{m}",
-                "--w_voroloss",
-                "1000",
-                "--num_centroids",
-                "16",
-                "--w_cvt",
-                "0.01",
-            ]
-        )
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
-                "--output",
-                f"{DEFAULTS['output']}{m}",
-                "--w_voroloss",
-                "1000",
-                "--num_centroids",
-                "32",
-                "--w_cvt",
-                "0.01",
-            ]
-        )
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
-                "--output",
-                f"{DEFAULTS['output']}{m}",
-                "--w_voroloss",
-                "1000",
-                "--num_centroids",
-                "64",
-                "--w_cvt",
-                "0.01",
-            ]
-        )
-
-        # # DCCVT+cvt+sdfreg
         # arg_list.append(
         #     [
         #         "--mesh",
@@ -164,19 +187,69 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
         #         "--output",
         #         f"{DEFAULTS['output']}{m}",
-        #         "--w_chamfer",
+        #         "--w_voroloss",
         #         "1000",
-        #         "--w_cvt",
-        #         "100",
-        #         "--w_sdfsmooth",
-        #         "100",
         #         "--num_centroids",
-        #         "32",
-        #         "--clip",
-        #         "--w_mt",
-        #         "1",
+        #         "16",
+        #         "--w_cvt",
+        #         "0.01",
         #     ]
         # )
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_voroloss",
+        #         "1000",
+        #         "--num_centroids",
+        #         "32",
+        #         "--w_cvt",
+        #         "0.01",
+        #     ]
+        # )
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_voroloss",
+        #         "1000",
+        #         "--num_centroids",
+        #         "64",
+        #         "--w_cvt",
+        #         "0.01",
+        #     ]
+        # )
+
+        # DCCVT+cvt+sdfreg
+        arg_list.append(
+            [
+                "--mesh",
+                f"{DEFAULTS['mesh']}{m}",
+                "--trained_HotSpot",
+                f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+                "--output",
+                f"{DEFAULTS['output']}{m}",
+                "--w_chamfer",
+                "1000",
+                "--w_cvt",
+                "100",
+                "--w_sdfsmooth",
+                "100",
+                "--num_centroids",
+                "32",
+                "--clip",
+                "--w_mt",
+                "1",
+            ]
+        )
         # # DCCVT + cvt + sdfreg + upsampling
         # arg_list.append(
         #     [
@@ -322,56 +395,56 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #     ]
         # )
 
-        # # Voroloss vs DCCVT vs Marching Tetrahedra : unconverged
-        # # Voroloss
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
-                "--output",
-                f"{DEFAULTS['output']}unconverged_{m}",
-                "--w_voroloss",
-                "1000",
-                "--num_centroids",
-                "16",
-                "--w_cvt",
-                "0.01",
-            ]
-        )
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
-                "--output",
-                f"{DEFAULTS['output']}unconverged_{m}",
-                "--w_voroloss",
-                "1000",
-                "--num_centroids",
-                "32",
-                "--w_cvt",
-                "0.01",
-            ]
-        )
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
-                "--output",
-                f"{DEFAULTS['output']}unconverged_{m}",
-                "--w_voroloss",
-                "1000",
-                "--num_centroids",
-                "64",
-                "--w_cvt",
-                "0.01",
-            ]
-        )
+        # # # Voroloss vs DCCVT vs Marching Tetrahedra : unconverged
+        # # # Voroloss
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}unconverged_{m}",
+        #         "--w_voroloss",
+        #         "1000",
+        #         "--num_centroids",
+        #         "16",
+        #         "--w_cvt",
+        #         "0.01",
+        #     ]
+        # )
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}unconverged_{m}",
+        #         "--w_voroloss",
+        #         "1000",
+        #         "--num_centroids",
+        #         "32",
+        #         "--w_cvt",
+        #         "0.01",
+        #     ]
+        # )
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}unconverged_{m}",
+        #         "--w_voroloss",
+        #         "1000",
+        #         "--num_centroids",
+        #         "64",
+        #         "--w_cvt",
+        #         "0.01",
+        #     ]
+        # )
         # # DCCVT+cvt+sdfreg
         # arg_list.append(
         #     [
@@ -690,14 +763,24 @@ def define_options_parser(arg_list=None):
     parser.add_argument(
         "--clip", action=argparse.BooleanOptionalAction, default=DEFAULTS["clip"], help="Enable/disable clipping"
     )
-
+    parser.add_argument(
+        "--barycentric_grads",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULTS["barycentric_grads"],
+        help="Enable/disable barycentric gradients",
+    )
     parser.add_argument(
         "--marching_tetrahedra",
         action=argparse.BooleanOptionalAction,
         default=DEFAULTS["marching_tetrahedra"],
         help="Enable/disable marching_tetrahedra",
     )
-
+    parser.add_argument(
+        "--true_cvt",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULTS["true_cvt"],
+        help="Enable/disable true CVT loss",
+    )
     parser.add_argument(
         "--build_mesh",
         action=argparse.BooleanOptionalAction,
@@ -849,7 +932,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, args):
                 # f_vect = faces_list[0]
             else:
                 v_vect, f_or_clipped_v, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
-                    sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh
+                    sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh, False, args.barycentric_grads
                 )
             if args.build_mesh:
                 triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_or_clipped_v for i in range(1, len(f) - 1)]
@@ -868,7 +951,10 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, args):
             else:
                 # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
                 # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay_volume(sites, None, d3dsimplices)
-                cvt_loss = lf.compute_cvt_loss_CLIPPED_vertices(sites, None, None, d3dsimplices, f_or_clipped_v)
+                if args.true_cvt:
+                    cvt_loss = lf.compute_cvt_loss_true(sites, d3dsimplices, f_or_clipped_v)
+                else:
+                    cvt_loss = lf.compute_cvt_loss_CLIPPED_vertices(sites, None, None, d3dsimplices, f_or_clipped_v)
 
         sites_loss = args.w_cvt / 1 * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
@@ -999,7 +1085,7 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
         su.save_target_pc_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
 
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
-            sites, None, d3dsimplices, args.clip, sdf_values, True
+            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.barycentric_grads
         )
         if args.marching_tetrahedra:
             output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_projDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
@@ -1011,7 +1097,7 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
 
     if args.w_voroloss > 0:
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
-            sites, None, d3dsimplices, args.clip, sdf_values, True
+            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.barycentric_grads
         )
         output_obj_file = f"{args.save_path}/voromesh_{args.num_centroids}_{state}_DCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
         save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
@@ -1047,12 +1133,19 @@ def save_npz(sites, sites_sdf, time, args, output_file):
     )
 
 
-def copy_script():
+def copy_script(arg_lists):
     script_path = os.path.abspath(__file__)
     script_copy_path = os.path.join(DEFAULTS["output"], script_path.split("/")[-1])
     os.makedirs(DEFAULTS["output"], exist_ok=True)
     with open(script_copy_path, "w") as f:
         f.write(open(script_path).read())
+
+    # copy arg_lists in other file
+    arg_list_file = os.path.join(DEFAULTS["output"], "arg_lists.txt")
+    with open(arg_list_file, "w") as f:
+        for arg_list in arg_lists:
+            f.write(" ".join(arg_list) + "\n")
+        print(f"Copied script to {script_copy_path} and arg lists to {arg_list_file}")
 
 
 def process_single_mesh(arg_list):
@@ -1060,7 +1153,11 @@ def process_single_mesh(arg_list):
     args.save_path = f"{args.output}" if args.save_path is None else args.save_path
     os.makedirs(args.save_path, exist_ok=True)
 
-    if not os.path.exists(f"{args.save_path}/marching_tetrahedra_{args.upsampling}_final_MT.obj"):
+    # if not os.path.exists(f"{args.save_path}/marching_tetrahedra_{args.upsampling}_final_MT.obj"):
+    output_obj_file = check_if_already_processed(args)
+    if os.path.exists(output_obj_file):
+        print(f"Skipping already processed mesh: {output_obj_file}")
+    else:
         print("args: ", args)
         try:
             model, mnfld_points = load_model(args.mesh, args.target_size, args.trained_HotSpot)
@@ -1088,9 +1185,67 @@ def process_single_mesh(arg_list):
             torch.cuda.empty_cache()
 
 
+def check_if_already_processed(args):
+    state = "final"
+    if args.w_chamfer > 0:
+        if args.marching_tetrahedra:
+            output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_intDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        else:
+            output_obj_file = f"{args.save_path}/DCCVT_{args.upsampling}_{state}_intDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        if args.marching_tetrahedra:
+            output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_projDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        else:
+            output_obj_file = f"{args.save_path}/DCCVT_{args.upsampling}_{state}_projDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+    if args.w_voroloss > 0:
+        output_obj_file = f"{args.save_path}/voromesh_{args.num_centroids}_{state}_DCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+    if args.w_mc > 0:
+        print("todo: implement MC loss extraction")
+    if args.w_mt > 0:
+        if args.marching_tetrahedra:
+            output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_MT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        else:
+            output_obj_file = f"{args.save_path}/DCCVT_{args.upsampling}_{state}_MT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+    return output_obj_file
+
+
+# if __name__ == "__main__":
+#     arg_lists = build_arg_list()
+#     # start_time = time()
+#     copy_script()
+#     for arg_list in arg_lists:
+#         process_single_mesh(arg_list)
+
 if __name__ == "__main__":
-    arg_lists = build_arg_list()
-    # start_time = time()
-    copy_script()
+    root = argparse.ArgumentParser(add_help=True)
+    root.add_argument(
+        "--args-file",
+        type=str,
+        default=None,
+        help="Text file: one experiment template per line. Use {mesh_id} to expand.",
+    )
+    root.add_argument("--mesh-ids", type=str, default=None, help="Override mesh list (comma/space separated).")
+    root.add_argument("--timestamp", type=str, default=None, help="Timestamp for the experiment.")
+    root.add_argument("--dry-run", action="store_true", help="Print experiments and exit.")
+    root_args, _ = root.parse_known_args()
+
+    # Build the mesh list override if provided
+    mesh_ids_override = None
+    if root_args.mesh_ids:
+        mesh_ids_override = [s for s in re.split(r"[,\s]+", root_args.mesh_ids.strip()) if s]
+        print(f"Using mesh IDs override: {mesh_ids_override}")
+
+    if root_args.args_file:
+        # Provide DEFAULTS + timestamp to formatting
+        merged_defaults = DEFAULTS | {"timestamp": timestamp, "ROOT_DIR": ROOT_DIR}
+        arg_lists = load_arg_lists_from_file(root_args.args_file, defaults=merged_defaults, mesh_ids=mesh_ids_override)
+        if root_args.dry_run:
+            for i, a in enumerate(arg_lists):
+                print(f"[{i}] {a}")
+            sys.exit(0)
+    else:
+        arg_lists = build_arg_list()  # legacy path
+
+    copy_script(arg_lists)
+
     for arg_list in arg_lists:
         process_single_mesh(arg_list)
