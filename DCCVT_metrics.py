@@ -19,8 +19,8 @@ np.random.seed(69)
 
 ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments/"
 GT_DIR = ROOT_DIR + "mesh/thingi32/"
-EXPERIMENTS_DIR = ROOT_DIR + "outputs/FIGURE_CASE/"  # /thingi32/
-N_POINTS = 32 * 32 * 150
+EXPERIMENTS_DIR = ROOT_DIR + "outputs/Best_DCCVT/"  # /thingi32/
+N_POINTS = 100000
 
 
 def generate_metrics_dict():
@@ -33,7 +33,7 @@ def generate_metrics_dict():
             continue
         current_experiment_folder = EXPERIMENTS_DIR + gt_file.split(".")[0] + "/"
         current_unconverged_experiment_folder = EXPERIMENTS_DIR + "unconverged_" + gt_file.split(".")[0] + "/"
-        gt_pts, gt_mesh = su.sample_points_on_mesh(GT_DIR + gt_file, n_points=N_POINTS, GT=True)
+        gt_pts, gt_normals, _ = su.sample_points_on_mesh(GT_DIR + gt_file, n_points=N_POINTS, GT=True)
 
         # Check if the current experiment folder exists
         if not os.path.exists(current_experiment_folder):
@@ -46,16 +46,14 @@ def generate_metrics_dict():
             if not obj_file.endswith(".obj"):
                 continue
             obj_path = os.path.join(current_experiment_folder, obj_file)
-            obj_pts, obj_mesh = su.sample_points_on_mesh(obj_path, n_points=N_POINTS)
-            acc, cmpltns, chamfer, precision, recall, f1 = su.chamfer_accuracy_completeness_f1(obj_pts, gt_pts)
+            obj_pts, obj_normals, _ = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
+            cd1, cd2, f1, nc = su.chamfer_accuracy_completeness_f1(obj_pts, obj_normals, gt_pts, gt_normals)
 
             metrics_dict[gt_file.split(".")[0]][obj_file.split(".")[0]] = {
-                "accuracy": acc.astype(float),
-                "completeness": cmpltns.astype(float),
-                "chamfer_distance": chamfer.astype(float),
-                "precision": precision.astype(float),
-                "recall": recall.astype(float),
+                "chamfer_distance_1": cd1.astype(float),
+                "chamfer_distance_2": cd2.astype(float),
                 "f1_score": f1.astype(float),
+                "normal_consistency": nc.astype(float),
             }
 
         if not os.path.exists(current_unconverged_experiment_folder):
@@ -68,16 +66,14 @@ def generate_metrics_dict():
             if not obj_file.endswith(".obj"):
                 continue
             obj_path = os.path.join(current_unconverged_experiment_folder, obj_file)
-            obj_pts, obj_mesh = su.sample_points_on_mesh(obj_path, n_points=100000)
-            acc, cmpltns, chamfer, precision, recall, f1 = su.chamfer_accuracy_completeness_f1(obj_pts, gt_pts)
+            obj_pts, obj_normals, _ = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
+            cd1, cd2, f1, nc = su.chamfer_accuracy_completeness_f1(obj_pts, obj_normals, gt_pts, gt_normals)
 
             metrics_dict["unconverged_" + gt_file.split(".")[0]][obj_file.split(".")[0]] = {
-                "accuracy": acc.astype(float),
-                "completeness": cmpltns.astype(float),
-                "chamfer_distance": chamfer.astype(float),
-                "precision": precision.astype(float),
-                "recall": recall.astype(float),
+                "chamfer_distance_1": cd1.astype(float),
+                "chamfer_distance_2": cd2.astype(float),
                 "f1_score": f1.astype(float),
+                "normal_consistency": nc.astype(float),
             }
 
     # save dictionary to a file

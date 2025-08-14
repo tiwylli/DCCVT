@@ -20,11 +20,15 @@ np.random.seed(69)
 
 ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments/"
 GT_DIR = os.path.join(ROOT_DIR, "mesh/thingi32/")
-EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/FIGURE_CASE_64764/")
+
+# EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/FIGURE_CASE_441708/")
+# EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/FIGURE_CASE_64764/")
+EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/ALL_CASE_DCCVT/")
+
 # EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/Ablation_64764/")
 
 OUT_CSV = os.path.join(EXPERIMENTS_DIR, "metrics_final_obj_only.csv")
-N_POINTS = 32 * 32 * 150
+N_POINTS = 100000
 
 # ---------------------------
 # Helpers
@@ -68,8 +72,8 @@ def main():
 
         if key not in gt_cache:
             try:
-                gt_pts, _ = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
-                gt_cache[key] = gt_pts
+                gt_pts, gt_normals, _ = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
+                gt_cache[key] = (gt_pts, gt_normals)
             except Exception as e:
                 print(f"[ERROR] sampling GT for {gt_obj}: {e}")
                 continue
@@ -80,14 +84,23 @@ def main():
 
         for obj_path in final_objs:
             try:
-                obj_pts, _ = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
+                obj_pts, obj_normals, _ = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
 
-                # ps.init()
-                # ps.register_point_cloud("GT", gt_cache[key], radius=0.01, color=(1, 0, 0))
-                # ps.register_point_cloud("Predicted", obj_pts, radius=0.01, color=(0, 1, 0))
-                # ps.show()
+                # ps.register_point_cloud(
+                #     f"GT_{key}", gt_cache[key][0], radius=0.01, color=(1, 0, 0), point_render_mode="quad"
+                # )
+                # ps.register_point_cloud(
+                #     obj_path,
+                #     obj_pts,
+                #     radius=0.01,
+                #     color=(0, 1, 0),
+                #     point_render_mode="quad",
+                #     enabled=False,
+                # )
 
-                acc, cmpl, chamfer, precision, recall, f1 = su.chamfer_accuracy_completeness_f1(obj_pts, gt_cache[key])
+                cd1, cd2, f1, nc = su.chamfer_accuracy_completeness_f1(
+                    obj_pts, obj_normals, gt_cache[key][0], gt_cache[key][1]
+                )
                 fname = os.path.basename(obj_path)
                 label = f"{dname}_{os.path.splitext(fname)[0]}"
                 records.append(
@@ -96,12 +109,10 @@ def main():
                         "folder": dname,
                         "filename": fname,
                         "label": label,
-                        "accuracy": float(acc),
-                        "completeness": float(cmpl),
-                        "chamfer_distance": float(chamfer),
-                        "precision": float(precision),
-                        "recall": float(recall),
+                        "chamfer_distance_1": float(cd1),
+                        "chamfer_distance_2": float(cd2),
                         "f1_score": float(f1),
+                        "normal_consistency": float(nc),
                     }
                 )
             except Exception as e:
