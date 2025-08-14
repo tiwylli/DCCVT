@@ -1,5 +1,5 @@
-# ----------------------------------------------- RUN FIGURE CASES ------------------------------------64764
-@mesh_ids : 441708 
+# ----------------------------------------------- RUN FIGURE CASES ------------------------------------441708 
+@mesh_ids : 64764
 # Baseline 16 - 
 --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b16 --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 16 --clip --w_mt 1
 --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b16 --w_voroloss 1000 --w_cvt 0.01 --num_centroids 16
@@ -57,7 +57,7 @@
 
 # Approx CVT loss simply look at baseline 32
 # True CVT
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_trueCVT --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1 --true_cvt
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_trueCVT --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1 --true_cvt
 
 #TODO upsampling designs and flags
 

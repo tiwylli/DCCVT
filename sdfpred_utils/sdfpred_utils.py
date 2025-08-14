@@ -10,7 +10,7 @@ from numba import njit, prange
 from collections import defaultdict
 from pytorch3d.loss import chamfer_distance
 import trimesh
-from scipy.spatial import cKDTree
+from scipy.spatial import KDTree
 
 device = torch.device("cuda:0")
 
@@ -2055,6 +2055,7 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     curv_pct: float = 0.75,  # percentile threshold for curvature pass
     growth_cap: float = 0.10,  # ≤ fraction of current sites allowed per iter
     eps: float = 1e-12,
+    # design: str = "random" | "random_tet" | "oriented_tet",
 ):
     """
     # ------------------------------------------------------------------------------
@@ -2303,8 +2304,12 @@ def save_target_pc_ply(filename, points):
             f.write(f"{p[0]} {p[1]} {p[2]}\n")
 
 
-def sample_points_on_mesh(mesh_path, n_points=100000):
+def sample_points_on_mesh(mesh_path, n_points=100000, GT=False):
     mesh = trimesh.load(mesh_path)
+
+    boundary_edges = mesh.edges_boundary
+    hole_count = len(mesh.boundary_vertices)  # or len(boundary_edges)
+    watertightness_score = 1 - (hole_count / mesh.edges.shape[0])
 
     # # Normalize mesh (centered and scaled uniformly)
     # bbox = mesh.bounds
@@ -2316,39 +2321,52 @@ def sample_points_on_mesh(mesh_path, n_points=100000):
     # # Export normalized mesh
     # mesh.export(mesh_path.replace(".obj", ".obj"))
 
-    points, _ = trimesh.sample.sample_surface(mesh, n_points)
+    points, idx = trimesh.sample.sample_surface(mesh, n_points)
+    normals = mesh.face_normals[idx]  # Get normals at sampled points
+    if GT:
+        # HotSpot shape 3d get_mnfld_points default
+        points = np.asarray(points, dtype=np.float32)
+        points = points - points.mean(axis=0)  # Center the point cloud
+        scale = np.percentile(np.linalg.norm(points, axis=-1), 70) / 0.45
+        scale = max(scale, np.abs(points).max())
+        points = points / scale  # Normalize to unit sphere
 
-    # HotSpot shape 3d get_mnfld_points default
-    points = np.asarray(points, dtype=np.float32)
-    points = points - points.mean(axis=0)  # Center the point cloud
-    scale = np.abs(points).max()
-    points = points / scale  # Normalize to unit sphere
-
-    return points, mesh
+    return points, normals, mesh
 
 
-def chamfer_accuracy_completeness_f1(ours_pts, gt_pts, threshold=0.003):
-    # Completeness: GT → Ours
-    dists_gt_to_ours = cKDTree(ours_pts).query(gt_pts, k=1)[0]
-    completeness = np.mean(dists_gt_to_ours**2)
+def chamfer_accuracy_completeness_f1(pred_pts, pred_normals, gt_pts, gt_normals, threshold=0.003):
+    # GT → Pred
+    pred_tree = KDTree(pred_pts)
+    dist, inds = pred_tree.query(gt_pts, k=1)
+    recall = np.sum(dist < threshold) / float(len(dist))
 
-    # Accuracy: Ours → GT
-    dists_ours_to_gt = cKDTree(gt_pts).query(ours_pts, k=1)[0]
-    accuracy = np.mean(dists_ours_to_gt**2)
+    gt2pred_mean_cd1 = np.mean(dist)
+    dist = np.square(dist)
+    gt2pred_mean_cd2 = np.mean(dist)
+    neighbor_normals = pred_normals[inds if inds.ndim == 1 else np.squeeze(inds, axis=1)]
+    dotproduct = np.abs(np.sum(gt_normals * neighbor_normals, axis=1))
+    gt2pred_nc = np.mean(dotproduct)
 
-    chamfer = accuracy + completeness
+    # from pred to gt
+    gt_tree = KDTree(gt_pts)
+    dist, inds = gt_tree.query(pred_pts, k=1)
+    precision = np.sum(dist < threshold) / float(len(dist))
+    pred2gt_mean_cd1 = np.mean(dist)
+    dist = np.square(dist)
+    pred2gt_mean_cd2 = np.mean(dist)
+    neighbor_normals = gt_normals[inds if inds.ndim == 1 else np.squeeze(inds, axis=1)]
+    dotproduct = np.abs(np.sum(pred_normals * neighbor_normals, axis=1))
+    pred2gt_nc = np.mean(dotproduct)
 
-    # Distance: pred → gt
-    dist_pred_to_gt = cKDTree(gt_pts).query(ours_pts, k=1)[0]
-    precision = np.mean(dist_pred_to_gt < threshold)
+    cd1 = gt2pred_mean_cd1 + pred2gt_mean_cd1
+    cd2 = gt2pred_mean_cd2 + pred2gt_mean_cd2
+    nc = (gt2pred_nc + pred2gt_nc) / 2
 
-    # Distance: gt → pred
-    dist_gt_to_pred = cKDTree(ours_pts).query(gt_pts, k=1)[0]
-    recall = np.mean(dist_gt_to_pred < threshold)
-
-    f1 = 2 * precision * recall / (precision + recall + 1e-8)
-
-    return accuracy, completeness, chamfer, precision, recall, f1
+    if recall + precision > 0:
+        f1 = 2 * recall * precision / (recall + precision)
+    else:
+        f1 = 0
+    return cd1, cd2, f1, nc
 
 
 def zero_crossing_sdf_metric(true_sdf, sites, sites_sdf, d3dsimplices):
