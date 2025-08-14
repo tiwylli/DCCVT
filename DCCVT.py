@@ -38,8 +38,9 @@ np.random.seed(69)
 import datetime
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
 # timestamp = "cvt_true"
-# timestamp = "Voromesh"
+# timestamp = "Ablation_64764"
 
 # Default parameters for the DCCVT experiments
 ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments"
@@ -940,6 +941,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, args):
             else:
                 if args.extract_optim:
                     v_vect, f_or_clipped_v = su.cvt_extraction(sites, sites_sdf, d3dsimplices, False)
+                    sites_sdf_grads = None
                 else:
                     v_vect, f_or_clipped_v, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
                         sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh, False, args.barycentric_grads

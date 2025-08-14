@@ -6,6 +6,7 @@ import torch
 import pandas as pd
 import numpy as np
 import sdfpred_utils.sdfpred_utils as su
+import polyscope as ps
 
 # ---------------------------
 # Config
@@ -19,9 +20,11 @@ np.random.seed(69)
 
 ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments/"
 GT_DIR = os.path.join(ROOT_DIR, "mesh/thingi32/")
-EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/FIGURE_CASE/")
+EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/FIGURE_CASE_64764/")
+# EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/Ablation_64764/")
+
 OUT_CSV = os.path.join(EXPERIMENTS_DIR, "metrics_final_obj_only.csv")
-N_POINTS = 100_000
+N_POINTS = 32 * 32 * 150
 
 # ---------------------------
 # Helpers
@@ -65,7 +68,7 @@ def main():
 
         if key not in gt_cache:
             try:
-                gt_pts, _ = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS)
+                gt_pts, _ = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
                 gt_cache[key] = gt_pts
             except Exception as e:
                 print(f"[ERROR] sampling GT for {gt_obj}: {e}")
@@ -77,7 +80,13 @@ def main():
 
         for obj_path in final_objs:
             try:
-                obj_pts, _ = su.sample_points_on_mesh(obj_path, n_points=N_POINTS)
+                obj_pts, _ = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
+
+                # ps.init()
+                # ps.register_point_cloud("GT", gt_cache[key], radius=0.01, color=(1, 0, 0))
+                # ps.register_point_cloud("Predicted", obj_pts, radius=0.01, color=(0, 1, 0))
+                # ps.show()
+
                 acc, cmpl, chamfer, precision, recall, f1 = su.chamfer_accuracy_completeness_f1(obj_pts, gt_cache[key])
                 fname = os.path.basename(obj_path)
                 label = f"{dname}_{os.path.splitext(fname)[0]}"

@@ -20,6 +20,7 @@ np.random.seed(69)
 ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments/"
 GT_DIR = ROOT_DIR + "mesh/thingi32/"
 EXPERIMENTS_DIR = ROOT_DIR + "outputs/FIGURE_CASE/"  # /thingi32/
+N_POINTS = 32 * 32 * 150
 
 
 def generate_metrics_dict():
@@ -32,7 +33,7 @@ def generate_metrics_dict():
             continue
         current_experiment_folder = EXPERIMENTS_DIR + gt_file.split(".")[0] + "/"
         current_unconverged_experiment_folder = EXPERIMENTS_DIR + "unconverged_" + gt_file.split(".")[0] + "/"
-        gt_pts, gt_mesh = su.sample_points_on_mesh(GT_DIR + gt_file, n_points=100000)
+        gt_pts, gt_mesh = su.sample_points_on_mesh(GT_DIR + gt_file, n_points=N_POINTS, GT=True)
 
         # Check if the current experiment folder exists
         if not os.path.exists(current_experiment_folder):
@@ -45,7 +46,7 @@ def generate_metrics_dict():
             if not obj_file.endswith(".obj"):
                 continue
             obj_path = os.path.join(current_experiment_folder, obj_file)
-            obj_pts, obj_mesh = su.sample_points_on_mesh(obj_path, n_points=100000)
+            obj_pts, obj_mesh = su.sample_points_on_mesh(obj_path, n_points=N_POINTS)
             acc, cmpltns, chamfer, precision, recall, f1 = su.chamfer_accuracy_completeness_f1(obj_pts, gt_pts)
 
             metrics_dict[gt_file.split(".")[0]][obj_file.split(".")[0]] = {
