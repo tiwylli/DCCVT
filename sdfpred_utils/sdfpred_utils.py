@@ -2307,10 +2307,6 @@ def save_target_pc_ply(filename, points):
 def sample_points_on_mesh(mesh_path, n_points=100000, GT=False):
     mesh = trimesh.load(mesh_path)
 
-    boundary_edges = mesh.edges_boundary
-    hole_count = len(mesh.boundary_vertices)  # or len(boundary_edges)
-    watertightness_score = 1 - (hole_count / mesh.edges.shape[0])
-
     # # Normalize mesh (centered and scaled uniformly)
     # bbox = mesh.bounds
     # center = mesh.centroid
