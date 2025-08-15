@@ -1,0 +1,6 @@
+FIGURE_CASE
+FIGURE_CASE_*
+ALL*
+out/
+*.pdf
+.DS_Store

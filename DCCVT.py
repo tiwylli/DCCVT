@@ -37,9 +37,11 @@ np.random.seed(69)
 # Generate a timestamp string for unique output folders
 import datetime
 
-timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+# timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-# timestamp = "cvt_true"
+timestamp = "ALL_CASE_DCCVT"
+# timestamp = "FIGURE_CASE_441708"
+# timestamp = "FIGURE_CASE_64764"
 # timestamp = "Ablation_64764"
 
 # Default parameters for the DCCVT experiments
@@ -59,6 +61,7 @@ DEFAULTS = {
     "marching_tetrahedra": False,  # True
     "true_cvt": False,  # True
     "extract_optim": False,  # True
+    "no_mp": False,  # True
     # "build_mesh": False,
     "w_cvt": 0,
     "w_sdfsmooth": 0,
@@ -791,6 +794,12 @@ def define_options_parser(arg_list=None):
         help="Enable/disable extraction optimization",
     )
     parser.add_argument(
+        "--no_mp",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULTS["no_mp"],
+        help="Enable/disable multiprocessing",
+    )
+    parser.add_argument(
         "--build_mesh",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -945,7 +954,15 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, args):
                     sites_sdf_grads = None
                 else:
                     v_vect, f_or_clipped_v, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
-                        sites, None, d3dsimplices, args.clip, sites_sdf, args.build_mesh, False, args.barycentric_grads
+                        sites,
+                        None,
+                        d3dsimplices,
+                        args.clip,
+                        sites_sdf,
+                        args.build_mesh,
+                        False,
+                        args.barycentric_grads,
+                        args.no_mp,
                     )
 
             if args.build_mesh:
@@ -1099,7 +1116,7 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
         su.save_target_pc_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
 
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
-            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.barycentric_grads
+            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.barycentric_grads, args.no_mp
         )
         if args.marching_tetrahedra:
             output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_projDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
@@ -1111,7 +1128,7 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
 
     if args.w_voroloss > 0:
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
-            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.barycentric_grads
+            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.barycentric_grads, args.no_mp
         )
         output_obj_file = f"{args.save_path}/voromesh_{args.num_centroids}_{state}_DCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
         save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
@@ -1247,6 +1264,9 @@ if __name__ == "__main__":
     if root_args.mesh_ids:
         mesh_ids_override = [s for s in re.split(r"[,\s]+", root_args.mesh_ids.strip()) if s]
         print(f"Using mesh IDs override: {mesh_ids_override}")
+
+    if root_args.timestamp:
+        timestamp = root_args.timestamp
 
     if root_args.args_file:
         # Provide DEFAULTS + timestamp to formatting
