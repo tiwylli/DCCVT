@@ -2334,39 +2334,69 @@ def sample_points_on_mesh(mesh_path, n_points=100000, GT=False):
     return points, normals, mesh
 
 
+# def chamfer_accuracy_completeness_f1(pred_pts, pred_normals, gt_pts, gt_normals, threshold=0.003):
+#     # GT → Pred
+#     pred_tree = KDTree(pred_pts)
+#     dist, inds = pred_tree.query(gt_pts, k=1)
+#     recall = np.sum(dist < threshold) / float(len(dist))
+
+#     gt2pred_mean_cd1 = np.mean(dist)
+#     dist = np.square(dist)
+#     gt2pred_mean_cd2 = np.mean(dist)
+#     neighbor_normals = pred_normals[inds if inds.ndim == 1 else np.squeeze(inds, axis=1)]
+#     dotproduct = np.abs(np.sum(gt_normals * neighbor_normals, axis=1))
+#     gt2pred_nc = np.mean(dotproduct)
+
+#     # from pred to gt
+#     gt_tree = KDTree(gt_pts)
+#     dist, inds = gt_tree.query(pred_pts, k=1)
+#     precision = np.sum(dist < threshold) / float(len(dist))
+#     pred2gt_mean_cd1 = np.mean(dist)
+#     dist = np.square(dist)
+#     pred2gt_mean_cd2 = np.mean(dist)
+#     neighbor_normals = gt_normals[inds if inds.ndim == 1 else np.squeeze(inds, axis=1)]
+#     dotproduct = np.abs(np.sum(pred_normals * neighbor_normals, axis=1))
+#     pred2gt_nc = np.mean(dotproduct)
+
+#     cd1 = gt2pred_mean_cd1 + pred2gt_mean_cd1
+#     cd2 = gt2pred_mean_cd2 + pred2gt_mean_cd2
+#     nc = (gt2pred_nc + pred2gt_nc) / 2
+
+#     if recall + precision > 0:
+#         f1 = 2 * recall * precision / (recall + precision)
+#     else:
+#         f1 = 0
+#     return cd1, cd2, f1, nc
+
+
 def chamfer_accuracy_completeness_f1(pred_pts, pred_normals, gt_pts, gt_normals, threshold=0.003):
-    # GT → Pred
+    # GT → Pred (recall + completeness)
     pred_tree = KDTree(pred_pts)
-    dist, inds = pred_tree.query(gt_pts, k=1)
-    recall = np.sum(dist < threshold) / float(len(dist))
+    dist_gt2pred, inds = pred_tree.query(gt_pts, k=1)
+    recall = np.mean(dist_gt2pred < threshold)
 
-    gt2pred_mean_cd1 = np.mean(dist)
-    dist = np.square(dist)
-    gt2pred_mean_cd2 = np.mean(dist)
+    completeness1 = float(np.mean(dist_gt2pred))
+    completeness2 = float(np.mean(dist_gt2pred**2))
     neighbor_normals = pred_normals[inds if inds.ndim == 1 else np.squeeze(inds, axis=1)]
-    dotproduct = np.abs(np.sum(gt_normals * neighbor_normals, axis=1))
-    gt2pred_nc = np.mean(dotproduct)
+    gt2pred_nc = float(np.mean(np.abs(np.sum(gt_normals * neighbor_normals, axis=1))))
 
-    # from pred to gt
+    # Pred → GT (precision + accuracy)
     gt_tree = KDTree(gt_pts)
-    dist, inds = gt_tree.query(pred_pts, k=1)
-    precision = np.sum(dist < threshold) / float(len(dist))
-    pred2gt_mean_cd1 = np.mean(dist)
-    dist = np.square(dist)
-    pred2gt_mean_cd2 = np.mean(dist)
+    dist_pred2gt, inds = gt_tree.query(pred_pts, k=1)
+    precision = np.mean(dist_pred2gt < threshold)
+
+    accuracy1 = float(np.mean(dist_pred2gt))
+    accuracy2 = float(np.mean(dist_pred2gt**2))
     neighbor_normals = gt_normals[inds if inds.ndim == 1 else np.squeeze(inds, axis=1)]
-    dotproduct = np.abs(np.sum(pred_normals * neighbor_normals, axis=1))
-    pred2gt_nc = np.mean(dotproduct)
+    pred2gt_nc = float(np.mean(np.abs(np.sum(pred_normals * neighbor_normals, axis=1))))
 
-    cd1 = gt2pred_mean_cd1 + pred2gt_mean_cd1
-    cd2 = gt2pred_mean_cd2 + pred2gt_mean_cd2
-    nc = (gt2pred_nc + pred2gt_nc) / 2
+    # Combined metrics
+    cd1 = completeness1 + accuracy1
+    cd2 = completeness2 + accuracy2
+    nc = (gt2pred_nc + pred2gt_nc) / 2.0
+    f1 = 2 * recall * precision / (recall + precision) if (recall + precision) > 0 else 0.0
 
-    if recall + precision > 0:
-        f1 = 2 * recall * precision / (recall + precision)
-    else:
-        f1 = 0
-    return cd1, cd2, f1, nc
+    return cd1, cd2, f1, nc, float(recall), float(precision), completeness1, completeness2, accuracy1, accuracy2
 
 
 def zero_crossing_sdf_metric(true_sdf, sites, sites_sdf, d3dsimplices):
@@ -2588,68 +2618,68 @@ def _edges_and_counts_from_faces(F: np.ndarray):
     return E_unique, counts
 
 
-def watertight_metrics(path: str):
-    mesh = trimesh.load(path, process=False)
+# def watertight_metrics(path: str):
+#     mesh = trimesh.load(path, process=False)
 
-    # Merge scenes to a single Trimesh
-    if isinstance(mesh, trimesh.Scene):
-        # Dump returns a dict of geometries; concatenate to one mesh
-        mesh = trimesh.util.concatenate(tuple(mesh.dump().values()))
+#     # Merge scenes to a single Trimesh
+#     if isinstance(mesh, trimesh.Scene):
+#         # Dump returns a dict of geometries; concatenate to one mesh
+#         mesh = trimesh.util.concatenate(tuple(mesh.dump().values()))
 
-    # Ensure we have faces & vertices
-    if not isinstance(mesh, trimesh.Trimesh) or mesh.faces is None or mesh.vertices is None:
-        raise ValueError(f"{path} is not a triangular surface mesh")
+#     # Ensure we have faces & vertices
+#     if not isinstance(mesh, trimesh.Trimesh) or mesh.faces is None or mesh.vertices is None:
+#         raise ValueError(f"{path} is not a triangular surface mesh")
 
-    # Optional: light processing to ensure face indices are valid
-    # (won't add attributes we rely on)
-    mesh.process(validate=True)
+#     # Optional: light processing to ensure face indices are valid
+#     # (won't add attributes we rely on)
+#     mesh.process(validate=True)
 
-    V = mesh.vertices
-    F = mesh.faces
-    if F.ndim != 2 or F.shape[1] != 3:
-        # Triangulate if necessary
-        mesh = mesh.triangulate()
-        V = mesh.vertices
-        F = mesh.faces
+#     V = mesh.vertices
+#     F = mesh.faces
+#     if F.ndim != 2 or F.shape[1] != 3:
+#         # Triangulate if necessary
+#         mesh = mesh.triangulate()
+#         V = mesh.vertices
+#         F = mesh.faces
 
-    # Compute unique edges + counts without trimesh helpers
-    E_unique, counts = _edges_and_counts_from_faces(F)
-    E_total = int(E_unique.shape[0])
+#     # Compute unique edges + counts without trimesh helpers
+#     E_unique, counts = _edges_and_counts_from_faces(F)
+#     E_total = int(E_unique.shape[0])
 
-    # Boundary edges = edges used by exactly one face
-    boundary_mask = counts == 1
-    E_boundary = E_unique[boundary_mask]
-    Eb = int(E_boundary.shape[0])
+#     # Boundary edges = edges used by exactly one face
+#     boundary_mask = counts == 1
+#     E_boundary = E_unique[boundary_mask]
+#     Eb = int(E_boundary.shape[0])
 
-    # Non-manifold edges (count > 2), useful to report
-    nm_mask = counts > 2
-    Enm = int(np.count_nonzero(nm_mask))
+#     # Non-manifold edges (count > 2), useful to report
+#     nm_mask = counts > 2
+#     Enm = int(np.count_nonzero(nm_mask))
 
-    # Boundary total length
-    if Eb > 0:
-        vec = V[E_boundary[:, 1]] - V[E_boundary[:, 0]]
-        Lb = float(np.linalg.norm(vec, axis=1).sum())
-    else:
-        Lb = 0.0
+#     # Boundary total length
+#     if Eb > 0:
+#         vec = V[E_boundary[:, 1]] - V[E_boundary[:, 0]]
+#         Lb = float(np.linalg.norm(vec, axis=1).sum())
+#     else:
+#         Lb = 0.0
 
-    # Scale (bbox diagonal)
-    bbox_diag = float(np.linalg.norm(mesh.bounds[1] - mesh.bounds[0]) + 1e-12)
+#     # Scale (bbox diagonal)
+#     bbox_diag = float(np.linalg.norm(mesh.bounds[1] - mesh.bounds[0]) + 1e-12)
 
-    # Simple scores (clip to [0,1])
-    W_edge = float(np.clip(1.0 - Eb / max(E_total, 1), 0.0, 1.0))  # item (5)
-    W_len = float(np.clip(1.0 - Lb / bbox_diag, 0.0, 1.0))  # optional
+#     # Simple scores (clip to [0,1])
+#     W_edge = float(np.clip(1.0 - Eb / max(E_total, 1), 0.0, 1.0))  # item (5)
+#     W_len = float(np.clip(1.0 - Lb / bbox_diag, 0.0, 1.0))  # optional
 
-    # Boolean watertight if no boundary and no non-manifold edges
-    is_watertight = Eb == 0 and Enm == 0
+#     # Boolean watertight if no boundary and no non-manifold edges
+#     is_watertight = Eb == 0 and Enm == 0
 
-    return {
-        "is_watertight": bool(is_watertight),
-        "num_edges_total": E_total,
-        "num_boundary_edges": Eb,
-        "num_nonmanifold_edges": Enm,
-        "boundary_fraction": Eb / max(E_total, 1),
-        "total_boundary_length": Lb,
-        "bbox_diagonal": bbox_diag,
-        "W_edge": W_edge,
-        "W_len": W_len,
-    }
+#     return {
+#         "is_watertight": bool(is_watertight),
+#         "num_edges_total": E_total,
+#         "num_boundary_edges": Eb,
+#         "num_nonmanifold_edges": Enm,
+#         "boundary_fraction": Eb / max(E_total, 1),
+#         "total_boundary_length": Lb,
+#         "bbox_diagonal": bbox_diag,
+#         "W_edge": W_edge,
+#         "W_len": W_len,
+#     }
