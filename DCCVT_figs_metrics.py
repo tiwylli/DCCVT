@@ -19,11 +19,12 @@ torch.backends.cudnn.benchmark = False
 np.random.seed(69)
 
 ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments/"
+ROOT_DIR = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/"
 GT_DIR = os.path.join(ROOT_DIR, "mesh/thingi32/")
 
 # EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/FIGURE_CASE_441708/")
 # EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/FIGURE_CASE_64764/")
-EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/ALL_CASE_DCCVT/")
+EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/20250813_232531/")
 
 # EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/Ablation_64764/")
 

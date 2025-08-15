@@ -43,7 +43,8 @@ timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 # timestamp = "Ablation_64764"
 
 # Default parameters for the DCCVT experiments
-ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments"
+# ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments"
+ROOT_DIR = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments"
 DEFAULTS = {
     "output": f"{ROOT_DIR}/outputs/{timestamp}/",
     "mesh": f"{ROOT_DIR}/mesh/thingi32/",

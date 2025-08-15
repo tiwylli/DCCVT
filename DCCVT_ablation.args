@@ -17,11 +17,11 @@
 # Baseline converged upsampling
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1
 # remove cvt 
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1
+# --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1
 # remove sdf
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 0 --upsampling 10 --clip --w_mt 1
+# --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 0 --upsampling 10 --clip --w_mt 1
 # remove all
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 0 --upsampling 10 --clip --w_mt 1
+# --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 0 --upsampling 10 --clip --w_mt 1
 # change proj_optim to extract_optim CANT : INPUT TOO DEGENERATE
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 99 --w_sdfsmooth 99 --upsampling 10 --clip --w_mt 1 --extract_optim
 #------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
