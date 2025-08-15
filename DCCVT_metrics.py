@@ -47,13 +47,20 @@ def generate_metrics_dict():
                 continue
             obj_path = os.path.join(current_experiment_folder, obj_file)
             obj_pts, obj_normals, _ = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
-            cd1, cd2, f1, nc = su.chamfer_accuracy_completeness_f1(obj_pts, obj_normals, gt_pts, gt_normals)
-
+            cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2 = (
+                su.chamfer_accuracy_completeness_f1(obj_pts, obj_normals, gt_pts, gt_normals)
+            )
             metrics_dict[gt_file.split(".")[0]][obj_file.split(".")[0]] = {
                 "chamfer_distance_1": cd1.astype(float),
                 "chamfer_distance_2": cd2.astype(float),
                 "f1_score": f1.astype(float),
                 "normal_consistency": nc.astype(float),
+                "recall": float(recall),
+                "precision": float(precision),
+                "completeness_1": float(completeness1),
+                "completeness_2": float(completeness2),
+                "accuracy_1": float(accuracy1),
+                "accuracy_2": float(accuracy2),
             }
 
         if not os.path.exists(current_unconverged_experiment_folder):
@@ -67,13 +74,21 @@ def generate_metrics_dict():
                 continue
             obj_path = os.path.join(current_unconverged_experiment_folder, obj_file)
             obj_pts, obj_normals, _ = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
-            cd1, cd2, f1, nc = su.chamfer_accuracy_completeness_f1(obj_pts, obj_normals, gt_pts, gt_normals)
+            cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2 = (
+                su.chamfer_accuracy_completeness_f1(obj_pts, obj_normals, gt_pts, gt_normals)
+            )
 
             metrics_dict["unconverged_" + gt_file.split(".")[0]][obj_file.split(".")[0]] = {
                 "chamfer_distance_1": cd1.astype(float),
                 "chamfer_distance_2": cd2.astype(float),
                 "f1_score": f1.astype(float),
                 "normal_consistency": nc.astype(float),
+                "recall": float(recall),
+                "precision": float(precision),
+                "completeness_1": float(completeness1),
+                "completeness_2": float(completeness2),
+                "accuracy_1": float(accuracy1),
+                "accuracy_2": float(accuracy2),
             }
 
     # save dictionary to a file
