@@ -39,9 +39,9 @@ import datetime
 
 # timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-# timestamp = "ALL_CASE_DCCVT"
+timestamp = "ALL_CASE_DCCVT"
 # timestamp = "FIGURE_CASE_441708"
-timestamp = "FIGURE_CASE_64764"
+# timestamp = "FIGURE_CASE_64764"
 # timestamp = "Ablation_64764"
 
 # Default parameters for the DCCVT experiments
@@ -72,6 +72,7 @@ DEFAULTS = {
     "w_mc": 0,  # 1000
     # "w_bpa": 0,  # 1000
     "upsampling": 0,  # 0
+    "ups_method": "tet_frame",  # "tet_random", "random"
     "lr_sites": 0.0005,
     "mesh_ids": [  # 64764],
         # "252119",
@@ -748,25 +749,25 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "1",
         #     ]
         # )
-        # arg_list.append(
-        #     [
-        #         "--mesh",
-        #         f"{DEFAULTS['mesh']}{m}",
-        #         "--trained_HotSpot",
-        #         f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
-        #         "--output",
-        #         f"{DEFAULTS['output']}unconverged_{m}",
-        #         "--w_chamfer",
-        #         "1000",
-        #         "--num_centroids",
-        #         "32",
-        #         "--clip",
-        #         "--w_mt",
-        #         "1",
-        #         "--w_mc",
-        #         "1",
-        #     ]
-        # )
+        arg_list.append(
+            [
+                "--mesh",
+                f"{DEFAULTS['mesh']}{m}",
+                "--trained_HotSpot",
+                f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
+                "--output",
+                f"{DEFAULTS['output']}unconverged_{m}",
+                "--w_chamfer",
+                "1000",
+                "--num_centroids",
+                "32",
+                "--clip",
+                "--w_mt",
+                "1",
+                "--w_mc",
+                "1",
+            ]
+        )
 
     return arg_list
 
@@ -834,6 +835,12 @@ def define_options_parser(arg_list=None):
     parser.add_argument("--w_mc", type=float, default=DEFAULTS["w_mc"], help="Weight for MC loss")
     parser.add_argument("--w_mt", type=float, default=DEFAULTS["w_mt"], help="Weight for MT loss")
     parser.add_argument("--upsampling", type=int, default=DEFAULTS["upsampling"], help="Upsampling factor")
+    parser.add_argument(
+        "--ups_method",
+        type=str,
+        default=DEFAULTS["ups_method"],
+        help="Upsampling method either tet_frame or tet_random or random",
+    )
     parser.add_argument("--lr_sites", type=float, default=DEFAULTS["lr_sites"], help="Learning rate for sites")
     parser.add_argument(
         "--save_path", type=str, default=None, help="(optional) full save path; if omitted, computed from other flags"
@@ -1086,7 +1093,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
 
             if args.w_chamfer > 0:
                 sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(
-                    sites, d3dsimplices, sites_sdf, sites_sdf_grads
+                    sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method
                 )
                 sites = sites.detach().requires_grad_(True)
                 sites_sdf = sites_sdf.detach().requires_grad_(True)
@@ -1100,7 +1107,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
                 print("Estimated eps_H: ", eps_H)
             else:
                 sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(
-                    sites, d3dsimplices, sites_sdf, sites_sdf_grads
+                    sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method
                 )
                 sites = sites.detach().requires_grad_(True)
                 sites_sdf = hotspot_model(sites)
