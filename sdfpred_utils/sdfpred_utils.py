@@ -1469,7 +1469,7 @@ def interpolate_sdf_grad_of_vertices(
         # Weighted sum of gradients
         grad_v = (W.unsqueeze(-1) * v_grad).sum(dim=1)  # (M, 3)
 
-    return grad_v
+    return grad_v, W
 
 
 import torch
@@ -1845,7 +1845,7 @@ def get_clipped_mesh_numba(
 
             if barycentric_weights:
                 # Use barycentric weights for interpolation
-                vertices_sdf_grad = interpolate_sdf_grad_of_vertices(
+                vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
                     all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
                 )
                 sdf_verts = vertices_sdf[sorted(used)]
@@ -1879,12 +1879,19 @@ def get_clipped_mesh_numba(
             if barycentric_weights:
                 print("-> using barycentric weights for interpolation")
                 # Use barycentric weights for interpolation
-                vertices_sdf_grad = interpolate_sdf_grad_of_vertices(
+                vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
                     all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
                 )
                 sdf_verts = vertices_sdf[used_tet]
                 grads = vertices_sdf_grad[used_tet]
                 proj_vertices = newton_step_clipping(grads, sdf_verts, vertices)
+
+                tpc_proj_v, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
+                # # replace proj_vertices with tpc_proj_v where bary_w has negative component
+                neg_row_mask = (bary_w[used_tet] < 0).any(dim=1)  # (K,)
+                print("bary_w", neg_row_mask.shape, "num bad:", neg_row_mask.sum().item())
+                proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
+                # proj_vertices = tpc_proj_v
             else:
                 proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
                 # proj_vertices = tet_grads_clipping(vertices, vertices_sdf[used_tet], tets_sdf_grads[used_tet])
@@ -2059,7 +2066,7 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     curv_pct: float = 0.75,  # percentile threshold for curvature pass
     growth_cap: float = 0.10,  # ≤ fraction of current sites allowed per iter
     eps: float = 1e-12,
-    # design: str = "random" | "random_tet" | "oriented_tet",
+    ups_method: str = "tet_frame",  # | "tet_random" | "random",
 ):
     """
     # ------------------------------------------------------------------------------
@@ -2191,80 +2198,142 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     K = cand.numel()
     if K == 0:
         return sites, sdf_values  # nothing selected
-    # -------------------------------------------------- #
-    # Insert 4 off-spring per selected site (regular tetrahedron)
-    tetr_dirs = torch.as_tensor(
-        [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
-        dtype=torch.float32,
-        device=device,
-    )  # (4,3)
-    tetr_dirs = torch.nn.functional.normalize(tetr_dirs, dim=1)  # Normalize directions
 
-    # Build local frame from ∇ϕ (surface normal)
-    cent_grad = grad_est[cand]  # (K,3)
-    unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)
-    frame = build_tangent_frame(unit_grad)  # (K,3,3)
+    if ups_method == "tet_frame":
+        # -------------------------------------------------- #
+        # Insert 4 off-spring per selected site (regular tetrahedron)
+        tetr_dirs = torch.as_tensor(
+            [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
+            dtype=torch.float32,
+            device=device,
+        )  # (4,3)
+        tetr_dirs = torch.nn.functional.normalize(tetr_dirs, dim=1)  # Normalize directions
 
-    # Optional anisotropic weights for axes: (t1, t2, normal)
-    anisotropy = torch.tensor([1.0, 1.0, 0.5], device=device)  # shrink in normal
-    frame = frame * anisotropy.view(1, 1, 3)  # (K,3,3)
+        # Build local frame from ∇ϕ (surface normal)
+        cent_grad = grad_est[cand]  # (K,3)
+        unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)
+        frame = build_tangent_frame(unit_grad)  # (K,3,3)
 
-    # Rotate the 4 tetrahedral directions into local frame
-    local_dirs = tetr_dirs.T.unsqueeze(0)  # (1,3,4)
-    offs = torch.matmul(frame, local_dirs).permute(0, 2, 1)  # (K,4,3)
+        # Optional anisotropic weights for axes: (t1, t2, normal)
+        anisotropy = torch.tensor([1.0, 1.0, 0.5], device=device)  # shrink in normal
+        frame = frame * anisotropy.view(1, 1, 3)  # (K,3,3)
 
-    # Scale by local spacing
-    scale = (min_dists[cand] / 4).unsqueeze(1).unsqueeze(2)  # (K,1,1)
-    offs = offs * scale  # (K,4,3)
+        # Rotate the 4 tetrahedral directions into local frame
+        local_dirs = tetr_dirs.T.unsqueeze(0)  # (1,3,4)
+        offs = torch.matmul(frame, local_dirs).permute(0, 2, 1)  # (K,4,3)
 
-    # Translate from centroid
-    centroids = sites[cand].unsqueeze(1)  # (K,1,3)
-    new_sites = (centroids + offs).reshape(-1, 3)  # (4K,3)
-    delta = new_sites.reshape(-1, 4, 3) - centroids  # (K,4,3)
-    new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
-    updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
-    updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
-    # ---------------------------------------------------------------- #
-    # # Insert 4 off-spring per selected site (regular tetrahedron)
-    # tetr_dirs = torch.as_tensor(
-    #     [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
-    #     dtype=torch.float32,
-    #     device=device,
-    # )  # (4,3)
+        # Scale by local spacing
+        scale = (min_dists[cand] / 4).unsqueeze(1).unsqueeze(2)  # (K,1,1)
+        offs = offs * scale  # (K,4,3)
 
-    # centroids = sites[cand]  # (K,3)
-    # scale = (min_dists[cand] / 4).unsqueeze(1)  # (K,1)
-    # new_sites = (centroids.unsqueeze(1) + tetr_dirs.unsqueeze(0) * scale.unsqueeze(1)).reshape(-1, 3)  # (4K,3)
-    # print("Before upsampling, number of sites:", sites.shape[0], "amount added:", new_sites.shape[0])
-    # # First-order SDF interpolation φ(new) = φ(old) + ∇φ·δ
-    # cent_grad = grad_est[cand]  # (K,3)
-    # delta = new_sites.reshape(-1, 4, 3) - centroids.unsqueeze(1)  # (K,4,3)
-    # new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
+        # Translate from centroid
+        centroids = sites[cand].unsqueeze(1)  # (K,1,3)
+        new_sites = (centroids + offs).reshape(-1, 3)  # (4K,3)
+        delta = new_sites.reshape(-1, 4, 3) - centroids  # (K,4,3)
+        new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
+        updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
+        updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
 
-    # # Concatenate & return
-    # updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
-    # updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
-    # ------------------------------------------------------------------ #
-    # # One new site per candidate, along -∇ϕ direction
-    # centroids = sites[cand]  # (K, 3)
-    # cent_grad = grad_est[cand]  # (K, 3)
+    elif ups_method == "tet_random":
+        # ---------------------------------------------------------------- #
+        # Canonical regular-tetrahedron vertex directions (centered at origin)
+        tetr_dirs = torch.as_tensor(
+            [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]], dtype=torch.float32, device=device
+        )  # (4,3)
 
-    # # Normalize gradients (to avoid large steps)
-    # unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)  # (K,3)
+        K = cand.shape[0]
+        centroids = sites[cand]  # (K,3)
+        scale = (min_dists[cand] / 4).unsqueeze(1)  # (K,1)
 
-    # # Scale step size based on local spacing
-    # step_size = (min_dists[cand] / 4).unsqueeze(1)  # (K,1)
-    # new_sites = centroids - unit_grad * step_size  # (K,3)
-    # print("Before upsampling, number of sites:", sites.shape[0], "amount added:", new_sites.shape[0])
+        # --- Make a random rotation per centroid via random unit quaternions ---
+        def quat_to_rotmat(q):  # q: (...,4) normalized
+            w, x, y, z = q.unbind(-1)
+            ww, xx, yy, zz = w * w, x * x, y * y, z * z
+            xy, xz, yz = x * y, x * z, y * z
+            wx, wy, wz = w * x, w * y, w * z
+            R = torch.stack(
+                [
+                    ww + xx - yy - zz,
+                    2 * (xy - wz),
+                    2 * (xz + wy),
+                    2 * (xy + wz),
+                    ww - xx + yy - zz,
+                    2 * (yz - wx),
+                    2 * (xz - wy),
+                    2 * (yz + wx),
+                    ww - xx - yy + zz,
+                ],
+                dim=-1,
+            ).reshape(q.shape[:-1] + (3, 3))
+            return R
 
-    # # First-order SDF interpolation: φ(new) = φ(old) + ∇φ · δ
-    # delta = new_sites - centroids  # (K,3)
-    # new_sdf = sdf_values[cand] + (cent_grad * delta).sum(dim=1)  # (K,)
+        # Random unit quaternions (K,4)
+        q = torch.randn(K, 4, device=device, dtype=torch.float32)
+        q = q / q.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+        R = quat_to_rotmat(q)  # (K,3,3)
 
-    # # Concatenate and return
-    # updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+K, 3)
-    # updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+K,)
+        # Rotate the canonical tetra directions per centroid: (K,4,3)
+        rotated_dirs = tetr_dirs.unsqueeze(0) @ R.transpose(-1, -2)
 
+        # Build offspring: keep proportions via `scale`
+        new_sites = (centroids.unsqueeze(1) + rotated_dirs * scale.unsqueeze(1)).reshape(-1, 3)  # (4K,3)
+
+        print("Before tet random upsampling, number of sites:", sites.shape[0], "amount added:", new_sites.shape[0])
+
+        # First-order SDF interpolation φ(new) = φ(old) + ∇φ·δ
+        cent_grad = grad_est[cand]  # (K,3)
+        delta = new_sites.reshape(-1, 4, 3) - centroids.unsqueeze(1)  # (K,4,3)
+        new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
+
+        # Concatenate & return
+        updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
+        updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
+
+    elif "random":
+        eps = 1e-12
+        # Inputs
+        centroids = sites[cand]  # (K,3)
+        cent_grad = grad_est[cand]  # (K,3)
+        unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)  # (K,3)
+
+        # Hemisphere axis = -∇φ direction (to match your previous "minus grad" step)
+        axis = -unit_grad  # (K,3)
+
+        # Build an orthonormal basis {v1, v2, axis} per centroid
+        helper = torch.tensor([0.0, 0.0, 1.0], device=device).expand_as(axis).clone()
+        near_pole = axis[:, 2].abs() > 0.99  # if axis ~ ±z, switch helper to avoid degeneracy
+        helper[near_pole] = torch.tensor([0.0, 1.0, 0.0], device=device)
+
+        v1 = torch.cross(helper, axis, dim=1)
+        v1 = v1 / (v1.norm(dim=1, keepdim=True) + eps)  # (K,3)
+        v2 = torch.cross(axis, v1, dim=1)
+        v2 = v2 / (v2.norm(dim=1, keepdim=True) + eps)  # (K,3)
+
+        # Uniform random direction on hemisphere around `axis`
+        # cos(theta) ~ U[0,1], phi ~ U[0, 2π)
+        K = centroids.shape[0]
+        u = torch.rand(K, 1, device=device)  # cos(theta)
+        phi = 2.0 * math.pi * torch.rand(K, 1, device=device)  # azimuth
+
+        sin_theta = torch.sqrt((1.0 - u**2).clamp_min(0.0))  # (K,1)
+        dir_hemi = (torch.cos(phi) * sin_theta) * v1 + (torch.sin(phi) * sin_theta) * v2 + u * axis  # (K,3)
+        # dir_hemi is unit-length (up to numerical eps)
+
+        # Step radius: keep your existing spacing-based step size
+        step_size = (min_dists[cand] / 4.0).unsqueeze(1)  # (K,1)
+        new_sites = centroids + step_size * dir_hemi  # (K,3)
+
+        print("Before upsampling, number of sites:", sites.shape[0], "amount added:", new_sites.shape[0])
+
+        # First-order SDF interpolation: φ(new) = φ(old) + ∇φ · δ
+        delta = new_sites - centroids  # (K,3)
+        new_sdf = sdf_values[cand] + (cent_grad * delta).sum(dim=1)  # (K,)
+
+        # Concatenate and return
+        updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+K, 3)
+        updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+K,)
+    else:
+        raise ValueError(f"Unknown upsampling method: {ups_method}")
     return updated_sites, updated_sites_sdf
 
 
@@ -2308,28 +2377,53 @@ def save_target_pc_ply(filename, points):
             f.write(f"{p[0]} {p[1]} {p[2]}\n")
 
 
+# def sample_points_on_mesh(mesh_path, n_points=100000, GT=False):
+#     mesh = trimesh.load(mesh_path)
+
+#     # # Normalize mesh (centered and scaled uniformly)
+#     # bbox = mesh.bounds
+#     # center = mesh.centroid
+#     # scale = np.linalg.norm(bbox[1] - bbox[0])
+#     # mesh.apply_translation(-center)
+#     # mesh.apply_scale(1.0 / scale)
+
+#     # # Export normalized mesh
+#     # mesh.export(mesh_path.replace(".obj", ".obj"))
+
+#     points, idx = trimesh.sample.sample_surface(mesh, n_points)
+#     normals = mesh.face_normals[idx]  # Get normals at sampled points
+#     if GT:
+#         # HotSpot shape 3d get_mnfld_points default
+#         points = np.asarray(points, dtype=np.float32)
+#         points = points - points.mean(axis=0)  # Center the point cloud
+#         scale = np.percentile(np.linalg.norm(points, axis=-1), 70) / 0.45
+#         scale = max(scale, np.abs(points).max())
+#         points = points / scale  # Normalize to unit sphere
+
+#         # normalize mesh in the same way
+
+
+#     return points, normals, mesh
+
+
 def sample_points_on_mesh(mesh_path, n_points=100000, GT=False):
     mesh = trimesh.load(mesh_path)
-
-    # # Normalize mesh (centered and scaled uniformly)
-    # bbox = mesh.bounds
-    # center = mesh.centroid
-    # scale = np.linalg.norm(bbox[1] - bbox[0])
-    # mesh.apply_translation(-center)
-    # mesh.apply_scale(1.0 / scale)
-
-    # # Export normalized mesh
-    # mesh.export(mesh_path.replace(".obj", ".obj"))
-
     points, idx = trimesh.sample.sample_surface(mesh, n_points)
     normals = mesh.face_normals[idx]  # Get normals at sampled points
+
     if GT:
-        # HotSpot shape 3d get_mnfld_points default
+        # Center the point cloud
         points = np.asarray(points, dtype=np.float32)
-        points = points - points.mean(axis=0)  # Center the point cloud
+        center = points.mean(axis=0)
+        points -= center
+
+        # Compute scale factor (same as HotSpot)
         scale = np.percentile(np.linalg.norm(points, axis=-1), 70) / 0.45
         scale = max(scale, np.abs(points).max())
-        points = points / scale  # Normalize to unit sphere
+        points /= scale
+
+        # Apply same normalization to mesh vertices
+        mesh.vertices = (mesh.vertices - center) / scale
 
     return points, normals, mesh
 
@@ -2595,27 +2689,27 @@ def cvt_extraction(sites, sites_sdf, d3dsimplices, build_faces=False):
     # return mesh
 
 
-# WIP ------------------
-def _edges_and_counts_from_faces(F: np.ndarray):
-    """
-    Build undirected triangle edges and count their occurrences using NumPy only.
-    Returns:
-        E_unique: (E,2) int array of unique undirected edges (i<j)
-        counts:   (E,)   int array with how many faces each edge belongs to
-    """
-    # Stack triangle edges (M*3, 2)
-    E = np.vstack([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])
-    # Undirected: sort each edge's endpoints so (i,j)==(j,i)
-    E = np.sort(E, axis=1)
+# # WIP ------------------
+# def _edges_and_counts_from_faces(F: np.ndarray):
+#     """
+#     Build undirected triangle edges and count their occurrences using NumPy only.
+#     Returns:
+#         E_unique: (E,2) int array of unique undirected edges (i<j)
+#         counts:   (E,)   int array with how many faces each edge belongs to
+#     """
+#     # Stack triangle edges (M*3, 2)
+#     E = np.vstack([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])
+#     # Undirected: sort each edge's endpoints so (i,j)==(j,i)
+#     E = np.sort(E, axis=1)
 
-    # Fast unique on rows via 64-bit packing
-    a = E[:, 0].astype(np.int64)
-    b = E[:, 1].astype(np.int64)
-    packed = (a.astype(np.uint64) << 32) | b.astype(np.uint64)
+#     # Fast unique on rows via 64-bit packing
+#     a = E[:, 0].astype(np.int64)
+#     b = E[:, 1].astype(np.int64)
+#     packed = (a.astype(np.uint64) << 32) | b.astype(np.uint64)
 
-    up, inv, counts = np.unique(packed, return_inverse=True, return_counts=True)
-    E_unique = np.column_stack(((up >> 32).astype(np.int64), (up & ((1 << 32) - 1)).astype(np.int64)))
-    return E_unique, counts
+#     up, inv, counts = np.unique(packed, return_inverse=True, return_counts=True)
+#     E_unique = np.column_stack(((up >> 32).astype(np.int64), (up & ((1 << 32) - 1)).astype(np.int64)))
+#     return E_unique, counts
 
 
 # def watertight_metrics(path: str):
@@ -2683,3 +2777,137 @@ def _edges_and_counts_from_faces(F: np.ndarray):
 #         "W_edge": W_edge,
 #         "W_len": W_len,
 #     }
+
+
+# def evaluate_chamfer_trimesh_PM(
+#     gt_mesh,
+#     pred_mesh,
+#     n_samples: int = 100_000,
+#     even_sampling: bool = True,
+#     tau: float = 0.003,
+#     batch: int = 200_000,
+# ):
+#     """
+#     Compute point-to-mesh (GT->Pred), mesh-to-point (Pred->GT),
+#     symmetric Chamfer (L1 and L2^2), and optional F-score with trimesh.
+
+#     Args:
+#         gt_mesh_path: path to ground-truth mesh file.
+#         pred_mesh_path: path to reconstructed/predicted mesh file.
+#         n_samples: number of surface samples per mesh.
+#         even_sampling: use trimesh.sample.sample_surface_even if True, else sample_surface.
+#         tau: distance threshold for F-score (same units as meshes). If None, F-score omitted.
+#         batch: batch size for nearest-surface queries.
+
+#     Returns:
+#         dict with:
+#             - per_side: stats for GT->Pred (P2M) and Pred->GT (M2P)
+#             - chamfer: {"L1", "L2_squared"}
+#             - n_samples_per_mesh
+#             - even_sampling
+#             - fscore (if tau provided): {"precision","recall","fscore","tau"}
+#     """
+#     # --- Load meshes (no cleanup) ---
+#     # gt = trimesh.load(gt_mesh_path, force="mesh")
+#     if isinstance(gt_mesh, trimesh.Scene):
+#         gt_mesh = trimesh.util.concatenate(gt_mesh.dump())
+#     # pred = trimesh.load(pred_mesh_path, force="mesh")
+#     if isinstance(pred_mesh, trimesh.Scene):
+#         pred_mesh = trimesh.util.concatenate(pred_mesh.dump())
+
+#     if gt_mesh.is_empty or pred_mesh.is_empty:
+#         raise ValueError("One of the meshes is empty.")
+
+#     # --- Surface sampling ---
+#     if even_sampling:
+#         P_gt, _ = trimesh.sample.sample_surface_even(gt_mesh, n_samples)
+#         P_pred, _ = trimesh.sample.sample_surface_even(pred_mesh, n_samples)
+#     else:
+#         P_gt, _ = trimesh.sample.sample_surface(gt_mesh, n_samples)
+#         P_pred, _ = trimesh.sample.sample_surface(pred_mesh, n_samples)
+
+#     # --- Distances via nearest-on-surface (unsigned) ---
+#     def p2m(points, mesh):
+#         d_all = []
+#         nearest = mesh.nearest
+#         for i in range(0, len(points), batch):
+#             _, dists, _ = nearest.on_surface(points[i : i + batch])
+#             d_all.append(dists.astype(np.float64))
+#         return np.concatenate(d_all, axis=0)
+
+#     d_gt_to_pred = p2m(P_gt, pred_mesh)  # P2M: GT points -> Pred mesh
+#     d_pred_to_gt = p2m(P_pred, gt_mesh)  # M2P: Pred points -> GT mesh
+
+#     # --- Summaries & Chamfer ---
+#     def summarize(name, d):
+#         return {
+#             "name": name,
+#             "count": int(d.size),
+#             "mean": float(d.mean()),
+#             "median": float(np.median(d)),
+#             "rmse": float(np.sqrt((d**2).mean())),
+#             "p95": float(np.percentile(d, 95)),
+#             "max": float(d.max()),
+#         }
+
+#     chamfer_L1 = float(d_gt_to_pred.mean() + d_pred_to_gt.mean())
+#     chamfer_L2_sq = float((d_gt_to_pred**2).mean() + (d_pred_to_gt**2).mean())
+
+#     out = {
+#         "per_side": [
+#             summarize("gt->pred (P2M)", d_gt_to_pred),
+#             summarize("pred->gt (M2P)", d_pred_to_gt),
+#         ],
+#         "chamfer": {"L1": chamfer_L1, "L2_squared": chamfer_L2_sq},
+#         "n_samples_per_mesh": int(n_samples),
+#         "even_sampling": bool(even_sampling),
+#     }
+
+#     # --- Optional F-score ---
+#     if tau is not None:
+#         prec = float((d_pred_to_gt <= tau).mean())  # precision: pred near GT
+#         rec = float((d_gt_to_pred <= tau).mean())  # recall: GT covered by pred
+#         f = 0.0 if (prec + rec) == 0 else 2 * prec * rec / (prec + rec)
+#         out["fscore"] = {"precision": prec, "recall": rec, "fscore": f, "tau": float(tau)}
+
+#     return out
+
+
+# def evaluate_chamfer_trimesh(
+#     gt_mesh, pred_mesh, n_samples: int = 100_000, even_sampling: bool = False, tau: float = None
+# ):
+#     # --- Sampling ---
+#     P_gt, _ = trimesh.sample.sample_surface(gt_mesh, n_samples)
+#     P_pred, _ = trimesh.sample.sample_surface(pred_mesh, n_samples)
+
+#     # --- Proximity queries ---
+#     from trimesh.proximity import ProximityQuery
+
+#     pq_pred = ProximityQuery(pred_mesh)
+#     pq_gt = ProximityQuery(gt_mesh)
+
+#     d_gt_to_pred = pq_pred.vertex(P_gt)[1]  # returns (points, distances)
+#     d_pred_to_gt = pq_gt.vertex(P_pred)[1]
+
+#     # --- Chamfer distances ---
+#     chamfer_L1 = float(d_gt_to_pred.mean() + d_pred_to_gt.mean())
+#     chamfer_L2_sq = float((d_gt_to_pred**2).mean() + (d_pred_to_gt**2).mean())
+
+#     out = {
+#         "P2M_mean": float(d_gt_to_pred.mean()),
+#         "M2P_mean": float(d_pred_to_gt.mean()),
+#         "Chamfer_L1": chamfer_L1,
+#         "Chamfer_L2_squared": chamfer_L2_sq,
+#     }
+
+#     # Optional F-score
+#     if tau is not None:
+#         prec = float((d_pred_to_gt <= tau).mean())
+#         rec = float((d_gt_to_pred <= tau).mean())
+#         f = 0.0 if prec + rec == 0 else 2 * prec * rec / (prec + rec)
+#         out["F-score"] = f
+#         out["precision"] = prec
+#         out["recall"] = rec
+#         out["tau"] = tau
+
+#     return out

@@ -136,8 +136,9 @@ def main():
 
         if key not in gt_cache:
             try:
-                gt_pts, gt_normals, _ = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
-                gt_cache[key] = (gt_pts, gt_normals)
+                ps.init()
+                gt_pts, gt_normals, gt_mesh = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
+                gt_cache[key] = (gt_pts, gt_normals, gt_mesh)
             except Exception as e:
                 print(f"[ERROR] sampling GT for {gt_obj}: {e}")
                 continue
@@ -150,11 +151,12 @@ def main():
 
         for obj_path in final_or_init_objs:
             try:
-                obj_pts, obj_normals, _ = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
+                obj_pts, obj_normals, obj_mesh = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
 
                 cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2 = (
                     su.chamfer_accuracy_completeness_f1(obj_pts, obj_normals, gt_cache[key][0], gt_cache[key][1])
                 )
+
                 fname = os.path.basename(obj_path)
                 label = f"{dname}_{os.path.splitext(fname)[0]}"
                 records.append(
