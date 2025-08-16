@@ -45,8 +45,9 @@ timestamp = "ALL_CASE_DCCVT"
 # timestamp = "Ablation_64764"
 
 # Default parameters for the DCCVT experiments
-# ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments"
-ROOT_DIR = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments"
+ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments"
+# ROOT_DIR = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments"
+
 DEFAULTS = {
     "output": f"{ROOT_DIR}/outputs/{timestamp}/",
     "mesh": f"{ROOT_DIR}/mesh/thingi32/",
@@ -71,6 +72,7 @@ DEFAULTS = {
     "w_mc": 0,  # 1000
     # "w_bpa": 0,  # 1000
     "upsampling": 0,  # 0
+    "ups_method": "tet_frame",  # "tet_random", "random"
     "lr_sites": 0.0005,
     "mesh_ids": [  # 64764],
         # "252119",
@@ -234,28 +236,28 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #     ]
         # )
 
-        # DCCVT+cvt+sdfreg
-        arg_list.append(
-            [
-                "--mesh",
-                f"{DEFAULTS['mesh']}{m}",
-                "--trained_HotSpot",
-                f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
-                "--output",
-                f"{DEFAULTS['output']}{m}",
-                "--w_chamfer",
-                "1000",
-                "--w_cvt",
-                "100",
-                "--w_sdfsmooth",
-                "100",
-                "--num_centroids",
-                "32",
-                "--clip",
-                "--w_mt",
-                "1",
-            ]
-        )
+        # # DCCVT+cvt+sdfreg
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32/{m}.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}{m}",
+        #         "--w_chamfer",
+        #         "1000",
+        #         "--w_cvt",
+        #         "100",
+        #         "--w_sdfsmooth",
+        #         "100",
+        #         "--num_centroids",
+        #         "32",
+        #         "--clip",
+        #         "--w_mt",
+        #         "1",
+        #     ]
+        # )
         # # DCCVT + cvt + sdfreg + upsampling
         # arg_list.append(
         #     [
@@ -417,6 +419,24 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "16",
         #         "--w_cvt",
         #         "0.01",
+        #     ]
+        # )
+        # arg_list.append(
+        #     [
+        #         "--mesh",
+        #         f"{DEFAULTS['mesh']}{m}",
+        #         "--trained_HotSpot",
+        #         f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_100.pth",
+        #         "--output",
+        #         f"{DEFAULTS['output']}unconverged_100_{m}_b32_ups",
+        #         "--w_voroloss",
+        #         "1000",
+        #         "--num_centroids",
+        #         "16",
+        #         "--w_cvt",
+        #         "0.01",
+        #         "--upsampling",
+        #         "10",
         #     ]
         # )
         # arg_list.append(
@@ -729,25 +749,25 @@ def build_arg_list(m_list=DEFAULTS["mesh_ids"]):
         #         "1",
         #     ]
         # )
-        # arg_list.append(
-        #     [
-        #         "--mesh",
-        #         f"{DEFAULTS['mesh']}{m}",
-        #         "--trained_HotSpot",
-        #         f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
-        #         "--output",
-        #         f"{DEFAULTS['output']}unconverged_{m}",
-        #         "--w_chamfer",
-        #         "1000",
-        #         "--num_centroids",
-        #         "32",
-        #         "--clip",
-        #         "--w_mt",
-        #         "1",
-        #         "--w_mc",
-        #         "1",
-        #     ]
-        # )
+        arg_list.append(
+            [
+                "--mesh",
+                f"{DEFAULTS['mesh']}{m}",
+                "--trained_HotSpot",
+                f"{DEFAULTS['trained_HotSpot']}thingi32_unconverged/{m}_500.pth",
+                "--output",
+                f"{DEFAULTS['output']}unconverged_{m}",
+                "--w_chamfer",
+                "1000",
+                "--num_centroids",
+                "32",
+                "--clip",
+                "--w_mt",
+                "1",
+                "--w_mc",
+                "1",
+            ]
+        )
 
     return arg_list
 
@@ -815,6 +835,12 @@ def define_options_parser(arg_list=None):
     parser.add_argument("--w_mc", type=float, default=DEFAULTS["w_mc"], help="Weight for MC loss")
     parser.add_argument("--w_mt", type=float, default=DEFAULTS["w_mt"], help="Weight for MT loss")
     parser.add_argument("--upsampling", type=int, default=DEFAULTS["upsampling"], help="Upsampling factor")
+    parser.add_argument(
+        "--ups_method",
+        type=str,
+        default=DEFAULTS["ups_method"],
+        help="Upsampling method either tet_frame or tet_random or random",
+    )
     parser.add_argument("--lr_sites", type=float, default=DEFAULTS["lr_sites"], help="Learning rate for sites")
     parser.add_argument(
         "--save_path", type=str, default=None, help="(optional) full save path; if omitted, computed from other flags"
@@ -901,7 +927,7 @@ def init_sdf(model, sites):
     return sdf_values
 
 
-def train_DCCVT(sites, sites_sdf, mnfld_points, args):
+def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
     if args.w_chamfer > 0:
         optimizer = torch.optim.Adam(
             [
@@ -912,6 +938,17 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, args):
         )
     else:
         optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
+        # SDF at original sites
+        if sites_sdf is None:
+            raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
+        if sites_sdf.__class__.__name__ == "SDFGrid":
+            sdf_values = sites_sdf.sdf(sites)
+        elif isinstance(sites_sdf, torch.Tensor):
+            sdf_values = sites_sdf.to(device)
+        else:  # nn.Module / callable
+            sdf_values = sites_sdf(sites).detach()
+        sdf_values = sdf_values.squeeze()  # (N,)
+        sites_sdf = sdf_values.requires_grad_()
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=1.0)
 
     upsampled = 0.0
@@ -1041,19 +1078,22 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, args):
 
                 # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
                 continue
+
             if d3dsimplices is None:
                 if args.marching_tetrahedra:
                     d3dsimplices = Delaunay(sites_np).simplices
                 else:
                     d3dsimplices, _ = pygdel3d.triangulate(sites_np)
                     d3dsimplices = np.array(d3dsimplices)
+
             if sites_sdf_grads is None or sites_sdf_grads.shape[0] != sites_sdf.shape[0]:
                 sites_sdf_grads, tets_sdf_grads, W = su.sdf_space_grad_pytorch_diego_sites_tets(
                     sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach().clone()
                 )
+
             if args.w_chamfer > 0:
                 sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(
-                    sites, d3dsimplices, sites_sdf, sites_sdf_grads
+                    sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method
                 )
                 sites = sites.detach().requires_grad_(True)
                 sites_sdf = sites_sdf.detach().requires_grad_(True)
@@ -1066,8 +1106,12 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, args):
                 eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 5).detach()
                 print("Estimated eps_H: ", eps_H)
             else:
-                sites, _ = su.upsampling_adaptive_vectorized_sites_sites_sdf(sites, d3dsimplices, sites_sdf)
+                sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(
+                    sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method
+                )
                 sites = sites.detach().requires_grad_(True)
+                sites_sdf = hotspot_model(sites)
+                sites_sdf = sites_sdf.detach().squeeze(-1).requires_grad_()
                 optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
             upsampled += 1.0
             print("sites length AFTER: ", len(sites))
@@ -1204,7 +1248,7 @@ def process_single_mesh(arg_list):
 
             if args.w_chamfer > 0 or args.w_voroloss > 0:
                 t0 = time()
-                sites, sdf = train_DCCVT(sites, sdf, mnfld_points, args)
+                sites, sdf = train_DCCVT(sites, sdf, mnfld_points, model, args)
                 ti = time() - t0
 
             # Extract the final mesh
