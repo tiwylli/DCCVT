@@ -1311,6 +1311,7 @@ if __name__ == "__main__":
 
     if root_args.timestamp:
         timestamp = root_args.timestamp
+        DEFAULTS["output"] = f"{ROOT_DIR}/outputs/{timestamp}/"
 
     if root_args.args_file:
         # Provide DEFAULTS + timestamp to formatting
