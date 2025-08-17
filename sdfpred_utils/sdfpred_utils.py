@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.cluster import KMeans
 import torch
 import pygdel3d
+import polyscope as ps
 
 # import diffvoronoi  # delaunay3d bindings
 import math
@@ -1878,7 +1879,7 @@ def get_clipped_mesh_numba(
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
             sites_sdf_grad, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3d)
             if barycentric_weights:
-                print("-> using barycentric weights for interpolation")
+                # print("-> using barycentric weights for interpolation")
                 # Use barycentric weights for interpolation
                 vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
                     all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
@@ -1887,12 +1888,11 @@ def get_clipped_mesh_numba(
                 grads = vertices_sdf_grad[used_tet]
                 proj_vertices = newton_step_clipping(grads, sdf_verts, vertices)
 
-                tpc_proj_v, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
+                # tpc_proj_v, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
                 # # replace proj_vertices with tpc_proj_v where bary_w has negative component
-                neg_row_mask = (bary_w[used_tet] < 0).any(dim=1)  # (K,)
-                print("bary_w", neg_row_mask.shape, "num bad:", neg_row_mask.sum().item())
-                proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
-                # proj_vertices = tpc_proj_v
+                # neg_row_mask = (bary_w[used_tet] < 0).any(dim=1)  # (K,)
+                # print("bary_w", neg_row_mask.shape, "num bad:", neg_row_mask.sum().item())
+                # proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
             else:
                 proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
                 # proj_vertices = tet_grads_clipping(vertices, vertices_sdf[used_tet], tets_sdf_grads[used_tet])
@@ -2140,8 +2140,7 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     grad_est = sites_sdf_grads
 
     unit_n = grad_est / (grad_est.norm(dim=1, keepdim=True) + eps)
-    
-    
+
     if score == "density":
         # Disable curvature score, use uniform density
         curv_score = torch.ones(N, device=device)  # (N,)
@@ -2157,7 +2156,7 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
             # Cosine similarity as curvature score from dot product
             # Make it conservartive
             dn2 = (1.0 - (unit_n[neighbors[:, 0]] * unit_n[neighbors[:, 1]]).sum(1)) * 0.8 + 0.2
-        
+
         curv_score = curv_score.index_add(0, neighbors[:, 0], dn2)
         curv_score = curv_score.index_add(0, neighbors[:, 1], dn2)
         curv_score /= counts.squeeze()  # mean over 1-ring
@@ -2218,6 +2217,33 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     if K == 0:
         return sites, sdf_values  # nothing selected
 
+    #     # TODO: check tet orientation-------------------------------------------------- #
+    # # Regular tetrahedron with one vertex at +z ("north pole") and a base at z = -1/3.
+    # # Pairwise dot = -1/3, ||v||=1 (inscribed on unit sphere).
+    # sqrt2 = torch.sqrt(torch.tensor(2.0, device=device, dtype=torch.float32))
+    # sqrt6 = torch.sqrt(torch.tensor(6.0, device=device, dtype=torch.float32))
+
+    # # Mode: "majority_toward_zero" -> 3 kids step slightly toward zero (z<0),
+    # #       "one_direct_descent"   -> 1 kid steps exactly toward zero (z=-1).
+    # mode = "majority_toward_zero"  # or "one_direct_descent"
+
+    # if mode == "majority_toward_zero":
+    #     # Base has z = -1/3 (toward −n), top has z = +1 (away from −n)
+    #     tetr_dirs = torch.stack([
+    #         torch.tensor([0.0,          0.0,          1.0],  device=device),
+    #         torch.tensor([ 2*sqrt2/3.0, 0.0,         -1.0/3], device=device),
+    #         torch.tensor([-sqrt2/3.0,   sqrt6/3.0,   -1.0/3], device=device),
+    #         torch.tensor([-sqrt2/3.0,  -sqrt6/3.0,   -1.0/3], device=device),
+    #     ], dim=0)  # (4,3)
+    # else:
+    #     # Flip z so the pole is at z = -1 (exactly along −n); base is at z = +1/3.
+    #     tetr_dirs = torch.stack([
+    #         torch.tensor([0.0,          0.0,         -1.0],  device=device),
+    #         torch.tensor([ 2*sqrt2/3.0, 0.0,          1.0/3], device=device),
+    #         torch.tensor([-sqrt2/3.0,   sqrt6/3.0,    1.0/3], device=device),
+    #         torch.tensor([-sqrt2/3.0,  -sqrt6/3.0,    1.0/3], device=device),
+    #     ], dim=0)  # (4,3)
+
     if ups_method == "tet_frame":
         # -------------------------------------------------- #
         # Insert 4 off-spring per selected site (regular tetrahedron)
@@ -2231,6 +2257,7 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
         # Build local frame from ∇ϕ (surface normal)
         cent_grad = grad_est[cand]  # (K,3)
         unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)
+        unit_grad = unit_grad * torch.sign(sdf_values[cand]).unsqueeze(1)  # point outward
         frame = build_tangent_frame(unit_grad)  # (K,3,3)
 
         # Optional anisotropic weights for axes: (t1, t2, normal)
@@ -2240,14 +2267,20 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
         # Rotate the 4 tetrahedral directions into local frame
         local_dirs = tetr_dirs.T.unsqueeze(0)  # (1,3,4)
         offs = torch.matmul(frame, local_dirs).permute(0, 2, 1)  # (K,4,3)
-
         # Scale by local spacing
-        scale = (min_dists[cand] / 4).unsqueeze(1).unsqueeze(2)  # (K,1,1)
+        # used to be /4 but because anisotropy 0.5 its now /2
+        scale = (min_dists[cand] / 2).unsqueeze(1).unsqueeze(2)  # (K,1,1)
         offs = offs * scale  # (K,4,3)
 
         # Translate from centroid
         centroids = sites[cand].unsqueeze(1)  # (K,1,3)
         new_sites = (centroids + offs).reshape(-1, 3)  # (4K,3)
+
+        # print("new sites shape:", new_sites.shape)
+        # ps.init()
+        # ps.register_point_cloud("new_sites", new_sites.detach().cpu().numpy())
+        # ps.show()
+
         delta = new_sites.reshape(-1, 4, 3) - centroids  # (K,4,3)
         new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
         updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
@@ -2316,7 +2349,7 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
         unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)  # (K,3)
 
         # Hemisphere axis = -∇φ direction (to match your previous "minus grad" step)
-        axis = -unit_grad  # (K,3)
+        axis = unit_grad * torch.sign(sdf_values[cand]).unsqueeze(1)  # (K,3)
 
         # Build an orthonormal basis {v1, v2, axis} per centroid
         helper = torch.tensor([0.0, 0.0, 1.0], device=device).expand_as(axis).clone()
@@ -2481,6 +2514,7 @@ def sample_points_on_mesh(mesh_path, n_points=100000, GT=False):
 #         f1 = 0
 #     return cd1, cd2, f1, nc
 
+
 def chamfer_accuracy_completeness_f1(pred_pts, pred_normals, gt_pts, gt_normals, threshold=0.003, scenes=None):
     # GT → Pred (recall + completeness)
     pred_tree = KDTree(pred_pts)
@@ -2493,7 +2527,7 @@ def chamfer_accuracy_completeness_f1(pred_pts, pred_normals, gt_pts, gt_normals,
     gt2pred_nc = float(np.mean(np.abs(np.sum(gt_normals * neighbor_normals, axis=1))))
 
     # Pred → GT (precision + accuracy)
-    
+
     gt_tree = KDTree(gt_pts)
     dist_pred2gt, inds = gt_tree.query(pred_pts, k=1)
     precision = np.mean(dist_pred2gt < threshold)
@@ -2511,18 +2545,21 @@ def chamfer_accuracy_completeness_f1(pred_pts, pred_normals, gt_pts, gt_normals,
 
     return cd1, cd2, f1, nc, float(recall), float(precision), completeness1, completeness2, accuracy1, accuracy2
 
+
 import fcpw
 import time
+
+
 def chamfer_accuracy_completeness_f1_accel(pred_pts, pred_normals, gt_pts, gt_normals, threshold=0.003, scenes=None):
     # TEST with fcpw
     if scenes is None:
         raise ValueError("`scenes` must be provided for fcpw evaluation")
     else:
         scene_gt, scene_obj = scenes
-        
+
         pred_pts_np = np.array(pred_pts, dtype=np.float32)
         gt_pts_np = np.array(gt_pts, dtype=np.float32)
-        
+
         t1_compute = time.time()
         interactions_obj = fcpw.interaction_3D_list()
         scene_gt.find_closest_points(pred_pts_np, np.ones(pred_pts_np.shape[0]) * 0.3, interactions_obj)
@@ -2533,7 +2570,7 @@ def chamfer_accuracy_completeness_f1_accel(pred_pts, pred_normals, gt_pts, gt_no
             closest_points_obj[idx] = interaction.p
         closest_distance_obj = np.linalg.norm(closest_points_obj - pred_pts_np, axis=1)
         t1_compute_total = time.time() - t1_compute
-        
+
         t2_compute = time.time()
         interactions_gt = fcpw.interaction_3D_list()
         scene_obj.find_closest_points(gt_pts_np, np.ones(gt_pts_np.shape[0]) * 0.3, interactions_gt)
@@ -2543,9 +2580,11 @@ def chamfer_accuracy_completeness_f1_accel(pred_pts, pred_normals, gt_pts, gt_no
             closest_points_gt[idx] = interaction.p
         closest_distance_gt = np.linalg.norm(closest_points_gt - gt_pts_np, axis=1)
         t2_compute_total = time.time() - t2_compute
-        
-        print(f"FCPW times: obj compute {t1_compute_total:.4f}s (collect {t1_collect:.4f}s), gt compute {t2_compute_total:.4f}s (collect {t2_collect:.4f}s)")
-        
+
+        print(
+            f"FCPW times: obj compute {t1_compute_total:.4f}s (collect {t1_collect:.4f}s), gt compute {t2_compute_total:.4f}s (collect {t2_collect:.4f}s)"
+        )
+
     # Compute metrics
     recall = np.mean(closest_distance_obj < threshold)
     precision = np.mean(closest_distance_gt < threshold)
@@ -2554,7 +2593,7 @@ def chamfer_accuracy_completeness_f1_accel(pred_pts, pred_normals, gt_pts, gt_no
         f1 = 2 * recall * precision / (recall + precision)
     else:
         f1 = 0
-        
+
     cd1 = np.mean(closest_distance_obj) + np.mean(closest_distance_gt)
     cd2 = np.mean(closest_distance_obj**2) + np.mean(closest_distance_gt**2)
     accuracy1 = np.mean(closest_distance_gt)
@@ -2562,8 +2601,8 @@ def chamfer_accuracy_completeness_f1_accel(pred_pts, pred_normals, gt_pts, gt_no
     completeness1 = np.mean(closest_distance_obj)
     completeness2 = np.mean(closest_distance_obj**2)
 
-
     return cd1, cd2, f1, 0.0, float(recall), float(precision), completeness1, completeness2, accuracy1, accuracy2
+
 
 def zero_crossing_sdf_metric(true_sdf, sites, sites_sdf, d3dsimplices):
     _, _, used_tet = compute_zero_crossing_vertices_3d(sites, None, None, d3dsimplices, sites_sdf)
