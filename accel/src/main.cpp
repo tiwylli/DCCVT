@@ -13,14 +13,17 @@ using namespace linalg::aliases;
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
 
-std::tuple<float, float, float,  float, float, float, float, float, float, float> compute_error_fcpw(const pybind11::array_t<float>& target_vertices,
-                                const pybind11::array_t<int>& target_face, 
-                                const pybind11::array_t<float>& target_pos,
-                                const pybind11::array_t<float>& pred_vertices,
-                                const pybind11::array_t<int>& pred_face,
-                                const pybind11::array_t<float>& pred_pos,
-                                const float threshold, // For F1 computation
-                                const float max_radius) {
+std::tuple<float, float, float,  float, float, float, float, float, float, float> compute_error_fcpw(
+    const pybind11::array_t<float>& target_vertices,
+    const pybind11::array_t<int>& target_face, 
+    const pybind11::array_t<float>& target_pos,
+    const pybind11::array_t<float>& target_normal, // Normal on sampled points
+    const pybind11::array_t<float>& pred_vertices,
+    const pybind11::array_t<int>& pred_face,
+    const pybind11::array_t<float>& pred_pos,
+    const pybind11::array_t<float>& pred_normal, // Normal on sampled points
+    const float threshold, // For F1 computation
+    const float max_radius) {
     // Convert information to fcpw
     /// TARGET
     auto target_pos_ptr = target_pos.unchecked<2>();
@@ -80,11 +83,13 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
         bs_target.emplace_back(fcpw::BoundingSphere<3>(q, max_radius));
     }
     std::vector<fcpw::Interaction<3>> interactions_target;
-    scene_pred.findClosestPoints(bs_target, interactions_target);
+    scene_pred.findClosestPoints(bs_target, interactions_target, true);
 
     double distance2_target = 0.0;
     double distance1_target = 0.0;
     double distance_threshold_target = 0.0;
+    auto target_normal_ptr = target_normal.unchecked<2>();
+    double normal_consistency_target = 0.0;
     for (ssize_t i = 0; i < target_pos.shape(0); ++i) {
         auto diff = interactions_target[i].p - target_pos_fcpw[i];
         distance2_target += diff.squaredNorm();
@@ -92,10 +97,14 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
         if (diff.norm() < threshold) {
             distance_threshold_target += 1.0;
         }
+        normal_consistency_target += std::abs(interactions_target[i].n.dot(fcpw::Vector<3>(
+            target_normal_ptr(i, 0), target_normal_ptr(i, 1), target_normal_ptr(i, 2)
+        )));
     }
     distance2_target /= target_pos.shape(0);
     distance1_target /= target_pos.shape(0);
     distance_threshold_target /= target_pos.shape(0);
+    normal_consistency_target /= target_pos.shape(0);
 
     /// From the pred
     std::vector<fcpw::BoundingSphere<3>> bs_pred;
@@ -103,11 +112,13 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
         bs_pred.emplace_back(fcpw::BoundingSphere<3>(q, max_radius));
     }
     std::vector<fcpw::Interaction<3>> interactions_pred;
-    scene_target.findClosestPoints(bs_pred, interactions_pred);
+    scene_target.findClosestPoints(bs_pred, interactions_pred, true);
 
     double distance2_pred = 0.0;
     double distance1_pred = 0.0;
     double distance_threshold_pred = 0.0;
+    auto pred_normal_ptr = pred_normal.unchecked<2>();
+    double normal_consistency_pred = 0.0;
     for (ssize_t i = 0; i < pred_pos.shape(0); ++i) {
         auto diff = interactions_pred[i].p - pred_pos_fcpw[i];
         distance2_pred += diff.squaredNorm();
@@ -115,10 +126,15 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
         if (diff.norm() < threshold) {
             distance_threshold_pred += 1.0;
         }
+        normal_consistency_pred += std::abs(interactions_pred[i].n.dot(fcpw::Vector<3>(
+            pred_normal_ptr(i, 0), pred_normal_ptr(i, 1), pred_normal_ptr(i, 2)
+        )));
     }
+    std::cout << "Normal consistency (pred) for point " << normal_consistency_pred << std::endl;   
     distance2_pred /= pred_pos.shape(0);
     distance1_pred /= pred_pos.shape(0);
     distance_threshold_pred /= pred_pos.shape(0);
+    normal_consistency_pred /= pred_pos.shape(0);
 
     // Compute CD, precision, recall, F1
     double cd1 = distance1_pred + distance1_target;
@@ -126,7 +142,7 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
     double recall = distance_threshold_pred;
     double precision = distance_threshold_target;
     double f1 = 2 * precision * recall / (precision + recall);
-    double ndc = 0.0; // TODO
+    double ndc = (normal_consistency_pred + normal_consistency_target) / 2.0; // TODO
 
     // Compute the error using the FCPW library
     // cd1, cd2, f1, 0.0, float(recall), float(precision), completeness1, completeness2, accuracy1, accuracy2

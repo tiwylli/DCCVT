@@ -222,8 +222,10 @@ if __name__ == "__main__":
                 #     su.chamfer_accuracy_completeness_f1_accel(obj_pts, obj_normals, gt_cache[key][0], gt_cache[key][1], scenes=(gt_scene, scene_obj))
                 # )
                 # Accel
-                cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2 =  voronoiaccel.compute_error_fcpw(np.array(gt_mesh.vertices), np.array(gt_mesh.faces).astype(np.int32), np.array(gt_pts), 
-                                                                    np.array(obj_mesh.vertices), np.array(obj_mesh.faces).astype(np.int32), np.array(obj_pts), 0.003, 0.45)
+                cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2 =  voronoiaccel.compute_error_fcpw(
+                    np.array(gt_mesh.vertices), np.array(gt_mesh.faces).astype(np.int32), np.array(gt_pts), np.array(gt_normals),
+                    np.array(obj_mesh.vertices), np.array(obj_mesh.faces).astype(np.int32), np.array(obj_pts), np.array(obj_normals),
+                    0.003, 0.45)
                 cd2 = cd2 * ERROR_SCALE  # Scale the Chamfer distance
                 cd1 = cd1 * ERROR_SCALE  # Scale the Chamfer distance   
                 completeness1 = completeness1 * ERROR_SCALE  # Scale the completeness
