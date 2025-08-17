@@ -8,8 +8,131 @@
 #include "linalg.h"
 using namespace linalg::aliases;
 
+#include "fcpw/fcpw.h"
+
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
+
+std::tuple<float, float, float,  float, float, float, float, float, float, float> compute_error_fcpw(const pybind11::array_t<float>& target_vertices,
+                                const pybind11::array_t<int>& target_face, 
+                                const pybind11::array_t<float>& target_pos,
+                                const pybind11::array_t<float>& pred_vertices,
+                                const pybind11::array_t<int>& pred_face,
+                                const pybind11::array_t<float>& pred_pos,
+                                const float threshold, // For F1 computation
+                                const float max_radius) {
+    // Convert information to fcpw
+    /// TARGET
+    auto target_pos_ptr = target_pos.unchecked<2>();
+    std::vector<fcpw::Vector<3>> target_pos_fcpw(target_pos.shape(0));
+    for (ssize_t i = 0; i < target_pos.shape(0); ++i) {
+        target_pos_fcpw[i] = fcpw::Vector<3>(target_pos_ptr(i, 0), target_pos_ptr(i, 1), target_pos_ptr(i, 2));
+    }
+    auto target_face_ptr = target_face.unchecked<2>();
+    std::vector<fcpw::Vector3i> target_face_fcpw(target_face.shape(0));
+    for (ssize_t i = 0; i < target_face.shape(0); ++i) {
+        target_face_fcpw[i] = fcpw::Vector3i(target_face_ptr(i, 0), target_face_ptr(i, 1), target_face_ptr(i, 2));
+    }
+    auto target_vertices_ptr = target_vertices.unchecked<2>();
+    std::vector<fcpw::Vector<3>> target_vertices_fcpw(target_vertices.shape(0));
+    for (ssize_t i = 0; i < target_vertices.shape(0); ++i) {
+        target_vertices_fcpw[i] = fcpw::Vector<3>(target_vertices_ptr(i, 0), target_vertices_ptr(i, 1), target_vertices_ptr(i, 2));
+    }
+    /// PRED
+    auto pred_pos_ptr = pred_pos.unchecked<2>();
+    std::vector<fcpw::Vector<3>> pred_pos_fcpw(pred_pos.shape(0));
+    for (ssize_t i = 0; i < pred_pos.shape(0); ++i) {
+        pred_pos_fcpw[i] = fcpw::Vector<3>(pred_pos_ptr(i, 0), pred_pos_ptr(i, 1), pred_pos_ptr(i, 2));
+    }
+    auto pred_face_ptr = pred_face.unchecked<2>();
+    std::vector<fcpw::Vector3i> pred_face_fcpw(pred_face.shape(0));
+    for (ssize_t i = 0; i < pred_face.shape(0); ++i) {
+        pred_face_fcpw[i] = fcpw::Vector3i(pred_face_ptr(i, 0), pred_face_ptr(i, 1), pred_face_ptr(i, 2));
+    }
+    auto pred_vertices_ptr = pred_vertices.unchecked<2>();
+    std::vector<fcpw::Vector<3>> pred_vertices_fcpw(pred_vertices.shape(0));
+    for (ssize_t i = 0; i < pred_vertices.shape(0); ++i) {
+        pred_vertices_fcpw[i] = fcpw::Vector<3>(pred_vertices_ptr(i, 0), pred_vertices_ptr(i, 1), pred_vertices_ptr(i, 2));
+    }
+
+    // Build scenes
+    fcpw::AggregateType aggregateType = fcpw::AggregateType::Bvh_SurfaceArea;
+    bool printStats = false;
+    bool reduceMemoryFootprint = false;
+    bool buildVectorizedBvh = true;
+
+    fcpw::Scene<3> scene_target;
+    scene_target.setObjectCount(1);
+    scene_target.setObjectVertices(target_vertices_fcpw, 0);
+    scene_target.setObjectTriangles(target_face_fcpw, 0);
+    scene_target.build(aggregateType, buildVectorizedBvh, printStats, reduceMemoryFootprint);
+
+    fcpw::Scene<3> scene_pred;
+    scene_pred.setObjectCount(1);
+    scene_pred.setObjectVertices(pred_vertices_fcpw, 0);
+    scene_pred.setObjectTriangles(pred_face_fcpw, 0);
+    scene_pred.build(aggregateType, buildVectorizedBvh, printStats, reduceMemoryFootprint);
+    
+    // Compute the error
+    /// From the target
+    std::vector<fcpw::BoundingSphere<3>> bs_target;
+    for (const fcpw::Vector<3>& q: target_pos_fcpw) {
+        bs_target.emplace_back(fcpw::BoundingSphere<3>(q, max_radius));
+    }
+    std::vector<fcpw::Interaction<3>> interactions_target;
+    scene_pred.findClosestPoints(bs_target, interactions_target);
+
+    double distance2_target = 0.0;
+    double distance1_target = 0.0;
+    double distance_threshold_target = 0.0;
+    for (ssize_t i = 0; i < target_pos.shape(0); ++i) {
+        auto diff = interactions_target[i].p - target_pos_fcpw[i];
+        distance2_target += diff.squaredNorm();
+        distance1_target += diff.norm(); 
+        if (diff.norm() < threshold) {
+            distance_threshold_target += 1.0;
+        }
+    }
+    distance2_target /= target_pos.shape(0);
+    distance1_target /= target_pos.shape(0);
+    distance_threshold_target /= target_pos.shape(0);
+
+    /// From the pred
+    std::vector<fcpw::BoundingSphere<3>> bs_pred;
+    for (const fcpw::Vector<3>& q: pred_pos_fcpw) {
+        bs_pred.emplace_back(fcpw::BoundingSphere<3>(q, max_radius));
+    }
+    std::vector<fcpw::Interaction<3>> interactions_pred;
+    scene_target.findClosestPoints(bs_pred, interactions_pred);
+
+    double distance2_pred = 0.0;
+    double distance1_pred = 0.0;
+    double distance_threshold_pred = 0.0;
+    for (ssize_t i = 0; i < pred_pos.shape(0); ++i) {
+        auto diff = interactions_pred[i].p - pred_pos_fcpw[i];
+        distance2_pred += diff.squaredNorm();
+        distance1_pred += diff.norm();
+        if (diff.norm() < threshold) {
+            distance_threshold_pred += 1.0;
+        }
+    }
+    distance2_pred /= pred_pos.shape(0);
+    distance1_pred /= pred_pos.shape(0);
+    distance_threshold_pred /= pred_pos.shape(0);
+
+    // Compute CD, precision, recall, F1
+    double cd1 = distance1_pred + distance1_target;
+    double cd2 = distance2_pred + distance2_target;
+    double recall = distance_threshold_pred;
+    double precision = distance_threshold_target;
+    double f1 = 2 * precision * recall / (precision + recall);
+    double ndc = 0.0; // TODO
+
+    // Compute the error using the FCPW library
+    // cd1, cd2, f1, 0.0, float(recall), float(precision), completeness1, completeness2, accuracy1, accuracy2
+    return std::make_tuple(cd1, cd2, f1, ndc, recall, precision, distance1_pred, distance2_pred, distance1_target, distance2_target);
+}
+
 
 // Function to compute the orientation of a tetrahedron
 // Returns a positive value if the tetrahedron is oriented counter-clockwise
@@ -220,6 +343,10 @@ PYBIND11_MODULE(voronoiaccel, m) {
 
     m.def("tetrahedra_index", &tetrahedra_index, R"pbdoc(
         Accelerate the computation of tetrahedra index cells.
+    )pbdoc");
+
+    m.def("compute_error_fcpw", &compute_error_fcpw, R"pbdoc(
+        Compute the error with fcpw
     )pbdoc");
 
 #ifdef VERSION_INFO

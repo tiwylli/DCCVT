@@ -8,6 +8,7 @@ from PIL import Image
 import argparse
 import sdfpred_utils.sdfpred_utils as su
 import fcpw
+import voronoiaccel
 
 N_POINTS = 10000000 // 10
 ERROR_SCALE = 1e5
@@ -170,7 +171,8 @@ if __name__ == "__main__":
                     continue
                 
                 if key in gt_cache:
-                    gt_pts, gt_normals, gt_mesh, gt_scene = gt_cache[key]
+                    # gt_pts, gt_normals, gt_mesh, gt_scene = gt_cache[key]
+                    gt_pts, gt_normals, gt_mesh = gt_cache[key]
                     # print("Resample GT points...")
                     # gt_pts, gt_normals, gt_mesh = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
                 else:
@@ -178,14 +180,14 @@ if __name__ == "__main__":
                         ps.init()
                         print(f"Compute GT points... {key}")
                         gt_pts, gt_normals, gt_mesh = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
-                        gt_scene = fcpw.scene_3D()
-                        gt_scene.set_object_count(1)
-                        gt_scene.set_object_vertices(np.array(gt_mesh.vertices), 0)
-                        gt_scene.set_object_triangles(np.array(gt_mesh.faces), 0)
-                        aggregate_type = fcpw.aggregate_type.bvh_surface_area
-                        build_vectorized_bvh = True
-                        gt_scene.build(aggregate_type, build_vectorized_bvh)
-                        gt_cache[key] = (gt_pts, gt_normals, gt_mesh, gt_scene)
+                        # gt_scene = fcpw.scene_3D()
+                        # gt_scene.set_object_count(1)
+                        # gt_scene.set_object_vertices(np.array(gt_mesh.vertices), 0)
+                        # gt_scene.set_object_triangles(np.array(gt_mesh.faces), 0)
+                        # aggregate_type = fcpw.aggregate_type.bvh_surface_area
+                        # build_vectorized_bvh = True
+                        # gt_scene.build(aggregate_type, build_vectorized_bvh)
+                        gt_cache[key] = (gt_pts, gt_normals, gt_mesh) #, gt_scene)
                     except Exception as e:
                         print(f"[ERROR] sampling GT for {gt_obj}: {e}")
                         continue
@@ -207,25 +209,28 @@ if __name__ == "__main__":
             
             if args.metrics:
                 obj_pts, obj_normals, obj_mesh = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
-                scene_obj = fcpw.scene_3D()
-                scene_obj.set_object_count(1)
-                scene_obj.set_object_vertices(np.array(obj_mesh.vertices), 0)
-                scene_obj.set_object_triangles(np.array(obj_mesh.faces), 0)
-                aggregate_type = fcpw.aggregate_type.bvh_surface_area
-                build_vectorized_bvh = True
-                scene_obj.build(aggregate_type, build_vectorized_bvh)
+                # scene_obj = fcpw.scene_3D()
+                # scene_obj.set_object_count(1)
+                # scene_obj.set_object_vertices(np.array(obj_mesh.vertices), 0)
+                # scene_obj.set_object_triangles(np.array(obj_mesh.faces), 0)
+                # aggregate_type = fcpw.aggregate_type.bvh_surface_area
+                # build_vectorized_bvh = True
+                # scene_obj.build(aggregate_type, build_vectorized_bvh)
 
 
-                cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2 = (
-                    su.chamfer_accuracy_completeness_f1_accel(obj_pts, obj_normals, gt_cache[key][0], gt_cache[key][1], scenes=(gt_scene, scene_obj))
-                )
+                # cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2 = (
+                #     su.chamfer_accuracy_completeness_f1_accel(obj_pts, obj_normals, gt_cache[key][0], gt_cache[key][1], scenes=(gt_scene, scene_obj))
+                # )
+                # Accel
+                cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2 =  voronoiaccel.compute_error_fcpw(np.array(gt_mesh.vertices), np.array(gt_mesh.faces).astype(np.int32), np.array(gt_pts), 
+                                                                    np.array(obj_mesh.vertices), np.array(obj_mesh.faces).astype(np.int32), np.array(obj_pts), 0.003, 0.45)
                 cd2 = cd2 * ERROR_SCALE  # Scale the Chamfer distance
                 cd1 = cd1 * ERROR_SCALE  # Scale the Chamfer distance   
                 completeness1 = completeness1 * ERROR_SCALE  # Scale the completeness
                 completeness2 = completeness2 * ERROR_SCALE  # Scale the completeness
                 accuracy1 = accuracy1 * ERROR_SCALE  # Scale the accuracy
                 accuracy2 = accuracy2 * ERROR_SCALE  # Scale the accuracy
-                
+
                 errors[obj_path] = {
                     "cd1": cd1,
                     "cd2": cd2,
@@ -238,9 +243,8 @@ if __name__ == "__main__":
                     "accuracy1": accuracy1,
                     "accuracy2": accuracy2
                 }
-                print(f"Metrics for {obj_path}:")
                 print(f"  CD: {cd2:.4f},\t F1: {f1:.4f},\t NC: {nc:.4f},\t Recall: {recall:.4f},\t Precision: {precision:.4f},\t Completeness2: {completeness2:.4f},\t Accuracy2: {accuracy2:.4f}")
-        
+
         # Compute average 
         if errors:
             avg_errors = {k: np.mean([e[k] for e in errors.values()]) for k in errors[next(iter(errors))].keys()}
