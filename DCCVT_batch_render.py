@@ -9,7 +9,7 @@ import argparse
 import sdfpred_utils.sdfpred_utils as su
 import fcpw
 
-N_POINTS = 10000000 // 10 
+N_POINTS = 10000000 
 ERROR_SCALE = 1e5
 COLOR_REF = (0.6, 0.6, 0.6)
 COLOR_OTHER = (0.7, 0.5, 0.2)
@@ -148,6 +148,9 @@ if __name__ == "__main__":
         obj_files = glob.glob(os.path.join(args.obj_directory, "**", "*.obj"), recursive=True)
         if args.filter:
             obj_files = [f for f in obj_files if args.filter in f]
+            
+        # Sort files by their directory name to ensure consistent order
+        obj_files.sort(key=lambda x: os.path.dirname(x))
         
         errors = {}
         for obj_path in obj_files:
@@ -166,10 +169,14 @@ if __name__ == "__main__":
                     print(f"[WARN] GT mesh not found for key {key}, skipping {obj_path}")
                     continue
                 
-                if key not in gt_cache:
+                if key in gt_cache:
+                    gt_pts, gt_normals, gt_mesh, gt_scene = gt_cache[key]
+                    # print("Resample GT points...")
+                    # gt_pts, gt_normals, gt_mesh = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
+                else:
                     try:
                         ps.init()
-                        print("Compute GT points...")
+                        print(f"Compute GT points... {key}")
                         gt_pts, gt_normals, gt_mesh = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
                         gt_scene = fcpw.scene_3D()
                         gt_scene.set_object_count(1)
@@ -182,8 +189,6 @@ if __name__ == "__main__":
                     except Exception as e:
                         print(f"[ERROR] sampling GT for {gt_obj}: {e}")
                         continue
-                else:
-                    gt_pts, gt_normals, gt_mesh, scene = gt_cache[key]
             
             
             print(f"Rendering {obj_path}...")
