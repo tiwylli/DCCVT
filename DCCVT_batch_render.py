@@ -9,7 +9,7 @@ import argparse
 import sdfpred_utils.sdfpred_utils as su
 import fcpw
 
-N_POINTS = 10000000 
+N_POINTS = 10000000 // 10 
 ERROR_SCALE = 1e5
 COLOR_REF = (0.6, 0.6, 0.6)
 COLOR_OTHER = (0.7, 0.5, 0.2)
@@ -149,6 +149,7 @@ if __name__ == "__main__":
         if args.filter:
             obj_files = [f for f in obj_files if args.filter in f]
         
+        errors = {}
         for obj_path in obj_files:
             # Get last dirname
             dirname = os.path.dirname(obj_path)
@@ -220,8 +221,26 @@ if __name__ == "__main__":
                 accuracy1 = accuracy1 * ERROR_SCALE  # Scale the accuracy
                 accuracy2 = accuracy2 * ERROR_SCALE  # Scale the accuracy
                 
+                errors[obj_path] = {
+                    "cd1": cd1,
+                    "cd2": cd2,
+                    "f1": f1,
+                    "nc": nc,
+                    "recall": recall,
+                    "precision": precision,
+                    "completeness1": completeness1,
+                    "completeness2": completeness2,
+                    "accuracy1": accuracy1,
+                    "accuracy2": accuracy2
+                }
                 print(f"Metrics for {obj_path}:")
                 print(f"  CD: {cd2:.4f},\t F1: {f1:.4f},\t NC: {nc:.4f},\t Recall: {recall:.4f},\t Precision: {precision:.4f},\t Completeness2: {completeness2:.4f},\t Accuracy2: {accuracy2:.4f}")
+        
+        # Compute average 
+        if errors:
+            avg_errors = {k: np.mean([e[k] for e in errors.values()]) for k in errors[next(iter(errors))].keys()}
+            print("Average metrics:")
+            print(f"  CD: {avg_errors['cd2']:.4f},\t F1: {avg_errors['f1']:.4f},\t NC: {avg_errors['nc']:.4f},\t Recall: {avg_errors['recall']:.4f},\t Precision: {avg_errors['precision']:.4f},\t Completeness2: {avg_errors['completeness2']:.4f},\t Accuracy2: {avg_errors['accuracy2']:.4f}")
 
     else:
         for obj_path in glob.glob(os.path.join(args.obj_directory, "*.obj")):
