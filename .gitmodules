@@ -28,3 +28,6 @@
 [submodule "accel/pybind11"]
 	path = accel/pybind11
 	url = https://github.com/pybind/pybind11.git
+[submodule "accel/3rdparty/fcpw"]
+	path = accel/3rdparty/fcpw
+	url = https://github.com/rohan-sawhney/fcpw.git
