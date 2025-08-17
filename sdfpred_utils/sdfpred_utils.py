@@ -8,7 +8,7 @@ import pygdel3d
 import math
 from numba import njit, prange
 from collections import defaultdict
-from pytorch3d.loss import chamfer_distance
+import pytorch3d
 import trimesh
 from scipy.spatial import KDTree
 
@@ -1474,6 +1474,7 @@ def interpolate_sdf_grad_of_vertices(
 
 import torch
 from pytorch3d.transforms import matrix_to_quaternion, quaternion_to_matrix
+from pytorch3d.ops import knn_points
 
 
 def quaternion_slerp(q1: torch.Tensor, q2: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
@@ -2067,6 +2068,7 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     growth_cap: float = 0.10,  # ≤ fraction of current sites allowed per iter
     eps: float = 1e-12,
     ups_method: str = "tet_frame",  # | "tet_random" | "random",
+    score: str = "legacy",  # | "density" | "cosine" | "conservative"
 ):
     """
     # ------------------------------------------------------------------------------
@@ -2112,6 +2114,7 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     edge_vec = sites[neighbors[:, 1]] - sites[neighbors[:, 0]]  # (E,3)
     edge_len = torch.norm(edge_vec, dim=1)  # (E,)
 
+    # Compute minimum distance to neighbors
     idx_all = torch.cat([neighbors[:, 0], neighbors[:, 1]])
     dists_all = torch.cat([edge_len, edge_len])
     min_dists = torch.full((N,), float("inf"), device=device)
@@ -2137,11 +2140,27 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     grad_est = sites_sdf_grads
 
     unit_n = grad_est / (grad_est.norm(dim=1, keepdim=True) + eps)
-    dn2 = ((unit_n[neighbors[:, 0]] - unit_n[neighbors[:, 1]]) ** 2).sum(1)  # (E,)
-    curv_score = torch.zeros(N, device=device)  # (N,)
-    curv_score = curv_score.index_add(0, neighbors[:, 0], dn2)
-    curv_score = curv_score.index_add(0, neighbors[:, 1], dn2)
-    curv_score /= counts.squeeze()  # mean over 1-ring
+    
+    
+    if score == "density":
+        # Disable curvature score, use uniform density
+        curv_score = torch.ones(N, device=device)  # (N,)
+    else:
+        curv_score = torch.zeros(N, device=device)  # (N,)
+        if score != "cosine":
+            if score != "conservative":
+                # Legacy curvature score: squared distance between normals
+                dn2 = ((unit_n[neighbors[:, 0]] - unit_n[neighbors[:, 1]]) ** 2).sum(1)
+            else:
+                dn2 = ((unit_n[neighbors[:, 0]] - unit_n[neighbors[:, 1]]) ** 2).sum(1) * 0.8 + 0.2  # (E,)
+        else:
+            # Cosine similarity as curvature score from dot product
+            # Make it conservartive
+            dn2 = (1.0 - (unit_n[neighbors[:, 0]] * unit_n[neighbors[:, 1]]).sum(1)) * 0.8 + 0.2
+        
+        curv_score = curv_score.index_add(0, neighbors[:, 0], dn2)
+        curv_score = curv_score.index_add(0, neighbors[:, 1], dn2)
+        curv_score /= counts.squeeze()  # mean over 1-ring
 
     # Zero-crossing sites
     sdf_i, sdf_j = sdf_values[neighbors[:, 0]], sdf_values[neighbors[:, 1]]
@@ -2154,46 +2173,46 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
         spacing_target = median_min_dists * 0.8  # heuristic default
 
     # --- UNIFORM ---------------------------------------------------- #
-    if median_min_dists > spacing_target * alpha_high:
-        print("Uniform upsampling regime")
-        cand = zc_sites[min_dists[zc_sites] > spacing_target]
-        print(f"Number of candidates in uniform regime: {cand.numel()}")
+    # if median_min_dists > spacing_target * alpha_high:
+    #     print("Uniform upsampling regime")
+    #     cand = zc_sites[min_dists[zc_sites] > spacing_target]
+    #     print(f"Number of candidates in uniform regime: {cand.numel()}")
 
-    # --- HYBRID ----------------------------------------------------- #
-    elif median_min_dists > spacing_target * alpha_low:
-        print("Hybrid upsampling regime")
-        score = (min_dists[zc_sites] / median_min_dists) * (curv_score[zc_sites] / (torch.median(curv_score) + eps))
-        M = int(min(max(1, growth_cap * N), score.numel()))
+    # # --- HYBRID ----------------------------------------------------- #
+    # elif median_min_dists > spacing_target * alpha_low:
+    #     print("Hybrid upsampling regime")
+    score = (min_dists[zc_sites] / median_min_dists) * (curv_score[zc_sites] / (torch.median(curv_score) + eps))
+    M = int(min(max(1, growth_cap * N), score.numel()))
 
-        # # Construct cumsum of the scores WITHOUT sorting
-        cumsum_scores = torch.cumsum(score, dim=0)
-        total_score = cumsum_scores[-1].item()  # Last element is the total sum
-        cumsum_scores /= total_score  # Normalize to [0, 1]
+    # # Construct cumsum of the scores WITHOUT sorting
+    cumsum_scores = torch.cumsum(score, dim=0)
+    total_score = cumsum_scores[-1].item()  # Last element is the total sum
+    cumsum_scores /= total_score  # Normalize to [0, 1]
 
-        # Sample M indices based on the cumulative distribution
-        random_indices = torch.rand(M, device=device)  # (M,)
-        sampled_indices = torch.searchsorted(cumsum_scores, random_indices)  # (M,
+    # Sample M indices based on the cumulative distribution
+    random_indices = torch.rand(M, device=device)  # (M,)
+    sampled_indices = torch.searchsorted(cumsum_scores, random_indices)  # (M,
 
-        # Remove duplicates
-        sampled_indices = torch.unique(sampled_indices)
-        sampled_indices = sampled_indices[sampled_indices < score.numel()]  # Ensure valid indices
+    # Remove duplicates
+    sampled_indices = torch.unique(sampled_indices)
+    sampled_indices = sampled_indices[sampled_indices < score.numel()]  # Ensure valid indices
 
-        # Show the candidates percentage
-        print(f"Sampled indices: {sampled_indices.numel()} out of {score.numel()} candidates (M={M})")
+    # Show the candidates percentage
+    print(f"Sampled indices: {sampled_indices.numel()} out of {score.numel()} candidates (M={M})")
 
-        cand = zc_sites[sampled_indices]  # (K,)
+    cand = zc_sites[sampled_indices]  # (K,)
 
-        # topk = torch.topk(score, k=M, largest=True).indices
-        # cand = zc_sites[topk]
-        # print(f"Number of candidates in hybrid regime: {cand.numel()}")
+    # topk = torch.topk(score, k=M, largest=True).indices
+    # cand = zc_sites[topk]
+    # print(f"Number of candidates in hybrid regime: {cand.numel()}")
 
     # --- CURVATURE -------------------------------------------------- #
-    else:
-        print("Curvature upsampling regime")
-        thresh = torch.quantile(curv_score[zc_sites], curv_pct)
-        mask = (curv_score[zc_sites] > thresh) & (min_dists[zc_sites] > spacing_target * 0.5)
-        cand = zc_sites[mask]
-        print(f"Number of candidates in curvature regime: {cand.numel()}")
+    # else:
+    #     print("Curvature upsampling regime")
+    #     thresh = torch.quantile(curv_score[zc_sites], curv_pct)
+    #     mask = (curv_score[zc_sites] > thresh) & (min_dists[zc_sites] > spacing_target * 0.5)
+    #     cand = zc_sites[mask]
+    #     print(f"Number of candidates in curvature regime: {cand.numel()}")
 
     K = cand.numel()
     if K == 0:
@@ -2462,8 +2481,7 @@ def sample_points_on_mesh(mesh_path, n_points=100000, GT=False):
 #         f1 = 0
 #     return cd1, cd2, f1, nc
 
-
-def chamfer_accuracy_completeness_f1(pred_pts, pred_normals, gt_pts, gt_normals, threshold=0.003):
+def chamfer_accuracy_completeness_f1(pred_pts, pred_normals, gt_pts, gt_normals, threshold=0.003, scenes=None):
     # GT → Pred (recall + completeness)
     pred_tree = KDTree(pred_pts)
     dist_gt2pred, inds = pred_tree.query(gt_pts, k=1)
@@ -2475,6 +2493,7 @@ def chamfer_accuracy_completeness_f1(pred_pts, pred_normals, gt_pts, gt_normals,
     gt2pred_nc = float(np.mean(np.abs(np.sum(gt_normals * neighbor_normals, axis=1))))
 
     # Pred → GT (precision + accuracy)
+    
     gt_tree = KDTree(gt_pts)
     dist_pred2gt, inds = gt_tree.query(pred_pts, k=1)
     precision = np.mean(dist_pred2gt < threshold)
@@ -2492,6 +2511,55 @@ def chamfer_accuracy_completeness_f1(pred_pts, pred_normals, gt_pts, gt_normals,
 
     return cd1, cd2, f1, nc, float(recall), float(precision), completeness1, completeness2, accuracy1, accuracy2
 
+import fcpw
+import time
+def chamfer_accuracy_completeness_f1_accel(pred_pts, pred_normals, gt_pts, gt_normals, threshold=0.003, scenes=None):
+    # TEST with fcpw
+    if scenes is None:
+        raise ValueError("`scenes` must be provided for fcpw evaluation")
+    else:
+        scene_gt, scene_obj = scenes
+        
+        pred_pts_np = np.array(pred_pts, dtype=np.float32)
+        gt_pts_np = np.array(gt_pts, dtype=np.float32)
+        
+        t1_compute = time.time()
+        interactions_obj = fcpw.interaction_3D_list()
+        scene_gt.find_closest_points(pred_pts_np, np.ones(pred_pts_np.shape[0]) * 0.3, interactions_obj)
+        t1_collect = time.time() - t1_compute
+        # Vectorized extraction of closest points and distances for better performance
+        closest_points_obj = np.empty_like(pred_pts_np)
+        for idx, interaction in enumerate(interactions_obj):
+            closest_points_obj[idx] = interaction.p
+        closest_distance_obj = np.linalg.norm(closest_points_obj - pred_pts_np, axis=1)
+        t1_compute_total = time.time() - t1_compute
+        
+        t2_compute = time.time()
+        interactions_gt = fcpw.interaction_3D_list()
+        scene_obj.find_closest_points(gt_pts_np, np.ones(gt_pts_np.shape[0]) * 0.3, interactions_gt)
+        t2_collect = time.time() - t2_compute
+        closest_points_gt = np.empty_like(gt_pts_np)
+        for idx, interaction in enumerate(interactions_gt):
+            closest_points_gt[idx] = interaction.p
+        closest_distance_gt = np.linalg.norm(closest_points_gt - gt_pts_np, axis=1)
+        t2_compute_total = time.time() - t2_compute
+        
+        print(f"FCPW times: obj compute {t1_compute_total:.4f}s (collect {t1_collect:.4f}s), gt compute {t2_compute_total:.4f}s (collect {t2_collect:.4f}s)")
+        
+    # Compute metrics
+    recall = np.mean(closest_distance_obj < threshold)
+    precision = np.mean(closest_distance_gt < threshold)
+
+    if recall + precision > 0:
+        f1 = 2 * recall * precision / (recall + precision)
+    else:
+        f1 = 0
+        
+    cd1 = np.mean(closest_distance_obj) + np.mean(closest_distance_gt)
+    cd2 = np.mean(closest_distance_obj**2) + np.mean(closest_distance_gt**2)
+
+
+    return cd1, cd2, f1, 0.0, float(recall), float(precision), 0.0, 0.0, 0.0, 0.0
 
 def zero_crossing_sdf_metric(true_sdf, sites, sites_sdf, d3dsimplices):
     _, _, used_tet = compute_zero_crossing_vertices_3d(sites, None, None, d3dsimplices, sites_sdf)
