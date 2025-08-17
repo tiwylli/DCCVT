@@ -39,8 +39,8 @@ import datetime
 
 # timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-timestamp = "ALL_CASE_DCCVT"
-# timestamp = "FIGURE_CASE_441708"
+# timestamp = "ALL_CASE_DCCVT"
+timestamp = "FIGURE_CASE_441708"
 # timestamp = "FIGURE_CASE_64764"
 # timestamp = "Ablation_64764"
 
@@ -65,6 +65,7 @@ DEFAULTS = {
     "true_cvt": False,  # True
     "extract_optim": False,  # True
     "no_mp": False,  # True
+    "ups_extraction": False,
     # "build_mesh": False,
     "w_cvt": 0,
     "w_sdfsmooth": 0,
@@ -229,6 +230,12 @@ def define_options_parser(arg_list=None):
         action=argparse.BooleanOptionalAction,
         default=DEFAULTS["no_mp"],
         help="Enable/disable multiprocessing",
+    )
+    parser.add_argument(
+        "--ups_extraction",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULTS["ups_extraction"],
+        help="Enable/disable upsampling extraction",
     )
     parser.add_argument(
         "--build_mesh",
@@ -530,6 +537,11 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
                 sites_sdf = hotspot_model(sites)
                 sites_sdf = sites_sdf.detach().squeeze(-1).requires_grad_()
                 optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
+
+            if args.ups_extraction:
+                with torch.no_grad():
+                    extract_mesh(sites, sites_sdf, mnfld_points, 0, args, state=f"{int(upsampled)}ups")
+
             upsampled += 1.0
             print("sites length AFTER: ", len(sites))
     return sites, sites_sdf
