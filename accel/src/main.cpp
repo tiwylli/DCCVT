@@ -12,6 +12,7 @@ using namespace linalg::aliases;
 
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
+#define ENABLE_TIMING 0
 
 std::tuple<float, float, float,  float, float, float, float, float, float, float> compute_error_fcpw(
     const pybind11::array_t<float>& target_vertices,
@@ -26,6 +27,13 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
     const float max_radius) {
     // Convert information to fcpw
     /// TARGET
+#if ENABLE_TIMING
+    #include <chrono>
+    using namespace std::chrono;
+
+    // Timing: conversion to fcpw
+    auto start_conversion = high_resolution_clock::now();
+#endif
     auto target_pos_ptr = target_pos.unchecked<2>();
     std::vector<fcpw::Vector<3>> target_pos_fcpw(target_pos.shape(0));
     for (ssize_t i = 0; i < target_pos.shape(0); ++i) {
@@ -57,8 +65,14 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
     for (ssize_t i = 0; i < pred_vertices.shape(0); ++i) {
         pred_vertices_fcpw[i] = fcpw::Vector<3>(pred_vertices_ptr(i, 0), pred_vertices_ptr(i, 1), pred_vertices_ptr(i, 2));
     }
+#if ENABLE_TIMING
+    auto end_conversion = high_resolution_clock::now();
+    auto duration_conversion = duration_cast<milliseconds>(end_conversion - start_conversion).count();
+    std::cout << "[Timing] Conversion to fcpw: " << duration_conversion << " ms" << std::endl;
 
-    // Build scenes
+    // Timing: intersection computation (scene build + closest points)
+    auto start_intersection = high_resolution_clock::now();
+#endif
     fcpw::AggregateType aggregateType = fcpw::AggregateType::Bvh_SurfaceArea;
     bool printStats = false;
     bool reduceMemoryFootprint = false;
@@ -75,7 +89,7 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
     scene_pred.setObjectVertices(pred_vertices_fcpw, 0);
     scene_pred.setObjectTriangles(pred_face_fcpw, 0);
     scene_pred.build(aggregateType, buildVectorizedBvh, printStats, reduceMemoryFootprint);
-    
+
     // Compute the error
     /// From the target
     std::vector<fcpw::BoundingSphere<3>> bs_target;
@@ -84,6 +98,22 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
     }
     std::vector<fcpw::Interaction<3>> interactions_target;
     scene_pred.findClosestPoints(bs_target, interactions_target, true);
+
+    /// From the pred
+    std::vector<fcpw::BoundingSphere<3>> bs_pred;
+    for (const fcpw::Vector<3>& q: pred_pos_fcpw) {
+        bs_pred.emplace_back(fcpw::BoundingSphere<3>(q, max_radius));
+    }
+    std::vector<fcpw::Interaction<3>> interactions_pred;
+    scene_target.findClosestPoints(bs_pred, interactions_pred, true);
+
+#if ENABLE_TIMING
+    auto end_intersection = high_resolution_clock::now();
+    auto duration_intersection = duration_cast<milliseconds>(end_intersection - start_intersection).count();
+    
+    // Timing: error computation
+    auto start_error = high_resolution_clock::now();
+#endif
 
     double distance2_target = 0.0;
     double distance1_target = 0.0;
@@ -105,14 +135,6 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
     distance1_target /= target_pos.shape(0);
     distance_threshold_target /= target_pos.shape(0);
     normal_consistency_target /= target_pos.shape(0);
-
-    /// From the pred
-    std::vector<fcpw::BoundingSphere<3>> bs_pred;
-    for (const fcpw::Vector<3>& q: pred_pos_fcpw) {
-        bs_pred.emplace_back(fcpw::BoundingSphere<3>(q, max_radius));
-    }
-    std::vector<fcpw::Interaction<3>> interactions_pred;
-    scene_target.findClosestPoints(bs_pred, interactions_pred, true);
 
     double distance2_pred = 0.0;
     double distance1_pred = 0.0;
@@ -144,9 +166,27 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
     double f1 = 2 * precision * recall / (precision + recall);
     double ndc = (normal_consistency_pred + normal_consistency_target) / 2.0; // TODO
 
+#if ENABLE_TIMING
+    auto end_error = high_resolution_clock::now();
+    auto duration_error = duration_cast<milliseconds>(end_error - start_error).count();
+    std::cout << "[Timing] Error computation: " << duration_error << " ms" << std::endl;
+#endif
+
+    // DEBUG:
+    // std::vector<std::tuple<float, float, float>> pred_closest(pred_pos.shape(0));
+    // for (ssize_t i = 0; i < pred_pos.shape(0); ++i) {
+    //     auto p = interactions_pred[i].p;
+    //     pred_closest[i] = std::make_tuple(p.x, p.y, p.z);
+    // }
+    // std::vector<std::tuple<float, float, float>> target_closest(pred_pos.shape(0));
+    // for (ssize_t i = 0; i < pred_pos.shape(0); ++i) {
+    //     auto p = interactions_target[i].p;
+    //     target_closest[i] = std::make_tuple(p.x, p.y, p.z);
+    // }
+
     // Compute the error using the FCPW library
     // cd1, cd2, f1, 0.0, float(recall), float(precision), completeness1, completeness2, accuracy1, accuracy2
-    return std::make_tuple(cd1, cd2, f1, ndc, recall, precision, distance1_pred, distance2_pred, distance1_target, distance2_target);
+    return std::make_tuple(cd1, cd2, f1, ndc, recall, precision, distance1_pred, distance2_pred, distance1_target, distance2_target, pred_closest, target_closest);
 }
 
 
