@@ -9,7 +9,7 @@ import argparse
 import sdfpred_utils.sdfpred_utils as su
 import fcpw
 
-N_POINTS = 10000000 
+N_POINTS = 10000000 // 10
 ERROR_SCALE = 1e5
 COLOR_REF = (0.6, 0.6, 0.6)
 COLOR_OTHER = (0.7, 0.5, 0.2)
@@ -209,8 +209,8 @@ if __name__ == "__main__":
                 obj_pts, obj_normals, obj_mesh = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
                 scene_obj = fcpw.scene_3D()
                 scene_obj.set_object_count(1)
-                scene_obj.set_object_vertices(np.array(gt_mesh.vertices), 0)
-                scene_obj.set_object_triangles(np.array(gt_mesh.faces), 0)
+                scene_obj.set_object_vertices(np.array(obj_mesh.vertices), 0)
+                scene_obj.set_object_triangles(np.array(obj_mesh.faces), 0)
                 aggregate_type = fcpw.aggregate_type.bvh_surface_area
                 build_vectorized_bvh = True
                 scene_obj.build(aggregate_type, build_vectorized_bvh)

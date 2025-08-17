@@ -2557,9 +2557,13 @@ def chamfer_accuracy_completeness_f1_accel(pred_pts, pred_normals, gt_pts, gt_no
         
     cd1 = np.mean(closest_distance_obj) + np.mean(closest_distance_gt)
     cd2 = np.mean(closest_distance_obj**2) + np.mean(closest_distance_gt**2)
+    accuracy1 = np.mean(closest_distance_gt)
+    accuracy2 = np.mean(closest_distance_gt**2)
+    completeness1 = np.mean(closest_distance_obj)
+    completeness2 = np.mean(closest_distance_obj**2)
 
 
-    return cd1, cd2, f1, 0.0, float(recall), float(precision), 0.0, 0.0, 0.0, 0.0
+    return cd1, cd2, f1, 0.0, float(recall), float(precision), completeness1, completeness2, accuracy1, accuracy2
 
 def zero_crossing_sdf_metric(true_sdf, sites, sites_sdf, d3dsimplices):
     _, _, used_tet = compute_zero_crossing_vertices_3d(sites, None, None, d3dsimplices, sites_sdf)
