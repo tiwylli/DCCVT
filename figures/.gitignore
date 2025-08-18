@@ -3,6 +3,8 @@ FIGURE_CASE_*
 ABLATION*
 UNSAMPLED*
 ALL*
+UNCONV*
+BALL2HEAD*
 out/
 *.pdf
 .DS_Store
