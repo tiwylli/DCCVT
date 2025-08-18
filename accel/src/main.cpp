@@ -152,7 +152,7 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
             pred_normal_ptr(i, 0), pred_normal_ptr(i, 1), pred_normal_ptr(i, 2)
         )));
     }
-    std::cout << "Normal consistency (pred) for point " << normal_consistency_pred << std::endl;   
+    // std::cout << "Normal consistency (pred) for point " << normal_consistency_pred << std::endl;   
     distance2_pred /= pred_pos.shape(0);
     distance1_pred /= pred_pos.shape(0);
     distance_threshold_pred /= pred_pos.shape(0);
