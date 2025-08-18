@@ -8,6 +8,7 @@ import numpy as np
 import sdfpred_utils.sdfpred_utils as su
 import polyscope as ps
 import argparse
+import voronoiaccel
 
 
 # ---------------------------
@@ -45,7 +46,7 @@ def get_args():
     parser.add_argument(
         "--n-points",
         type=int,
-        default=100000,
+        default=10000000 // 10,
         help="Number of points to sample per mesh for metrics.",
     )
     args = parser.parse_args()
@@ -78,6 +79,7 @@ np.random.seed(69)
 # Helpers
 # ---------------------------
 DIGIT_RUN = re.compile(r"(\d+)")
+ERROR_SCALE = 1e5
 
 
 def extract_key_from_dir(dirname: str) -> str:
@@ -136,7 +138,7 @@ def main():
 
         if key not in gt_cache:
             try:
-                ps.init()
+                # ps.init()
                 gt_pts, gt_normals, gt_mesh = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
                 gt_cache[key] = (gt_pts, gt_normals, gt_mesh)
             except Exception as e:
@@ -153,9 +155,31 @@ def main():
             try:
                 obj_pts, obj_normals, obj_mesh = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
 
+                # cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2 = (
+                #     su.chamfer_accuracy_completeness_f1(obj_pts, obj_normals, gt_cache[key][0], gt_cache[key][1])
+                # )
+
+                # Accel
                 cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2 = (
-                    su.chamfer_accuracy_completeness_f1(obj_pts, obj_normals, gt_cache[key][0], gt_cache[key][1])
+                    voronoiaccel.compute_error_fcpw(
+                        np.array(gt_cache[key][2].vertices),
+                        np.array(gt_cache[key][2].faces).astype(np.int32),
+                        np.array(gt_cache[key][0]),
+                        np.array(gt_cache[key][1]),
+                        np.array(obj_mesh.vertices),
+                        np.array(obj_mesh.faces).astype(np.int32),
+                        np.array(obj_pts),
+                        np.array(obj_normals),
+                        0.003,
+                        0.45,
+                    )
                 )
+                cd2 = cd2 * ERROR_SCALE  # Scale the Chamfer distance
+                cd1 = cd1 * ERROR_SCALE  # Scale the Chamfer distance
+                completeness1 = completeness1 * ERROR_SCALE  # Scale the completeness
+                completeness2 = completeness2 * ERROR_SCALE  # Scale the completeness
+                accuracy1 = accuracy1 * ERROR_SCALE  # Scale the accuracy
+                accuracy2 = accuracy2 * ERROR_SCALE  # Scale the accuracy
 
                 fname = os.path.basename(obj_path)
                 label = f"{dname}_{os.path.splitext(fname)[0]}"
