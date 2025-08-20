@@ -1793,7 +1793,7 @@ def get_clipped_mesh_numba(
     sites_sdf=None,
     build_mesh=False,
     quaternion_slerp=False,
-    barycentric_weights=False,
+    grad_interpol="robust",
     no_mp=False,
 ):
     """
@@ -1845,7 +1845,7 @@ def get_clipped_mesh_numba(
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
             sites_sdf_grad, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3d)  # (M,3)
 
-            if barycentric_weights:
+            if grad_interpol == "barycentric":
                 # Use barycentric weights for interpolation
                 vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
                     all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
@@ -1853,13 +1853,15 @@ def get_clipped_mesh_numba(
                 sdf_verts = vertices_sdf[sorted(used)]
                 grads = vertices_sdf_grad[sorted(used)]
                 proj_vertices = newton_step_clipping(grads, sdf_verts, new_vertices)
-            else:
+            elif grad_interpol == "robust":
                 proj_vertices, tet_probs = tet_plane_clipping(
                     d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
                 )
                 # proj_vertices = tet_grads_clipping(
                 #     new_vertices, vertices_sdf[sorted(used)], tets_sdf_grads[sorted(used)]
                 # )
+            elif grad_interpol == "hybrid":
+                print("TODO: IMPLEMENT HYBRID GRAD INTERPOL IN BUILD MESH")
 
             return proj_vertices, new_faces, sites_sdf_grad, tets_sdf_grads, W
     else:
@@ -1878,7 +1880,7 @@ def get_clipped_mesh_numba(
             # print("-> clipping")
             vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
             sites_sdf_grad, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3d)
-            if barycentric_weights:
+            if grad_interpol == "barycentric":
                 # print("-> using barycentric weights for interpolation")
                 # Use barycentric weights for interpolation
                 vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
@@ -1893,9 +1895,24 @@ def get_clipped_mesh_numba(
                 # neg_row_mask = (bary_w[used_tet] < 0).any(dim=1)  # (K,)
                 # print("bary_w", neg_row_mask.shape, "num bad:", neg_row_mask.sum().item())
                 # proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
-            else:
+            elif grad_interpol == "robust":
                 proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
                 # proj_vertices = tet_grads_clipping(vertices, vertices_sdf[used_tet], tets_sdf_grads[used_tet])
+            elif grad_interpol == "hybrid":
+                # print("-> using barycentric weights for interpolation")
+                # Use barycentric weights for interpolation
+                vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
+                    all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
+                )
+                sdf_verts = vertices_sdf[used_tet]
+                grads = vertices_sdf_grad[used_tet]
+                proj_vertices = newton_step_clipping(grads, sdf_verts, vertices)
+
+                tpc_proj_v, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
+                # replace proj_vertices with tpc_proj_v where bary_w has negative component
+                neg_row_mask = (bary_w[used_tet] < 0).any(dim=1)  # (K,)
+                # print("bary_w", neg_row_mask.shape, "num bad:", neg_row_mask.sum().item())
+                proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
 
             # in paper this will be considered a regularisation
             if not no_mp:
@@ -2180,7 +2197,12 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
     # # --- HYBRID ----------------------------------------------------- #
     # elif median_min_dists > spacing_target * alpha_low:
     #     print("Hybrid upsampling regime")
-    score = (min_dists[zc_sites] / median_min_dists) * (curv_score[zc_sites] / (torch.median(curv_score) + eps))
+    # TODO: ??? mask median ???
+    # score = (min_dists[zc_sites] / torch.median(min_dists)) * (curv_score[zc_sites] / (torch.median(curv_score) + eps))
+    score = (min_dists[zc_sites] / torch.median(min_dists[zc_sites])) * (
+        curv_score[zc_sites] / (torch.median(curv_score[zc_sites]) + eps)
+    )
+
     M = int(min(max(1, growth_cap * N), score.numel()))
 
     # # Construct cumsum of the scores WITHOUT sorting

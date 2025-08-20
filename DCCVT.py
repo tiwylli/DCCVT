@@ -40,8 +40,14 @@ import datetime
 # timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # timestamp = "ALL_CASE_DCCVT"
-timestamp = "FIGURE_CASE_441708"
-# timestamp = "FIGURE_CASE_64764"
+# timestamp = "FIGURE_CASE_441708"
+# timestamp = "FIGURE_CASE_TEASER"
+# timestamp = "MT_UNCONV_MAGA"
+# timestamp = "DCCVT_UNCONV_MAGA"
+
+# timestamp = "NU_150K"
+timestamp = "ABLATION_UNCONV_SDF_NU"
+
 # timestamp = "Ablation_64764"
 
 # Default parameters for the DCCVT experiments
@@ -60,7 +66,7 @@ DEFAULTS = {
     "sample_near": 0,  # # ** input_dims
     "target_size": 32,  # 32 # ** input_dims
     "clip": False,
-    "barycentric_grads": False,  # False
+    "grad_interpol": "robust",  # , hybrid, barycentric",  # False
     "marching_tetrahedra": False,  # True
     "true_cvt": False,  # True
     "extract_optim": False,  # True
@@ -76,7 +82,7 @@ DEFAULTS = {
     # "w_bpa": 0,  # 1000
     "upsampling": 0,  # 0
     "ups_method": "tet_frame",  # "tet_random", "random"
-    "score": "legacy",  # "density", "cosine", "conservative"
+    "score": "conservative",  # "legacy" "density", "cosine", "conservative"
     "lr_sites": 0.0005,
     "mesh_ids": [  # 64764],
         # "252119",
@@ -202,10 +208,10 @@ def define_options_parser(arg_list=None):
         "--clip", action=argparse.BooleanOptionalAction, default=DEFAULTS["clip"], help="Enable/disable clipping"
     )
     parser.add_argument(
-        "--barycentric_grads",
-        action=argparse.BooleanOptionalAction,
-        default=DEFAULTS["barycentric_grads"],
-        help="Enable/disable barycentric gradients",
+        "--grad_interpol",
+        type=str,
+        default=DEFAULTS["grad_interpol"],
+        help="Gradient interpolation method: robust, hybrid, barycentric",
     )
     parser.add_argument(
         "--marching_tetrahedra",
@@ -263,10 +269,12 @@ def define_options_parser(arg_list=None):
     parser.add_argument(
         "--save_path", type=str, default=None, help="(optional) full save path; if omitted, computed from other flags"
     )
-    parser.add_argument("--score", 
-                        type=str, 
-                        default=DEFAULTS["score"], 
-                        help="Score computation [legacy, density, sqrt_curvature, cosine]")
+    parser.add_argument(
+        "--score",
+        type=str,
+        default=DEFAULTS["score"],
+        help="Score computation [legacy, density, sqrt_curvature, cosine]",
+    )
     return parser.parse_args(arg_list)
 
 
@@ -420,7 +428,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
                         sites_sdf,
                         args.build_mesh,
                         False,
-                        args.barycentric_grads,
+                        args.grad_interpol,
                         args.no_mp,
                     )
 
@@ -515,8 +523,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
 
             if args.w_chamfer > 0:
                 sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(
-                    sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method,
-                    score=args.score
+                    sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method, score=args.score
                 )
                 sites = sites.detach().requires_grad_(True)
                 sites_sdf = sites_sdf.detach().requires_grad_(True)
@@ -529,9 +536,12 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
                 eps_H = lf.estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 5).detach()
                 print("Estimated eps_H: ", eps_H)
             else:
+                sites_sdf = hotspot_model(sites).squeeze(-1)
+                sites_sdf_grads, tets_sdf_grads, W = su.sdf_space_grad_pytorch_diego_sites_tets(
+                    sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach().clone()
+                )
                 sites, sites_sdf = su.upsampling_adaptive_vectorized_sites_sites_sdf(
-                    sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method,
-                    score=args.score
+                    sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method, score=args.score
                 )
                 sites = sites.detach().requires_grad_(True)
                 sites_sdf = hotspot_model(sites)
@@ -589,7 +599,7 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
         su.save_target_pc_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
 
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
-            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.barycentric_grads, args.no_mp
+            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
         )
         if args.marching_tetrahedra:
             output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_projDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
@@ -601,7 +611,7 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
 
     if args.w_voroloss > 0:
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
-            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.barycentric_grads, args.no_mp
+            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
         )
         output_obj_file = f"{args.save_path}/voromesh_{args.num_centroids}_{state}_DCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
         save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
@@ -710,6 +720,7 @@ def check_if_already_processed(args):
         else:
             output_obj_file = f"{args.save_path}/DCCVT_{args.upsampling}_{state}_MT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
     return output_obj_file
+
 
 if __name__ == "__main__":
     root = argparse.ArgumentParser(add_help=True)

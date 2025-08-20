@@ -56,7 +56,7 @@ def get_args():
         args.gt_dir = os.path.join(args.root_dir, "mesh/thingi32/")
     if args.experiments_dir is None:
         # keep your current default
-        args.experiments_dir = os.path.join(args.root_dir, "outputs/FIGURE_CASE_64764/")
+        args.experiments_dir = os.path.join(args.root_dir, "outputs/ABLATION_UNCONV_SDF_NU/")
 
     # If neither flag is given, default to include 'final' (old behavior)
     if not args.include_final and not args.include_init:
