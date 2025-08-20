@@ -10,7 +10,7 @@ import sdfpred_utils.sdfpred_utils as su
 import fcpw
 import voronoiaccel
 
-N_POINTS = 10000000 #// 10
+N_POINTS = 10000000 // 10
 ERROR_SCALE = 1e5
 COLOR_REF = (0.6, 0.6, 0.6)
 COLOR_OTHER = (0.7, 0.5, 0.2)
@@ -153,13 +153,23 @@ if __name__ == "__main__":
         "--color", type=float, nargs=3, default=[0.2, 0.5, 0.7], help="Color of the mesh in RGB format."
     )
     parser.add_argument("--edge_width", type=float, default=1.0, help="Width of the edges in the mesh.")
-    
-    parser.add_argument("--filter", type=str, default=None, help="Filter for OBJ files (e.g., 'final', 'init'). If None, all OBJ files will be processed.")
-    parser.add_argument("--recursive", action='store_true', help="Recursively search for OBJ files in subdirectories.")
-    parser.add_argument("--name", type=str, default=None, help="Name of the output image file. If not provided, the image will be saved in the same directory as the OBJ file with '_rendered' suffix.")
-    parser.add_argument("--metrics", action='store_true', help="If set, compute metrics for the rendered images.")
-    parser.add_argument("--skiprender", action='store_true', help="If set, skip the rendering step.")
-    
+
+    parser.add_argument(
+        "--filter",
+        type=str,
+        default=None,
+        help="Filter for OBJ files (e.g., 'final', 'init'). If None, all OBJ files will be processed.",
+    )
+    parser.add_argument("--recursive", action="store_true", help="Recursively search for OBJ files in subdirectories.")
+    parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Name of the output image file. If not provided, the image will be saved in the same directory as the OBJ file with '_rendered' suffix.",
+    )
+    parser.add_argument("--metrics", action="store_true", help="If set, compute metrics for the rendered images.")
+    parser.add_argument("--skiprender", action="store_true", help="If set, skip the rendering step.")
+
     args = parser.parse_args()
 
     ps.set_allow_headless_backends(True)
@@ -223,7 +233,16 @@ if __name__ == "__main__":
             print(f"{obj_path}...")
             if not args.skiprender:
                 # Render the OBJ file to an image
-                img = obj2image(obj_path, np.array(args.cam_position), np.array(args.target), args.fov, aspect, args.rescale, tuple(args.color), args.edge_width)
+                img = obj2image(
+                    obj_path,
+                    np.array(args.cam_position),
+                    np.array(args.target),
+                    args.fov,
+                    aspect,
+                    args.rescale,
+                    tuple(args.color),
+                    args.edge_width,
+                )
 
                 # Make the image inside the directory of the OBJ file
 
@@ -233,8 +252,7 @@ if __name__ == "__main__":
                     output = os.path.join(dirname, f"{os.path.basename(obj_path).replace('.obj', '.png')}")
                 # Save the image
                 Image.fromarray(img).save(output)
-                
-            
+
             if args.metrics:
                 obj_pts, obj_normals, obj_mesh = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
                 # scene_obj = fcpw.scene_3D()
@@ -295,21 +313,29 @@ if __name__ == "__main__":
             )
 
     else:
-        if args.metric:
+        if args.metrics:
             raise NotImplementedError("Metrics computation is not implemented.")
 
         for obj_path in glob.glob(os.path.join(args.obj_directory, "*.obj")):
             if args.filter and args.filter not in obj_path:
                 continue
-            
+
             if not args.skiprender:
                 print(f"Rendering {obj_path}...")
                 # Render the OBJ file to an image
-                img = obj2image(obj_path, np.array(args.cam_position), np.array(args.target), args.fov, aspect, args.rescale, tuple(args.color), args.edge_width)
-                
+                img = obj2image(
+                    obj_path,
+                    np.array(args.cam_position),
+                    np.array(args.target),
+                    args.fov,
+                    aspect,
+                    args.rescale,
+                    tuple(args.color),
+                    args.edge_width,
+                )
+
                 # Make the image inside the directory of the OBJ file
                 output = obj_path.replace(".obj", "_rendered.png")
 
                 # Save the image
                 Image.fromarray(img).save(output)
-            
