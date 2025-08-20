@@ -4,7 +4,7 @@
 # Ablation on Eik and H on unconverged NU case since most impact here
 # did x0 
 # computing need to finish x100
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 10000 --upsampling 10 --clip --w_mt 1 --sample_near 4096
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 10000 --upsampling 10 --clip --w_mt 1 --sample_near 4096
 #############
 
 
@@ -12,7 +12,7 @@
 # dont foget to change mesh dir to thingi32_150k
 
 # unconv 
-# computing
+# done
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 0 --upsampling 10 --clip --marching_tetrahedra --w_mt 1 --sample_near 4096
 
@@ -23,6 +23,6 @@
 
 
 # Ablation on projection in NU
-# todo
-#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 101 --w_sdfsmooth 101 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --grad_interpol hybrid 
-#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 102 --w_sdfsmooth 102 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --grad_interpol barycentric
+# computing @beltegeuse
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 101 --w_sdfsmooth 101 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --grad_interpol hybrid 
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 102 --w_sdfsmooth 102 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --grad_interpol barycentric

@@ -1861,7 +1861,22 @@ def get_clipped_mesh_numba(
                 #     new_vertices, vertices_sdf[sorted(used)], tets_sdf_grads[sorted(used)]
                 # )
             elif grad_interpol == "hybrid":
-                print("TODO: IMPLEMENT HYBRID GRAD INTERPOL IN BUILD MESH")
+                # print("-> using barycentric weights for interpolation")
+                # Use barycentric weights for interpolation
+                vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
+                    all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
+                )
+                sdf_verts = vertices_sdf[sorted(used)]
+                grads = vertices_sdf_grad[sorted(used)]
+                proj_vertices = newton_step_clipping(grads, sdf_verts, new_vertices)
+
+                tpc_proj_v, tet_probs = tet_plane_clipping(
+                    d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
+                )
+                # replace proj_vertices with tpc_proj_v where bary_w has negative component
+                neg_row_mask = (bary_w[sorted(used)] < 0).any(dim=1)  # (K,)
+                # print("bary_w", neg_row_mask.shape, "num bad:", neg_row_mask.sum().item())
+                proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
 
             return proj_vertices, new_faces, sites_sdf_grad, tets_sdf_grads, W
     else:
