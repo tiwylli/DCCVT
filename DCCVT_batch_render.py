@@ -15,6 +15,7 @@ ERROR_SCALE = 1e5
 COLOR_REF = (0.6, 0.6, 0.6)
 COLOR_OTHER = (0.7, 0.5, 0.2)
 COLOR_OURS = (0.2, 0.5, 0.7)
+COLOR_OTHER_OURS = (0.2, 0.7, 0.5)
 COLOR_POINT = (0.7, 0.2, 0.2)
 CAMERA_CONFIG = {"fov": 26, "cam_position": np.array([-0.6, -2.2, 0.1]), "target": np.array([0, 0, -0.05])}
 GT_DIR = "/home/wylliam/dev/Kyushu_experiments/mesh/thingi32/"
