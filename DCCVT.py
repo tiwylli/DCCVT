@@ -45,8 +45,12 @@ import datetime
 # timestamp = "MT_UNCONV_MAGA"
 # timestamp = "DCCVT_UNCONV_MAGA"
 
-# timestamp = "NU_150K"
-timestamp = "ABLATION_UNCONV_SDF_NU"
+# timestamp = "U_150K"
+timestamp = "video_150k"
+# timestamp = "MT_150k"
+# timestamp = "ABLATION_UNCONV_SDF_NU"
+# timestamp = "ROBUS_HYBRID_BARY_INTERPOL"
+
 
 # timestamp = "Ablation_64764"
 
@@ -58,7 +62,7 @@ if os.environ.get("USER", "") == "beltegeuse":
 
 DEFAULTS = {
     "output": f"{ROOT_DIR}/outputs/{timestamp}/",
-    "mesh": f"{ROOT_DIR}/mesh/thingi32/",
+    "mesh": f"{ROOT_DIR}/mesh/thingi32_150k/",
     "trained_HotSpot": f"{ROOT_DIR}/hotspots_model/",
     "input_dims": 3,
     "num_iterations": 1000,
@@ -72,7 +76,8 @@ DEFAULTS = {
     "extract_optim": False,  # True
     "no_mp": False,  # True
     "ups_extraction": False,
-    # "build_mesh": False,
+    "build_mesh": False,
+    "video": False,
     "w_cvt": 0,
     "w_sdfsmooth": 0,
     "w_voroloss": 0,  # 1000
@@ -248,6 +253,9 @@ def define_options_parser(arg_list=None):
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Enable/disable build mesh",
+    )
+    parser.add_argument(
+        "--video", action=argparse.BooleanOptionalAction, default=False, help="Enable/disable video output"
     )
     parser.add_argument("--w_cvt", type=float, default=DEFAULTS["w_cvt"], help="Weight for CVT regularization")
     parser.add_argument("--w_sdfsmooth", type=float, default=DEFAULTS["w_sdfsmooth"], help="Weight for SDF smoothing")
@@ -554,6 +562,10 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
 
             upsampled += 1.0
             print("sites length AFTER: ", len(sites))
+
+        if args.video:
+            extract_mesh(sites, sites_sdf, mnfld_points, 0, args, state=f"{int(epoch)}")
+
     return sites, sites_sdf
 
 
