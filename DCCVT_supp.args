@@ -1,10 +1,13 @@
 # ----------------------------------------------- ABLATION METRICS ------------------------------------
-@mesh_ids: 252119 313444 316358 354371 441708 44234 47984 527631 53159 58168 64444 64764 68380 68381 72870 72960 73075 75496 75655 75656 75662 75665 76277 77245 78671 79241 90889 92763 92880 95444 96481
-
+#@mesh_ids: 252119 313444 316358 354371 441708 44234 47984 527631 53159 58168 64444 64764 68380 68381 72870 72960 73075 75496 75655 75656 75662 75665 76277 77245 78671 79241 90889 92763 92880 95444 96481
+@mesh_ids: 64764
 # Ablation on Eik and H on unconverged NU case since most impact here
-# did x0 
-# computing need to finish x100
+# done x0 
+# done x100
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 10000 --upsampling 10 --clip --w_mt 1 --sample_near 4096
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b64_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 0 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --target_size 64
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b64_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --target_size 64
+
 #############
 
 
@@ -16,13 +19,41 @@
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 0 --upsampling 10 --clip --marching_tetrahedra --w_mt 1 --sample_near 4096
 
+#done
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_U --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 0 --upsampling 10 --clip --marching_tetrahedra --w_mt 1
+
+# done
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b64_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --target_size 40 --video
+
+# todo MT video
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_MT_video --w_chamfer 1000 --clip --w_mt 1 --marching_tetrahedra --num_centroids 32 --video
+
+# todo Voromesh video
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_Voro_video --w_voroloss 1000 --w_cvt 0.01 --num_centroids 32 --video
+
+
+
+
+
+# compute high res baseline MT
+# done
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32 --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 0 --num_centroids 32 --clip --marching_tetrahedra --w_mt 1
+
+
+
+
 # conv 
-# todo
+# hold
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_150k/{mesh_id}.pth --output {output}{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_150k/{mesh_id}.pth --output {output}{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 0 --upsampling 10 --clip --marching_tetrahedra --w_mt 1 --sample_near 4096
 
 
+
+
+
+
+
 # Ablation on projection in NU
-# computing @beltegeuse
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 101 --w_sdfsmooth 101 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --grad_interpol hybrid 
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 102 --w_sdfsmooth 102 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --grad_interpol barycentric
+# done
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 101 --w_sdfsmooth 101 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --grad_interpol hybrid 
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 102 --w_sdfsmooth 102 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --grad_interpol barycentric
