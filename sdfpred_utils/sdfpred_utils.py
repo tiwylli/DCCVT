@@ -1945,7 +1945,7 @@ def get_clipped_mesh_numba(
             vert_for_clipped_cvt = all_vor_vertices
             vert_for_clipped_cvt[used_tet] = proj_vertices
             # proj_points = proj_vertices
-            return proj_points, vert_for_clipped_cvt, sites_sdf_grad, tets_sdf_grads, W
+            return proj_points, vert_for_clipped_cvt, sites_sdf_grad, tet_probs, W
 
 
 def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
@@ -2057,7 +2057,7 @@ def tet_plane_clipping(
     steps_verts = normal_dot * vert_step_dir  # (M, 3)
     projected_verts = voronoi_vertices - steps_verts  # (M, 3)
 
-    return projected_verts, (site_step_dir, vert_step_dir, tet_sites)
+    return projected_verts, (site_step_dir, steps_verts, tet_sites)
 
 
 def tet_grads_clipping(voronoi_vertices, vor_vert_sdf_values, tets_grads):
@@ -2322,6 +2322,57 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
         new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
         updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
         updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
+
+    elif ups_method == "tet_frame_remove_parent":
+        # -------------------------------------------------- #
+        # Insert 4 off-spring per selected site (regular tetrahedron)
+        tetr_dirs = torch.as_tensor(
+            [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
+            dtype=torch.float32,
+            device=device,
+        )  # (4,3)
+        tetr_dirs = torch.nn.functional.normalize(tetr_dirs, dim=1)  # Normalize directions
+
+        # Build local frame from ∇ϕ (surface normal)
+        cent_grad = grad_est[cand]  # (K,3)
+        unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)
+        unit_grad = unit_grad * torch.sign(sdf_values[cand]).unsqueeze(1)  # point outward
+        frame = build_tangent_frame(unit_grad)  # (K,3,3)
+
+        # Optional anisotropic weights for axes: (t1, t2, normal)
+        anisotropy = torch.tensor([1.0, 1.0, 0.5], device=device)  # shrink in normal
+        frame = frame * anisotropy.view(1, 1, 3)  # (K,3,3)
+
+        # Rotate the 4 tetrahedral directions into local frame
+        local_dirs = tetr_dirs.T.unsqueeze(0)  # (1,3,4)
+        offs = torch.matmul(frame, local_dirs).permute(0, 2, 1)  # (K,4,3)
+        # Scale by local spacing
+        # used to be /4 but because anisotropy 0.5 its now /2
+        scale = (min_dists[cand] / 2).unsqueeze(1).unsqueeze(2)  # (K,1,1)
+        offs = offs * scale  # (K,4,3)
+
+        # Translate from centroid
+        centroids = sites[cand].unsqueeze(1)  # (K,1,3)
+        new_sites = (centroids + offs).reshape(-1, 3)  # (4K,3)
+
+        # print("new sites shape:", new_sites.shape)
+        # ps.init()
+        # ps.register_point_cloud("new_sites", new_sites.detach().cpu().numpy())
+        # ps.show()
+
+        N = sites.shape[0]
+        if cand.dtype == torch.bool:
+            parent_mask = ~cand
+        else:
+            parent_mask = torch.ones(N, dtype=torch.bool, device=sites.device)
+            parent_mask[cand] = False  # drop parents
+
+        delta = new_sites.reshape(-1, 4, 3) - centroids  # (K,4,3)
+        new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
+        # updated_sites = torch.cat([sites[~cand], new_sites], dim=0)  # (N+4K,3)
+        # updated_sites_sdf = torch.cat([sdf_values[~cand], new_sdf], dim=0)  # (N+4K,)
+        updated_sites = torch.cat([sites[parent_mask], new_sites], dim=0)
+        updated_sites_sdf = torch.cat([sdf_values[parent_mask], new_sdf], dim=0)
 
     elif ups_method == "tet_random":
         # ---------------------------------------------------------------- #
