@@ -2,7 +2,6 @@
 import os
 import sys
 import argparse
-import fcpw
 import tqdm as tqdm
 from time import time
 import torch
@@ -770,309 +769,94 @@ def process_single_mesh(arg_list):
         #     torch.cuda.empty_cache()
 
 
-# def complex_alpha_sdf(mnfld_points, sites):
-#     # pip install gudhi trimesh networkx
-#     import gudhi
-#     import trimesh
-#     from collections import defaultdict
-#     from sklearn.neighbors import NearestNeighbors
-#     import igl
+def complex_alpha_sdf(mnfld_points, sites):
+    # pip install gudhi trimesh networkx
+    import gudhi
+    import trimesh
+    from collections import defaultdict
+    from sklearn.neighbors import NearestNeighbors
+    import igl
 
-#     import numpy as np
-#     from scipy.spatial import ConvexHull
+    import numpy as np
+    from scipy.spatial import ConvexHull
 
-#     # def convex_hull_mesh(points: np.ndarray):
-#     #     # points: (N,3)
-#     #     hull = ConvexHull(points)
-#     #     V = points.copy()
-#     #     F = hull.simplices  # (M,3) triangle indices
-#     #     return V, F
+    def alpha_shape_3d(points: np.ndarray, alpha: float):
+        """
+        Build a 3D alpha shape mesh from points using Gudhi.
+        alpha: radius parameter (not squared). Smaller -> tighter, more concave; too small -> holes/missing parts.
+        Returns V,F for a triangle surface mesh.
+        """
+        ac = gudhi.AlphaComplex(points=points)
+        st = ac.create_simplex_tree(max_alpha_square=alpha * alpha)
 
-#     def alpha_shape_3d(points: np.ndarray, alpha: float):
-#         """
-#         Build a 3D alpha shape mesh from points using Gudhi.
-#         alpha: radius parameter (not squared). Smaller -> tighter, more concave; too small -> holes/missing parts.
-#         Returns V,F for a triangle surface mesh.
-#         """
-#         ac = gudhi.AlphaComplex(points=points)
-#         st = ac.create_simplex_tree(max_alpha_square=alpha * alpha)
+        # Collect tetrahedra (3-simplices) and triangles (2-simplices) in the complex
+        tets = []
+        tris = []
+        for simplex, filt in st.get_skeleton(3):
+            if len(simplex) == 4:
+                tets.append(tuple(sorted(simplex)))
+            elif len(simplex) == 3:
+                tris.append(tuple(sorted(simplex)))
 
-#         # Collect tetrahedra (3-simplices) and triangles (2-simplices) in the complex
-#         tets = []
-#         tris = []
-#         for simplex, filt in st.get_skeleton(3):
-#             if len(simplex) == 4:
-#                 tets.append(tuple(sorted(simplex)))
-#             elif len(simplex) == 3:
-#                 tris.append(tuple(sorted(simplex)))
+        # Count how many tetrahedra incident to each triangle; boundary triangles have <=1 incident tet
+        tri_incidence = defaultdict(int)
+        tet_set = set(tets)
+        for tet in tets:
+            a, b, c, d = tet
+            faces = [(a, b, c), (a, b, d), (a, c, d), (b, c, d)]
+            for f in faces:
+                tri_incidence[tuple(sorted(f))] += 1
 
-#         # Count how many tetrahedra incident to each triangle; boundary triangles have <=1 incident tet
-#         tri_incidence = defaultdict(int)
-#         tet_set = set(tets)
-#         for tet in tets:
-#             a, b, c, d = tet
-#             faces = [(a, b, c), (a, b, d), (a, c, d), (b, c, d)]
-#             for f in faces:
-#                 tri_incidence[tuple(sorted(f))] += 1
+        boundary_tris = []
+        for tri in tris:
+            if tri_incidence.get(tri, 0) <= 1:
+                boundary_tris.append(tri)
 
-#         boundary_tris = []
-#         for tri in tris:
-#             if tri_incidence.get(tri, 0) <= 1:
-#                 boundary_tris.append(tri)
+        V = points.copy()
+        F = np.array(boundary_tris, dtype=int)
 
-#         V = points.copy()
-#         F = np.array(boundary_tris, dtype=int)
+        # Clean up with trimesh (remove degenerates, unify winding, fill tiny holes if needed)
+        mesh = trimesh.Trimesh(vertices=V, faces=F, process=True)
+        mesh.remove_degenerate_faces()
+        mesh.remove_duplicate_faces()
+        mesh.remove_unreferenced_vertices()
+        mesh.merge_vertices()
+        trimesh.repair.fill_holes(mesh)
+        trimesh.repair.fix_winding(mesh)
+        trimesh.repair.fix_normals(mesh, True)  # consistent winding + outward if possible
+        trimesh.repair.fix_inversion(mesh, True)  # resolves inside-out components
+        print(trimesh.repair.broken_faces(mesh))
+        assert mesh.is_watertight, "Alpha mesh not watertight; tune alpha or repair."
+        assert mesh.is_winding_consistent, "Inconsistent winding; fix_normals should help."
+        return mesh
 
-#         # Clean up with trimesh (remove degenerates, unify winding, fill tiny holes if needed)
-#         mesh = trimesh.Trimesh(vertices=V, faces=F, process=True)
-#         mesh.remove_degenerate_faces()
-#         mesh.remove_duplicate_faces()
-#         mesh.remove_unreferenced_vertices()
-#         mesh.merge_vertices()
-#         # For SDF robustness, watertight helps:
-#         # mesh = mesh.fill_holes()  # optional; may alter geometry if there are large gaps
-#         return np.asarray(mesh.vertices), np.asarray(mesh.faces)
+    def pick_alpha(points, k=8, quantile=0.9):
+        nbrs = NearestNeighbors(n_neighbors=k).fit(points)
+        dists, _ = nbrs.kneighbors(points)
+        # ignore the zero distance to self at column 0 by slicing from 1:
+        scale = np.quantile(dists[:, 1:].mean(axis=1), quantile)
+        # for some reasons at 1.5 mesh is not watertight and trimesh cant fix it
+        return 15 * scale  # tweak factor (1.0–3.0) depending on how tight/loose you want
 
-#     def pick_alpha(points, k=8, quantile=0.9):
-#         nbrs = NearestNeighbors(n_neighbors=k).fit(points)
-#         dists, _ = nbrs.kneighbors(points)
-#         # ignore the zero distance to self at column 0 by slicing from 1:
-#         scale = np.quantile(dists[:, 1:].mean(axis=1), quantile)
-#         return 1.5 * scale  # tweak factor (1.0–3.0) depending on how tight/loose you want
+    print(mnfld_points.shape)
 
-#     def sdf_pyigl(V: np.ndarray, F: np.ndarray, Q: np.ndarray):
-#         # Returns signed distances (positive outside, negative inside by default winding convention)
-#         # Modes: IGL signed_distance can be set to different methods; default uses "winding number" sign.
-#         S, I, C, N = igl.signed_distance(Q, V, F)
-#         return S  # (Q,)
+    alpha = pick_alpha(mnfld_points.squeeze(0).detach().cpu().numpy())  # or set manually
+    mesh = alpha_shape_3d(mnfld_points.squeeze(0).detach().cpu().numpy(), alpha)
+    # V, F = convex_hull_mesh(mnfld_points.squeeze(0).detach().cpu().numpy())
+    ps.init()
+    ps.register_surface_mesh("Complex alpha shape mesh: ", mesh.vertices, mesh.faces)
+    ps.register_point_cloud("Points: ", mnfld_points.squeeze(0).detach().cpu().numpy())
+    pscloud = ps.register_point_cloud("Sites: ", sites.detach().cpu().numpy())
+    ps.show()
 
-#     def sdf_trimesh(V: np.ndarray, F: np.ndarray, Q: np.ndarray, chunk=200000):
-#         mesh = trimesh.Trimesh(vertices=V, faces=F, process=False)
-#         # Make sure mesh.face_normals/adjacency are computed
-#         mesh.rezero()
-#         # trimesh.proximity.signed_distance prefers watertight meshes for correct sign
-#         out = []
-#         for i in range(0, len(Q), chunk):
-#             out.append(trimesh.proximity.signed_distance(mesh, Q[i : i + chunk]))
-#         return np.concatenate(out, axis=0)
-
-#     def build_fcpw_scene(V, F, vectorized_bvh=True):
-#         V = np.asarray(V, dtype=np.float32)
-#         F = np.asarray(F, dtype=np.int32)
-#         scene = fcpw.scene_3D()
-#         scene.set_object_count(1)
-#         scene.set_object_vertices(V, 0)
-#         scene.set_object_triangles(F, 0)
-#         scene.build(fcpw.aggregate_type.bvh_surface_area, bool(vectorized_bvh))
-#         return scene
-
-#     def unsigned_distance_fcpw(scene, Q):
-#         Q = np.asarray(Q, dtype=np.float32)
-#         inters = fcpw.interaction_3D_list()
-#         r2 = np.full(len(Q), np.inf, dtype=np.float32)
-#         scene.find_closest_points(Q, r2, inters)
-#         d = np.array([it.d for it in inters], dtype=np.float32)
-#         return d
-
-#     # ----------------------------------------------
-#     # SIGN via ray parity (even=outside, odd=inside)
-#     # ----------------------------------------------
-
-#     def _pick_ray_dirs(Q, seed=42):
-#         """
-#         Choose a deterministic but slightly jittered direction per point
-#         to reduce degeneracies (edge/vertex grazing).
-#         """
-#         rng = np.random.default_rng(seed)
-#         base_dirs = np.array(
-#             [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 1, 1], [-1, 1, 0], [1, -1, 0]],
-#             dtype=np.float32,
-#         )
-#         base_dirs = base_dirs / np.linalg.norm(base_dirs, axis=1, keepdims=True)
-#         # Assign directions in a round-robin way, then add tiny jitter
-#         D = base_dirs[np.arange(len(Q)) % len(base_dirs)].copy()
-#         D += 1e-6 * rng.normal(size=D.shape).astype(np.float32)
-#         D /= np.linalg.norm(D, axis=1, keepdims=True) + 1e-12
-#         return D
-
-#     def _ray_parity_sign_pyembree(V, F, Q, eps):
-#         """
-#         Ray parity using trimesh + pyembree (fast).
-#         Returns +1 (outside), -1 (inside), 0 (near-surface).
-#         """
-#         mesh = trimesh.Trimesh(vertices=V, faces=F, process=False)
-#         # Prefer pyembree if available
-#         try:
-#             from trimesh.ray.ray_pyembree import RayMeshIntersector
-
-#             rmi = RayMeshIntersector(mesh, exact=True)
-#             Q = np.asarray(Q, dtype=np.float64)
-#             D = _pick_ray_dirs(Q).astype(np.float64)
-
-#             # Nudge origins off the surface to avoid self-intersection at t=0
-#             O = Q + (eps * D)
-
-#             # Get all intersections (locations, ray indices, face indices)
-#             # Note: intersects_location returns all hits along each ray
-#             loc, ray_idx, tri_idx = rmi.intersects_location(O, D, multiple_hits=True)
-
-#             # Count hits per ray, with a de-duplication by "t" to avoid double counts when crossing edges
-#             # Compute t for each intersection: t = dot(loc - O, D)
-#             t = np.einsum("ij,ij->i", (loc - O[ray_idx]), D[ray_idx])
-#             # Keep only t > 0
-#             mask = t > (1e-12)
-#             ray_idx, t = ray_idx[mask], t[mask]
-
-#             # Deduplicate by ray and quantized t (to merge edge/vertex double hits)
-#             # Quantize t by relative epsilon
-#             q = (t / max(eps, 1e-12)).round(0)
-#             # Pack (ray_idx, q) to unique keys
-#             keys = ray_idx.astype(np.int64) * (1 << 20) + q.astype(np.int64)
-#             # Count uniques per ray
-#             # Using numpy trick: argsort -> run-length encode
-#             order = np.argsort(keys)
-#             keys_sorted = keys[order]
-#             ray_sorted = ray_idx[order]
-#             splits = np.flatnonzero(np.diff(keys_sorted)) + 1
-#             # Unique (ray,quant) groups => one hit per group
-#             unique_groups = np.split(ray_sorted, splits)
-#             counts = np.bincount([g[0] for g in unique_groups], minlength=len(Q))
-
-#             # Parity to sign: even => +1 (outside), odd => -1 (inside)
-#             sign = np.where(counts % 2 == 0, 1.0, -1.0).astype(np.float32)
-#             return sign
-#         except Exception:
-#             # Fallback to pure NumPy
-#             return _ray_parity_sign_numpy(V, F, Q, eps)
-
-#     def _ray_parity_sign_numpy(V, F, Q, eps, ray_chunk=8192, tri_chunk=131072):
-#         """
-#         Portable vectorized Möller–Trumbore parity counter.
-#         Chunked over triangles and rays for memory safety.
-#         """
-#         V = np.asarray(V, dtype=np.float64)
-#         F = np.asarray(F, dtype=np.int32)
-#         Q = np.asarray(Q, dtype=np.float64)
-
-#         D = _pick_ray_dirs(Q).astype(np.float64)
-#         O = Q + (eps * D)
-
-#         v0 = V[F[:, 0]]
-#         v1 = V[F[:, 1]]
-#         v2 = V[F[:, 2]]
-
-#         counts = np.zeros(len(Q), dtype=np.int32)
-#         for r0 in range(0, len(Q), ray_chunk):
-#             O_blk = O[r0 : r0 + ray_chunk]
-#             D_blk = D[r0 : r0 + ray_chunk]
-#             cnt_blk = np.zeros(len(O_blk), dtype=np.int32)
-
-#             for t0 in range(0, len(F), tri_chunk):
-#                 v0_blk = v0[t0 : t0 + tri_chunk]
-#                 v1_blk = v1[t0 : t0 + tri_chunk]
-#                 v2_blk = v2[t0 : t0 + tri_chunk]
-
-#                 # Möller–Trumbore
-#                 e1 = v1_blk - v0_blk  # (T,3)
-#                 e2 = v2_blk - v0_blk  # (T,3)
-
-#                 # broadcasted cross(D, e2)
-#                 p = np.cross(D_blk[:, None, :], e2[None, :, :])  # (R,T,3)
-#                 det = np.einsum("rtk,tk->rt", p, e1)  # (R,T)
-
-#                 # Cull near-parallel triangles
-#                 mask = np.abs(det) > 1e-12
-#                 if not np.any(mask):
-#                     continue
-
-#                 inv_det = np.zeros_like(det)
-#                 inv_det[mask] = 1.0 / det[mask]
-
-#                 tvec = O_blk[:, None, :] - v0_blk[None, :, :]  # (R,T,3)
-#                 u = np.einsum("rtk,rtk->rt", tvec, p) * inv_det  # (R,T)
-
-#                 qv = np.cross(tvec, e1[None, :, :])  # (R,T,3)
-#                 v = np.einsum("rtk,rtk->rt", D_blk[:, None, :], qv) * inv_det
-#                 t = np.einsum("rtk,tk->rt", qv, e2) * inv_det
-
-#                 hit = (u >= 0.0) & (v >= 0.0) & (u + v <= 1.0) & (t > 0.0) & mask
-
-#                 # Optional: deduplicate near-duplicate hits per ray by quantizing t
-#                 # (Avoid double counts at edges/vertices)
-#                 if np.any(hit):
-#                     # We need per-ray dedup. Extract indices where hit
-#                     rr, tt = np.nonzero(hit)
-#                     t_vals = t[rr, tt]
-#                     # Quantize t by eps
-#                     q_t = (t_vals / max(eps, 1e-12)).round(0)
-#                     # Unique by (r, q_t)
-#                     key = rr.astype(np.int64) * (1 << 40) + q_t.astype(np.int64)
-#                     _, idx_unique = np.unique(key, return_index=True)
-#                     rr_unique = rr[idx_unique]
-#                     # Count unique hits per ray in this tri-chunk
-#                     cnt_blk += np.bincount(rr_unique, minlength=len(O_blk))
-
-#             counts[r0 : r0 + ray_chunk] += cnt_blk
-
-#         sign = np.where(counts % 2 == 0, 1.0, -1.0).astype(np.float32)
-#         return sign
-
-#     def ray_parity_sign(V, F, Q, zero_band_rel=1e-6):
-#         V = np.asarray(V, dtype=np.float64)
-#         F = np.asarray(F, dtype=np.int32)
-#         Q = np.asarray(Q, dtype=np.float64)
-#         # Scale-aware epsilon
-#         bb = V.max(0) - V.min(0)
-#         eps = float(np.linalg.norm(bb) * zero_band_rel)
-
-#         # Near-surface band will be set to 0 later using FCPW distance, but
-#         # we also nudge the ray origins by eps to avoid t==0 grazing.
-#         # Try fast pyembree path; otherwise pure NumPy fallback.
-#         sign = _ray_parity_sign_pyembree(V, F, Q, eps)
-
-#         return sign, eps
-
-#     # -----------------------------
-#     # Full SDF: FCPW magnitude + sign
-#     # -----------------------------
-#     def sdf_fcpw_rayparity(V, F, Q, zero_band_rel=1e-6):
-#         V = np.asarray(V, dtype=np.float32)
-#         F = np.asarray(F, dtype=np.int32)
-#         Q = np.asarray(Q, dtype=np.float32)
-
-#         # 1) distances with FCPW
-#         scene = build_fcpw_scene(V, F, vectorized_bvh=True)
-#         d = unsigned_distance_fcpw(scene, Q)  # >=0
-
-#         # 2) sign by ray parity
-#         sign, eps = ray_parity_sign(V, F, Q, zero_band_rel=zero_band_rel)
-
-#         # 3) compose SDF (+outside / -inside), clamp tiny band to 0
-#         sdf = d * sign
-#         sdf[np.abs(sdf) < eps] = 0.0
-#         return sdf
-
-#     print(mnfld_points.shape)
-
-#     alpha = pick_alpha(mnfld_points.squeeze(0).detach().cpu().numpy())  # or set manually
-#     V, F = alpha_shape_3d(mnfld_points.squeeze(0).detach().cpu().numpy(), alpha)
-#     # V, F = convex_hull_mesh(mnfld_points.squeeze(0).detach().cpu().numpy())
-#     ps.init()
-#     ps.register_surface_mesh("Complex alpha shape mesh: ", V, F)
-#     ps.register_point_cloud("Points: ", mnfld_points.squeeze(0).detach().cpu().numpy())
-#     pscloud = ps.register_point_cloud("Sites: ", sites.detach().cpu().numpy())
-#     ps.show()
-
-#     # S = sdf_pyigl(V, F, sites.detach().cpu().numpy())
-#     # S = sdf_trimesh(V, F, sites.detach().cpu().numpy())
-#     # S = -trimesh.proximity.signed_distance(
-#     #     trimesh.Trimesh(vertices=V, faces=F, process=False), sites.detach().cpu().numpy()
-#     # )
-#     S = sdf_fcpw_rayparity(V, F, sites.detach().cpu().numpy())
-#     sdf0 = torch.from_numpy(S).to(device, dtype=torch.float32).requires_grad_()
-#     pscloud.add_scalar_quantity("SDF", S, enabled=True)
-#     ps.show()
-#     return sdf0
+    # S = sdf_pyigl(V, F, sites.detach().cpu().numpy())
+    # S = sdf_trimesh(V, F, sites.detach().cpu().numpy())
+    S = -trimesh.proximity.signed_distance(mesh, sites.detach().cpu().numpy())
+    # S = sdf_fcpw_rayparity(V, F, sites.detach().cpu().numpy())
+    sdf0 = torch.from_numpy(S).to(device, dtype=torch.float32).requires_grad_()
+    pscloud.add_scalar_quantity("SDF", S, enabled=True)
+    ps.show()
+    return sdf0
 
 
 def check_if_already_processed(args):
