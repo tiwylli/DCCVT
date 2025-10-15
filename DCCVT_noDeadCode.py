@@ -7,7 +7,6 @@ from time import time
 import torch
 from torch import nn
 from numba import njit, prange
-
 import numpy as np
 import polyscope as ps
 import kaolin
@@ -21,10 +20,9 @@ import pygdel3d
 from scipy.spatial import Delaunay
 from pytorch3d.loss import chamfer_distance
 from pytorch3d.ops import knn_points
-from pytorch3d.transforms import matrix_to_quaternion, quaternion_to_matrix
-import argparse
-
-from sdfpred_utils.sdfpred_utils import upsampling_adaptive_vectorized_sites_sites_sdf
+from pytorch3d.transforms import quaternion_to_matrix
+import datetime
+import math
 
 sys.path.append("3rdparty/HotSpot")
 from dataset import shape_3d
@@ -41,24 +39,18 @@ torch.backends.cudnn.benchmark = False
 np.random.seed(69)
 
 # Generate a timestamp string for unique output folders
-import datetime
-
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 # timestamp = "alphashape"
-
 # timestamp = "ALL_CASE_DCCVT"
 # timestamp = "FIGURE_CASE_441708"
 # timestamp = "FIGURE_CASE_TEASER"
 # timestamp = "MT_UNCONV_MAGA"
 # timestamp = "DCCVT_UNCONV_MAGA"
-
 # timestamp = "U_150K"
 # timestamp = "video_150k"
 # timestamp = "MT_150k"
 # timestamp = "ABLATION_UNCONV_SDF_NU"
 # timestamp = "ROBUS_HYBRID_BARY_INTERPOL"
-
-
 # timestamp = "Ablation_64764"
 
 # Default parameters for the DCCVT experiments
@@ -428,11 +420,6 @@ def get_clipped_mesh_numba(
     if d3dsimplices is None:
         print("Computing Delaunay simplices...")
         sites_np = sites.detach().cpu().numpy()
-        # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1] * sites_np.shape[0]))
-        # d3dsimplices, _ = pygdel3d.triangulate(sites_np)
-
-        # d3dsimplices = np.array(d3dsimplices)
-        # d3dsimplices = diffvoronoi.get_delaunay_simplices(sites_np.reshape(sites_np.shape[1] * sites_np.shape[0]))
         d3dsimplices, _ = pygdel3d.triangulate(sites_np)
         print("Number of Delaunay simplices:", len(d3dsimplices))
         print("Delaunay simplices shape:", d3dsimplices)
@@ -440,10 +427,7 @@ def get_clipped_mesh_numba(
         print("Min vertex index in simplices:", d3dsimplices.min())
         print("Site index range:", sites_np.shape[0])
 
-        # d3dsimplices = np.array(d3dsimplices)
-
     d3d = torch.tensor(d3dsimplices).to(device).detach()  # (M,4)
-    # d3d = torch.clamp(d3d, min=0, max=sites.shape[0] - 1)  # Ensure indices are valid
 
     if build_mesh:
         # print("-> tracing mesh")
@@ -576,16 +560,6 @@ def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None,
     Returns:
         zero_crossing_vertices_index (list of triplets): List of sites indices (si, sj, sk) where atleast 2 sites have opposing SDF signs.
     """
-    # # # Compute Delaunay neighbors
-    # # # Detach and convert to NumPy for Delaunay triangulation
-    # points_np = sites.detach().cpu().numpy()
-
-    # # # Compute the Delaunay tessellation
-    # tri = Delaunay(points_np)
-    # vor = Voronoi(points_np)
-
-    # Compute SDF values for all sites
-    # model might be a true sdf grid of class SDFGrid
     if model.__class__.__name__ == "SDFGrid":
         sdf_values = model.sdf(sites)
     # model might be a [sites, 1] tensor
@@ -601,29 +575,7 @@ def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None,
 
     if vor is not None:
         neighbors = torch.tensor(np.array(vor.ridge_points), device=device)
-    # could compute neighbors without the voronoi diagram
     else:
-        #     #neighbors = torch.tensor(np.vstack(list({tuple(sorted(edge)) for tetra in tri.simplices for edge in zip(tetra, np.roll(tetra, -1))})), device=device)
-        #     tetra_edges = torch.cat([
-        #     all_tetrahedra[:, [0, 1]],
-        #     all_tetrahedra[:, [1, 2]],
-        #     all_tetrahedra[:, [2, 3]],
-        #     all_tetrahedra[:, [3, 0]],
-        #     all_tetrahedra[:, [0, 2]],
-        #     all_tetrahedra[:, [1, 3]]
-        #                             ], dim=0).to(device)
-        #     # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
-        #     tetra_edges, _ = torch.sort(tetra_edges, dim=1)
-        #     # Get unique edges
-        #     neighbors = torch.unique(tetra_edges, dim=0)
-
-        # # Extract the SDF values for each site in the pair
-        # sdf_i = sdf_values[neighbors[:, 0]]  # First site in each pair
-        # sdf_j = sdf_values[neighbors[:, 1]]  # Second site in each pair
-        # # Find the indices where SDF values have opposing signs or one is zero
-        # mask_zero_crossing_sites = (sdf_i * sdf_j <= 0).squeeze()
-        # zero_crossing_pairs = neighbors[mask_zero_crossing_sites]
-
         zero_crossing_pairs = compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values)
 
     # Check if vertices has a pair of zero crossing sites
@@ -662,7 +614,6 @@ def compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values):
     ).to(device)
     # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
     tetra_edges, _ = torch.sort(tetra_edges, dim=1)
-    # Get unique edges nevermind TODO
     # neighbors = torch.unique(tetra_edges, dim=0)
     neighbors = tetra_edges
 
@@ -794,21 +745,12 @@ def sdf_space_grad_pytorch_diego(sites, sdf, tets):
     # Build dX: (M, 4, 3)
     X = torch.stack([a, b, c, d], dim=1)  # (M, 4, 3)
     dX = X - center[:, None, :]
-    # print("dX shape:", dX.shape)
 
     dX_T = dX.transpose(1, 2)  # (M, 3, 4)
-    # print("dX_T shape:", dX_T.shape)
-
-    # G = dX^T @ dX: (M, 3, 3)
-    # G = torch.einsum('mic,mjc->mij', dX, dX)
     G = torch.bmm(dX_T, dX)  # (M, 3, 3)
-    # print("G shape:", G.shape)
     # Inverse G: (M, 3, 3)
-
     Ginv = torch.linalg.pinv(G)  # stable pseudo-inverse for singular cases
     # Ginv = torch.linalg.inv(G)  # faster, uses LU
-
-    # print("Ginv shape:", Ginv.shape)
 
     # Weights: Ginv @ dX^T -> (M, 3, 4)
     # W = torch.einsum('mij,mkj->mki', Ginv, dX)  # (M, 4, 3)
@@ -885,13 +827,6 @@ def interpolate_sdf_of_vertices(
     # Interpolate SDF
     phi_v = (W * v_phi).sum(dim=1)  # (M,)
 
-    # true_vertices_sdf, true_vertices_sdf_grad = sphere_sdf_and_grad(vertices)
-    # threshold = 10000
-    # sdf_mask = abs(phi_v - true_vertices_sdf) > threshold
-    # for i in range(sdf_mask.sum().item()):
-    #     print(f"Vertex {tets[sdf_mask][i]} ,SDF mismatch: {phi_v[sdf_mask][i]} vs {true_vertices_sdf[sdf_mask][i]}, W : {W[sdf_mask][i]}")
-    #     print(f"Sites positions: {sites[tets[sdf_mask][i]]}")
-    #     print(f"Vertices positions: {vertices[sdf_mask][i]}")
     return phi_v
 
 
@@ -946,7 +881,7 @@ def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
 
 
 def faces_via_dict(d3dsimplices, ridges):
-    # 1) build dict of (a,b) → list of simplex-indices
+    # build dict of (a,b) → list of simplex-indices
     face_dict = defaultdict(list)
     for si, simplex in enumerate(d3dsimplices):
         # all 6 edges of a 4-vertex simplex
@@ -957,7 +892,7 @@ def faces_via_dict(d3dsimplices, ridges):
 
     # face dict creates a dictionnary of all the voronoi vertex that form voronoi faces
 
-    # 2) now for each ridge (a,b) grab its list
+    # now for each ridge (a,b) grab its list
     out = []
     for a, b in ridges:
         key = (a, b) if a < b else (b, a)
@@ -1326,7 +1261,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
         sdf_values = sdf_values.squeeze()  # (N,)
         sites_sdf = sdf_values.requires_grad_()
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=1.0)
-
+    #
     upsampled = 0.0
     epoch = 0
     t0 = time()
@@ -1407,7 +1342,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
                 if args.true_cvt:
                     cvt_loss = compute_cvt_loss_true(sites, d3dsimplices, f_or_clipped_v)
                 else:
-                    cvt_loss = compute_cvt_loss_CLIPPED_vertices(sites, None, None, d3dsimplices, f_or_clipped_v)
+                    cvt_loss = compute_cvt_loss_CLIPPED_vertices(sites, d3dsimplices, f_or_clipped_v)
 
         sites_loss = args.w_cvt / 1 * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
@@ -1607,9 +1542,6 @@ def discrete_tet_volume_eikonal_loss(sites, sites_sdf_grad, tets: torch.Tensor) 
     grad_c_error = ((grad_c**2).sum(dim=-1) - 1) ** 2  # (M,)
     grad_d_error = ((grad_d**2).sum(dim=-1) - 1) ** 2  # (M,)
 
-    # grad_avg = (grad_a + grad_b + grad_c + grad_d) / 4.0
-    # grad_norm2 = (grad_avg**2).sum(dim=-1)
-
     a = sites[tets[:, 0]]
     b = sites[tets[:, 1]]
     c = sites[tets[:, 2]]
@@ -1617,7 +1549,6 @@ def discrete_tet_volume_eikonal_loss(sites, sites_sdf_grad, tets: torch.Tensor) 
 
     volume = volume_tetrahedron(a, b, c, d)
 
-    # loss = 0.5 * torch.mean(volume * (grad_norm2 - 1) ** 2)
     loss = 0.5 * torch.mean(volume * (grad_a_error + grad_b_error + grad_c_error + grad_d_error))  # (M,)
 
     return loss
@@ -1754,18 +1685,8 @@ def circumcenter_torch(points, simplices):
         raise ValueError("Only 2D (triangles) and 3D (tetrahedra) are supported.")
 
 
-def compute_cvt_loss_CLIPPED_vertices(sites, sites_sdf, sites_sdf_grad, d3dsimplices, all_vor_vertices):
+def compute_cvt_loss_CLIPPED_vertices(sites, d3dsimplices, all_vor_vertices):
     d3dsimplices = torch.tensor(d3dsimplices, device=sites.device).detach()
-    # all_vor_vertices = compute_vertices_3d_vectorized(sites, d3dsimplices)  # (M,3)
-    # vertices_to_compute, _, used_tet = compute_zero_crossing_vertices_3d(
-    #     sites, None, None, d3dsimplices.cpu().numpy(), sites_sdf
-    # )
-    # vertices = compute_vertices_3d_vectorized(sites, vertices_to_compute)
-    # clipped, _ = tet_plane_clipping(d3dsimplices[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
-
-    # # replace at used_tet index the vertices with the clipped ones
-    # all_vor_vertices[used_tet] = clipped
-
     # compute centroids
     indices = d3dsimplices.flatten()  # Flatten simplex indices
     centers = all_vor_vertices.repeat_interleave(d3dsimplices.shape[1], dim=0).to(sites.device)
@@ -1922,33 +1843,6 @@ def cvt_extraction(sites, sites_sdf, d3dsimplices, build_faces=False):
     cross_mask = signs.unsqueeze(2) * signs.unsqueeze(1) < 0  # (M,4,4)
     site_mask = cross_mask.any(dim=2)  # (M,4) True if site has at least one sign change edge
 
-    # vectors_to_site = tet_sites - vertices.unsqueeze(1)  # (M, 4, 3)
-    # vectors_to_site[~site_mask] = 0.0  # Zero out vectors for non-crossing sites
-    # count = site_mask.sum(dim=1, keepdim=True).clamp(min=1)  # (M,1) avoid division by zero
-
-    # print("Vectors to site shape:", vectors_to_site.shape, "Count shape:", count.shape)
-
-    # avg_dir = vectors_to_site.sum(dim=1) / count  # (M,3)
-
-    # print("Average direction shape:", avg_dir.shape)
-
-    # eps = 1e-12
-    # norm2 = avg_dir.norm(dim=1, keepdim=True).clamp(min=eps)  # Avoid division by zero
-    # print("Norm2 shape:", norm2.shape)
-    # step = (avg_dir / norm2.squeeze(-1)).unsqueeze(-1) * sdf_verts  # (M,3)
-    # projected = vertices - step
-    # --------------------------------
-    # eps = 1e-8
-    # phi = torch.abs(tet_sdf) + eps  # (M, 4)
-    # weights = 1.0 / phi  # (M, 4)
-    # weights = weights / weights.sum(dim=1, keepdim=True)  # (M, 4)
-
-    # predicted_zero_point = torch.sum(tet_sites * weights.unsqueeze(-1), dim=1)  # (M, 3)
-
-    # projected = predicted_zero_point
-
-    # print(vertices.shape, projected.shape)
-
     # -------------
     # Broadcast vertex to shape (M, 4, 3)
     v = vertices.unsqueeze(1)  # (M, 1, 3)
@@ -2011,21 +1905,10 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
 
     sdf_values = sdf_values.squeeze()  # (N,)
 
-    # if d3dsimplices is None:
-    #     sites_np = sites.detach().cpu().numpy()
-    #     if args.marching_tetrahedra:
-    #         d3dsimplices = Delaunay(sites_np).simplices
-    #     else:
-    #         d3dsimplices, _ = pygdel3d.triangulate(sites_np)
-    #         d3dsimplices = np.array(d3dsimplices)
-
     sites_np = sites.detach().cpu().numpy()
     d3dsimplices = Delaunay(sites_np).simplices
 
     if args.w_chamfer > 0:
-        # v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = get_clipped_mesh_numba(
-        #     sites, None, d3dsimplices, args.clip, sdf_values, True
-        # )
         v_vect, f_vect = cvt_extraction(sites, sdf_values, d3dsimplices, True)
         if args.marching_tetrahedra:
             output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_intDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
@@ -2251,6 +2134,345 @@ def complex_alpha_sdf(mnfld_points, sites):
     S = -trimesh.proximity.signed_distance(mesh, sites.detach().cpu().numpy())
     sdf0 = torch.from_numpy(S).to(device, dtype=torch.float32).requires_grad_()
     return sdf0
+
+
+def upsampling_adaptive_vectorized_sites_sites_sdf(
+    sites: torch.Tensor,  # (N,3)
+    simplices=None,  # np.ndarray (M,4) if tri is None
+    model=None,  # SDFGrid | nn.Module | Tensor (N,)
+    sites_sdf_grads=None,  # (N,3) spatial gradients ∇φ at each site
+    spacing_target: float = None,  # desired final spacing  (same units as sites)
+    alpha_high: float = 1.5,  # regime switches   (α_high > α_low ≥ 1)
+    alpha_low: float = 1.1,
+    curv_pct: float = 0.75,  # percentile threshold for curvature pass
+    growth_cap: float = 0.10,  # ≤ fraction of current sites allowed per iter
+    eps: float = 1e-12,
+    ups_method: str = "tet_frame",  # | "tet_random" | "random",
+    score: str = "legacy",  # | "density" | "cosine" | "conservative"
+):
+    """
+    # ------------------------------------------------------------------------------
+    # Adaptive upsample: balances uniform coverage and high-curvature refinement
+    # ------------------------------------------------------------------------------
+    Returns:
+        updated_sites      -- (N+4K,3)
+        updated_sites_sdf  -- (N+4K,)
+    """
+    device = sites.device
+    N = sites.shape[0]
+
+    # SDF at original sites
+    if model is None:
+        raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
+    if model.__class__.__name__ == "SDFGrid":
+        sdf_values = model.sdf(sites)
+    elif isinstance(model, torch.Tensor):
+        sdf_values = model.to(device)
+    else:  # nn.Module / callable
+        sdf_values = model(sites).detach()
+    sdf_values = sdf_values.squeeze()  # (N,)
+
+    # Build edge list (ridge points)
+
+    all_tets = torch.as_tensor(simplices, device=device).long()
+
+    edges = torch.cat(
+        [
+            all_tets[:, [0, 1]],
+            all_tets[:, [1, 2]],
+            all_tets[:, [2, 3]],
+            all_tets[:, [3, 0]],
+            all_tets[:, [0, 2]],
+            all_tets[:, [1, 3]],
+        ],
+        dim=0,
+    )
+    neighbors, _ = torch.sort(edges, dim=1)
+    neighbors = torch.unique(neighbors, dim=0)  # (E,2)
+
+    # Local spacing ρᵢ  (shortest incident edge)
+    edge_vec = sites[neighbors[:, 1]] - sites[neighbors[:, 0]]  # (E,3)
+    edge_len = torch.norm(edge_vec, dim=1)  # (E,)
+
+    # Compute minimum distance to neighbors
+    idx_all = torch.cat([neighbors[:, 0], neighbors[:, 1]])
+    dists_all = torch.cat([edge_len, edge_len])
+    min_dists = torch.full((N,), float("inf"), device=device)
+    min_dists = min_dists.scatter_reduce(0, idx_all, dists_all, reduce="amin")  # (N,)
+
+    # # Gradient ∇φ and curvature proxy κᵢ  (1-ring normal variation)
+    # # ∇φ estimate (scatter-add of finite-difference contributions)
+    sdf_diff = sdf_values[neighbors[:, 1]] - sdf_values[neighbors[:, 0]]
+    sdf_diff = sdf_diff.unsqueeze(1)  # (E,1)
+
+    counts = torch.zeros((N, 1), device=device)
+    ones = torch.ones_like(sdf_diff)
+    counts = counts.index_add(0, neighbors[:, 0], ones)
+    counts = counts.index_add(0, neighbors[:, 1], ones)
+    # grad_est /= counts.clamp(min=1.0)
+
+    grad_est = sites_sdf_grads
+
+    unit_n = grad_est / (grad_est.norm(dim=1, keepdim=True) + eps)
+
+    if score == "density":
+        # Disable curvature score, use uniform density
+        curv_score = torch.ones(N, device=device)  # (N,)
+    else:
+        curv_score = torch.zeros(N, device=device)  # (N,)
+        if score != "cosine":
+            if score != "conservative":
+                # Legacy curvature score: squared distance between normals
+                dn2 = ((unit_n[neighbors[:, 0]] - unit_n[neighbors[:, 1]]) ** 2).sum(1)
+            else:
+                dn2 = ((unit_n[neighbors[:, 0]] - unit_n[neighbors[:, 1]]) ** 2).sum(1) * 0.8 + 0.2  # (E,)
+        else:
+            # Cosine similarity as curvature score from dot product
+            # Make it conservartive
+            dn2 = (1.0 - (unit_n[neighbors[:, 0]] * unit_n[neighbors[:, 1]]).sum(1)) * 0.8 + 0.2
+
+        curv_score = curv_score.index_add(0, neighbors[:, 0], dn2)
+        curv_score = curv_score.index_add(0, neighbors[:, 1], dn2)
+        curv_score /= counts.squeeze()  # mean over 1-ring
+
+    # Zero-crossing sites
+    sdf_i, sdf_j = sdf_values[neighbors[:, 0]], sdf_values[neighbors[:, 1]]
+    mask_zc = sdf_i * sdf_j <= 0
+    zc_sites = torch.unique(neighbors[mask_zc].reshape(-1))
+
+    # Decide regime (uniform / hybrid / curvature)
+    median_min_dists = torch.median(min_dists)  # global spacing
+    if spacing_target is None:
+        spacing_target = median_min_dists * 0.8  # heuristic default
+
+    score = (min_dists[zc_sites] / torch.median(min_dists[zc_sites])) * (
+        curv_score[zc_sites] / (torch.median(curv_score[zc_sites]) + eps)
+    )
+
+    M = int(min(max(1, growth_cap * N), score.numel()))
+
+    # # Construct cumsum of the scores WITHOUT sorting
+    cumsum_scores = torch.cumsum(score, dim=0)
+    total_score = cumsum_scores[-1].item()  # Last element is the total sum
+    cumsum_scores /= total_score  # Normalize to [0, 1]
+
+    # Sample M indices based on the cumulative distribution
+    random_indices = torch.rand(M, device=device)  # (M,)
+    sampled_indices = torch.searchsorted(cumsum_scores, random_indices)  # (M,
+
+    # Remove duplicates
+    sampled_indices = torch.unique(sampled_indices)
+    sampled_indices = sampled_indices[sampled_indices < score.numel()]  # Ensure valid indices
+
+    # Show the candidates percentage
+    print(f"Sampled indices: {sampled_indices.numel()} out of {score.numel()} candidates (M={M})")
+
+    cand = zc_sites[sampled_indices]  # (K,)
+
+    K = cand.numel()
+    if K == 0:
+        return sites, sdf_values  # nothing selected
+
+    if ups_method == "tet_frame":
+        # -------------------------------------------------- #
+        # Insert 4 off-spring per selected site (regular tetrahedron)
+        tetr_dirs = torch.as_tensor(
+            [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
+            dtype=torch.float32,
+            device=device,
+        )  # (4,3)
+        tetr_dirs = torch.nn.functional.normalize(tetr_dirs, dim=1)  # Normalize directions
+
+        # Build local frame from ∇ϕ (surface normal)
+        cent_grad = grad_est[cand]  # (K,3)
+        unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)
+        unit_grad = unit_grad * torch.sign(sdf_values[cand]).unsqueeze(1)  # point outward
+        frame = build_tangent_frame(unit_grad)  # (K,3,3)
+
+        # Optional anisotropic weights for axes: (t1, t2, normal)
+        anisotropy = torch.tensor([1.0, 1.0, 0.5], device=device)  # shrink in normal
+        frame = frame * anisotropy.view(1, 1, 3)  # (K,3,3)
+
+        # Rotate the 4 tetrahedral directions into local frame
+        local_dirs = tetr_dirs.T.unsqueeze(0)  # (1,3,4)
+        offs = torch.matmul(frame, local_dirs).permute(0, 2, 1)  # (K,4,3)
+        # Scale by local spacing
+        # used to be /4 but because anisotropy 0.5 its now /2
+        scale = (min_dists[cand] / 2).unsqueeze(1).unsqueeze(2)  # (K,1,1)
+        offs = offs * scale  # (K,4,3)
+
+        # Translate from centroid
+        centroids = sites[cand].unsqueeze(1)  # (K,1,3)
+        new_sites = (centroids + offs).reshape(-1, 3)  # (4K,3)
+
+        delta = new_sites.reshape(-1, 4, 3) - centroids  # (K,4,3)
+        new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
+        updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
+        updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
+
+    elif ups_method == "tet_frame_remove_parent":
+        # -------------------------------------------------- #
+        # Insert 4 off-spring per selected site (regular tetrahedron)
+        tetr_dirs = torch.as_tensor(
+            [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
+            dtype=torch.float32,
+            device=device,
+        )  # (4,3)
+        tetr_dirs = torch.nn.functional.normalize(tetr_dirs, dim=1)  # Normalize directions
+
+        # Build local frame from ∇ϕ (surface normal)
+        cent_grad = grad_est[cand]  # (K,3)
+        unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)
+        unit_grad = unit_grad * torch.sign(sdf_values[cand]).unsqueeze(1)  # point outward
+        frame = build_tangent_frame(unit_grad)  # (K,3,3)
+
+        # Optional anisotropic weights for axes: (t1, t2, normal)
+        anisotropy = torch.tensor([1.0, 1.0, 0.5], device=device)  # shrink in normal
+        frame = frame * anisotropy.view(1, 1, 3)  # (K,3,3)
+
+        # Rotate the 4 tetrahedral directions into local frame
+        local_dirs = tetr_dirs.T.unsqueeze(0)  # (1,3,4)
+        offs = torch.matmul(frame, local_dirs).permute(0, 2, 1)  # (K,4,3)
+        # Scale by local spacing
+        # used to be /4 but because anisotropy 0.5 its now /2
+        scale = (min_dists[cand] / 2).unsqueeze(1).unsqueeze(2)  # (K,1,1)
+        offs = offs * scale  # (K,4,3)
+
+        # Translate from centroid
+        centroids = sites[cand].unsqueeze(1)  # (K,1,3)
+        new_sites = (centroids + offs).reshape(-1, 3)  # (4K,3)
+
+        N = sites.shape[0]
+        if cand.dtype == torch.bool:
+            parent_mask = ~cand
+        else:
+            parent_mask = torch.ones(N, dtype=torch.bool, device=sites.device)
+            parent_mask[cand] = False  # drop parents
+
+        delta = new_sites.reshape(-1, 4, 3) - centroids  # (K,4,3)
+        new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
+        updated_sites = torch.cat([sites[parent_mask], new_sites], dim=0)
+        updated_sites_sdf = torch.cat([sdf_values[parent_mask], new_sdf], dim=0)
+
+    elif ups_method == "tet_random":
+        # ---------------------------------------------------------------- #
+        # Canonical regular-tetrahedron vertex directions (centered at origin)
+        tetr_dirs = torch.as_tensor(
+            [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]], dtype=torch.float32, device=device
+        )  # (4,3)
+
+        K = cand.shape[0]
+        centroids = sites[cand]  # (K,3)
+        scale = (min_dists[cand] / 4).unsqueeze(1)  # (K,1)
+
+        # --- Make a random rotation per centroid via random unit quaternions ---
+        def quat_to_rotmat(q):  # q: (...,4) normalized
+            w, x, y, z = q.unbind(-1)
+            ww, xx, yy, zz = w * w, x * x, y * y, z * z
+            xy, xz, yz = x * y, x * z, y * z
+            wx, wy, wz = w * x, w * y, w * z
+            R = torch.stack(
+                [
+                    ww + xx - yy - zz,
+                    2 * (xy - wz),
+                    2 * (xz + wy),
+                    2 * (xy + wz),
+                    ww - xx + yy - zz,
+                    2 * (yz - wx),
+                    2 * (xz - wy),
+                    2 * (yz + wx),
+                    ww - xx - yy + zz,
+                ],
+                dim=-1,
+            ).reshape(q.shape[:-1] + (3, 3))
+            return R
+
+        # Random unit quaternions (K,4)
+        q = torch.randn(K, 4, device=device, dtype=torch.float32)
+        q = q / q.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+        R = quat_to_rotmat(q)  # (K,3,3)
+
+        # Rotate the canonical tetra directions per centroid: (K,4,3)
+        rotated_dirs = tetr_dirs.unsqueeze(0) @ R.transpose(-1, -2)
+
+        # Build offspring: keep proportions via `scale`
+        new_sites = (centroids.unsqueeze(1) + rotated_dirs * scale.unsqueeze(1)).reshape(-1, 3)  # (4K,3)
+
+        print("Before tet random upsampling, number of sites:", sites.shape[0], "amount added:", new_sites.shape[0])
+
+        # First-order SDF interpolation φ(new) = φ(old) + ∇φ·δ
+        cent_grad = grad_est[cand]  # (K,3)
+        delta = new_sites.reshape(-1, 4, 3) - centroids.unsqueeze(1)  # (K,4,3)
+        new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)  # (4K,)
+
+        # Concatenate & return
+        updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
+        updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
+
+    elif "random":
+        eps = 1e-12
+        # Inputs
+        centroids = sites[cand]  # (K,3)
+        cent_grad = grad_est[cand]  # (K,3)
+        unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)  # (K,3)
+
+        # Hemisphere axis = -∇φ direction (to match your previous "minus grad" step)
+        axis = unit_grad * torch.sign(sdf_values[cand]).unsqueeze(1)  # (K,3)
+
+        # Build an orthonormal basis {v1, v2, axis} per centroid
+        helper = torch.tensor([0.0, 0.0, 1.0], device=device).expand_as(axis).clone()
+        near_pole = axis[:, 2].abs() > 0.99  # if axis ~ ±z, switch helper to avoid degeneracy
+        helper[near_pole] = torch.tensor([0.0, 1.0, 0.0], device=device)
+
+        v1 = torch.cross(helper, axis, dim=1)
+        v1 = v1 / (v1.norm(dim=1, keepdim=True) + eps)  # (K,3)
+        v2 = torch.cross(axis, v1, dim=1)
+        v2 = v2 / (v2.norm(dim=1, keepdim=True) + eps)  # (K,3)
+
+        # Uniform random direction on hemisphere around `axis`
+        # cos(theta) ~ U[0,1], phi ~ U[0, 2π)
+        K = centroids.shape[0]
+        u = torch.rand(K, 1, device=device)  # cos(theta)
+        phi = 2.0 * math.pi * torch.rand(K, 1, device=device)  # azimuth
+
+        sin_theta = torch.sqrt((1.0 - u**2).clamp_min(0.0))  # (K,1)
+        dir_hemi = (torch.cos(phi) * sin_theta) * v1 + (torch.sin(phi) * sin_theta) * v2 + u * axis  # (K,3)
+        # dir_hemi is unit-length (up to numerical eps)
+
+        # Step radius: keep your existing spacing-based step size
+        step_size = (min_dists[cand] / 4.0).unsqueeze(1)  # (K,1)
+        new_sites = centroids + step_size * dir_hemi  # (K,3)
+
+        print("Before upsampling, number of sites:", sites.shape[0], "amount added:", new_sites.shape[0])
+
+        # First-order SDF interpolation: φ(new) = φ(old) + ∇φ · δ
+        delta = new_sites - centroids  # (K,3)
+        new_sdf = sdf_values[cand] + (cent_grad * delta).sum(dim=1)  # (K,)
+
+        # Concatenate and return
+        updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+K, 3)
+        updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+K,)
+    else:
+        raise ValueError(f"Unknown upsampling method: {ups_method}")
+    return updated_sites, updated_sites_sdf
+
+
+def build_tangent_frame(normals):  # normals: (B, 3)
+    B = normals.shape[0]
+    device = normals.device
+
+    # Choose a global "up" vector that is not parallel to most normals
+    up = torch.tensor([1.0, 0.0, 0.0], device=device).expand(B, 3)
+    alt = torch.tensor([0.0, 1.0, 0.0], device=device).expand(B, 3)
+
+    dot = (normals * up).sum(dim=1, keepdim=True).abs()  # (B,1)
+    fallback = dot > 0.9  # (B,1) --> mask to avoid colinearity
+    base = torch.where(fallback, alt, up)  # (B,3)
+
+    tangent1 = torch.nn.functional.normalize(torch.cross(normals, base, dim=1), dim=1)
+    tangent2 = torch.nn.functional.normalize(torch.cross(normals, tangent1, dim=1), dim=1)
+
+    return torch.stack([tangent1, tangent2, normals], dim=-1)  # (B, 3, 3)
 
 
 def check_if_already_processed(args):
