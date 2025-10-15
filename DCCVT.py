@@ -6,18 +6,19 @@ import tqdm as tqdm
 from time import time
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
 import polyscope as ps
 import kaolin
-import shlex, re
-
-
+import shlex
+import re
+import gudhi
+import trimesh
+from collections import defaultdict
+from sklearn.neighbors import NearestNeighbors
 import pygdel3d
 from scipy.spatial import Delaunay
 import sdfpred_utils.sdfpred_utils as su
 import sdfpred_utils.loss_functions as lf
 from pytorch3d.loss import chamfer_distance
-
 import argparse
 
 sys.path.append("3rdparty/HotSpot")
@@ -732,54 +733,44 @@ def process_single_mesh(arg_list):
         print(f"Skipping already processed mesh: {output_obj_file}")
     else:
         print("args: ", args)
-        # try:
-        model, mnfld_points = load_model(args.mesh, args.target_size, args.trained_HotSpot)
-        sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
+        try:
+            model, mnfld_points = load_model(args.mesh, args.target_size, args.trained_HotSpot)
+            sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
 
-        if args.w_chamfer > 0:
-            if args.sdf_type == "bounding_sphere":
-                # bounding sphere of mnfld points
-                radius = torch.norm(mnfld_points, dim=-1).max().item() + 0.1
-                sdf = torch.norm(sites - torch.zeros(3).to(device), dim=-1) - radius
-                sdf = sdf.detach().squeeze(-1).requires_grad_()
-                print("sdf:", sdf.shape, sdf.dtype, sdf.is_leaf)
-            elif args.sdf_type == "complex_alpha":
-                sdf = complex_alpha_sdf(mnfld_points, sites)
-                print("sdf:", sdf.shape, sdf.dtype, sdf.is_leaf)
+            if args.w_chamfer > 0:
+                if args.sdf_type == "bounding_sphere":
+                    # bounding sphere of mnfld points
+                    radius = torch.norm(mnfld_points, dim=-1).max().item() + 0.1
+                    sdf = torch.norm(sites - torch.zeros(3).to(device), dim=-1) - radius
+                    sdf = sdf.detach().squeeze(-1).requires_grad_()
+                    print("sdf:", sdf.shape, sdf.dtype, sdf.is_leaf)
+                elif args.sdf_type == "complex_alpha":
+                    sdf = complex_alpha_sdf(mnfld_points, sites)
+                    print("sdf:", sdf.shape, sdf.dtype, sdf.is_leaf)
 
+                else:
+                    sdf = init_sdf(model, sites)
             else:
-                sdf = init_sdf(model, sites)
+                sdf = model
+
+            # Extract the initial mesh
+            extract_mesh(sites, sdf, mnfld_points, 0, args, state="init")
+
+            if args.w_chamfer > 0 or args.w_voroloss > 0:
+                t0 = time()
+                sites, sdf = train_DCCVT(sites, sdf, mnfld_points, model, args)
+                ti = time() - t0
+
+            # Extract the final mesh
+            extract_mesh(sites, sdf, mnfld_points, ti, args, state="final")
+        except Exception as e:
+            print(f"Error processing mesh {args.mesh}: {e}")
         else:
-            sdf = model
-
-        # Extract the initial mesh
-        extract_mesh(sites, sdf, mnfld_points, 0, args, state="init")
-
-        if args.w_chamfer > 0 or args.w_voroloss > 0:
-            t0 = time()
-            sites, sdf = train_DCCVT(sites, sdf, mnfld_points, model, args)
-            ti = time() - t0
-
-        # Extract the final mesh
-        extract_mesh(sites, sdf, mnfld_points, ti, args, state="final")
-        # except Exception as e:
-        #     print(f"Error processing mesh {args.mesh}: {e}")
-        # else:
-        #     print(f"Finished processing mesh: {args.mesh}")
-        #     torch.cuda.empty_cache()
+            print(f"Finished processing mesh: {args.mesh}")
+            torch.cuda.empty_cache()
 
 
 def complex_alpha_sdf(mnfld_points, sites):
-    # pip install gudhi trimesh networkx
-    import gudhi
-    import trimesh
-    from collections import defaultdict
-    from sklearn.neighbors import NearestNeighbors
-    import igl
-
-    import numpy as np
-    from scipy.spatial import ConvexHull
-
     def alpha_shape_3d(points: np.ndarray, alpha: float):
         """
         Build a 3D alpha shape mesh from points using Gudhi.
@@ -800,7 +791,6 @@ def complex_alpha_sdf(mnfld_points, sites):
 
         # Count how many tetrahedra incident to each triangle; boundary triangles have <=1 incident tet
         tri_incidence = defaultdict(int)
-        tet_set = set(tets)
         for tet in tets:
             a, b, c, d = tet
             faces = [(a, b, c), (a, b, d), (a, c, d), (b, c, d)]
@@ -830,32 +820,19 @@ def complex_alpha_sdf(mnfld_points, sites):
         assert mesh.is_winding_consistent, "Inconsistent winding; fix_normals should help."
         return mesh
 
-    def pick_alpha(points, k=8, quantile=0.9):
+    def pick_alpha(points, k=8, quantile=0.9, magnitude=15.0):
         nbrs = NearestNeighbors(n_neighbors=k).fit(points)
         dists, _ = nbrs.kneighbors(points)
         # ignore the zero distance to self at column 0 by slicing from 1:
         scale = np.quantile(dists[:, 1:].mean(axis=1), quantile)
         # for some reasons at 1.5 mesh is not watertight and trimesh cant fix it
-        return 15 * scale  # tweak factor (1.0–3.0) depending on how tight/loose you want
-
-    print(mnfld_points.shape)
+        # so for safety we multiply by 15
+        return magnitude * scale
 
     alpha = pick_alpha(mnfld_points.squeeze(0).detach().cpu().numpy())  # or set manually
     mesh = alpha_shape_3d(mnfld_points.squeeze(0).detach().cpu().numpy(), alpha)
-    # V, F = convex_hull_mesh(mnfld_points.squeeze(0).detach().cpu().numpy())
-    ps.init()
-    ps.register_surface_mesh("Complex alpha shape mesh: ", mesh.vertices, mesh.faces)
-    ps.register_point_cloud("Points: ", mnfld_points.squeeze(0).detach().cpu().numpy())
-    pscloud = ps.register_point_cloud("Sites: ", sites.detach().cpu().numpy())
-    ps.show()
-
-    # S = sdf_pyigl(V, F, sites.detach().cpu().numpy())
-    # S = sdf_trimesh(V, F, sites.detach().cpu().numpy())
     S = -trimesh.proximity.signed_distance(mesh, sites.detach().cpu().numpy())
-    # S = sdf_fcpw_rayparity(V, F, sites.detach().cpu().numpy())
     sdf0 = torch.from_numpy(S).to(device, dtype=torch.float32).requires_grad_()
-    pscloud.add_scalar_quantity("SDF", S, enabled=True)
-    ps.show()
     return sdf0
 
 
