@@ -101,7 +101,7 @@ python -c "import voronoiaccel; print('voronoiaccel OK')"
 What it is: Python bindings for the `3rdparty/gDel3D` CUDA code, exposed as `import pygdel3d`.
 
 ```bash
-./scripts/apply_patches.sh
+bash scripts/apply_patches.sh
 pip install -e 3rdparty/gDel3D/python_bindings
 ```
 
@@ -118,14 +118,14 @@ What it is: PyTorch3D from source (so it matches your Python/PyTorch/CUDA). The 
 Note: `pytorch3d`'s `setup.py` imports `torch`, so the build must run with your already-installed PyTorch available (use `--no-build-isolation`). If you are offline / behind restricted network access, add `--no-deps` and make sure `iopath` is already installed in your environment.
 
 ```bash
-./scripts/apply_patches.sh
+bash scripts/apply_patches.sh
 pip install -e 3rdparty/pytorch3d --no-build-isolation
 ```
 
 Offline / restricted-network variant:
 
 ```bash
-./scripts/apply_patches.sh
+bash scripts/apply_patches.sh
 pip install -e 3rdparty/pytorch3d --no-build-isolation --no-deps
 ```
 
@@ -140,8 +140,8 @@ python -c "import pytorch3d; from pytorch3d.ops import knn_points; print('pytorc
 What it is: NVIDIA Kaolin from source. The patch loosens the torch version constraint so newer torch releases can install.
 
 ```bash
-git -C 3rdparty/kaolin apply ../kaolin.patch
-pip install -e 3rdparty/kaolin
+bash scripts/apply_patches.sh
+pip install -e 3rdparty/kaolin --no-build-isolation
 ```
 
 Verify:
@@ -153,7 +153,14 @@ python -c "import kaolin; print('kaolin OK')"
 If Kaolin refuses your torch version, you can bypass the check:
 
 ```bash
-IGNORE_TORCH_VER=1 pip install -e 3rdparty/kaolin
+IGNORE_TORCH_VER=1 pip install -e 3rdparty/kaolin --no-build-isolation
+```
+
+Offline / restricted-network variant:
+
+```bash
+bash scripts/apply_patches.sh
+pip install -e 3rdparty/kaolin --no-build-isolation --no-deps
 ```
 
 #### 5.5 `open3d` (submodule + patch + build pip package)
