@@ -186,7 +186,7 @@ std::tuple<float, float, float,  float, float, float, float, float, float, float
 
     // Compute the error using the FCPW library
     // cd1, cd2, f1, 0.0, float(recall), float(precision), completeness1, completeness2, accuracy1, accuracy2
-    return std::make_tuple(cd1, cd2, f1, ndc, recall, precision, distance1_pred, distance2_pred, distance1_target, distance2_target, pred_closest, target_closest);
+    return std::make_tuple(cd1, cd2, f1, ndc, recall, precision, distance1_pred, distance2_pred, distance1_target, distance2_target);
 }
 
 
