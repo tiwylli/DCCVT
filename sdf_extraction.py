@@ -14,6 +14,7 @@ import voronoiaccel
 import pytorch3d.ops
 import time
 
+
 def grid_to_mesh(grid_dict, z, scale=1.0, translate=(0, 0, 0)):
     cell_width = grid_dict["xyz"][0][2] - grid_dict["xyz"][0][1]
 
@@ -27,14 +28,14 @@ def grid_to_mesh(grid_dict, z, scale=1.0, translate=(0, 0, 0)):
     )
 
     # Adjust vertices based on the grid dictionary and scaling
-    verts = verts + np.array(
-        [grid_dict["xyz"][0][0], grid_dict["xyz"][1][0], grid_dict["xyz"][2][0]]
-    )
-    verts = verts * (1 / scale) - translate 
+    verts = verts + np.array([grid_dict["xyz"][0][0], grid_dict["xyz"][1][0], grid_dict["xyz"][2][0]])
+    verts = verts * (1 / scale) - translate
 
     return (verts, faces, normals, values)
 
+
 ###### SIMPLE SDF FUNCTIONS ######
+
 
 def sdf_sphere(pnts):
     """
@@ -44,10 +45,13 @@ def sdf_sphere(pnts):
     """
     return np.linalg.norm(pnts, axis=1) - 0.5
 
+
 ####### HOTSPOT SDF ########
 
 sys.path.append("3rdparty/HotSpot")
 import models.Net as Net
+
+
 def load_hotspot(input_path):
     # From DCCVT code
     model = Net.Network(
@@ -66,6 +70,7 @@ def load_hotspot(input_path):
     model.load_state_dict(torch.load(input_path, weights_only=True, map_location=torch.device("cuda")))
     return model
 
+
 def sdf_hotspot(pnts, input_path):
     # Load the HotSpot decoder model
     decoder = load_hotspot(input_path)
@@ -75,19 +80,13 @@ def sdf_hotspot(pnts, input_path):
         # point: (100000, 3)
         point = torch.tensor(point, device=0, dtype=torch.float32)
 
-        z.append(
-            decoder(point)
-            .detach()
-            .cpu()
-            .numpy()
-            .squeeze()
-        )
-    z = (
-        np.concatenate(z, axis=0)
-    )
+        z.append(decoder(point).detach().cpu().numpy().squeeze())
+    z = np.concatenate(z, axis=0)
     return z
 
+
 ######## OUR SDF ########
+
 
 def volume_tetrahedron(a, b, c, d):
     ad = a - d
@@ -104,11 +103,15 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="", help="Output file path for the mesh.")
     parser.add_argument("--viz", action="store_true", help="Visualize the mesh using polyscope.", default=False)
     parser.add_argument("--resolution", type=int, default=64, help="Resolution of the 3D grid.")
-    parser.add_argument("--method", type=str, default="marching_cubes", choices=["mc", "mt"], help="Method to use for mesh extraction.")
+    parser.add_argument(
+        "--method", type=str, default="marching_cubes", choices=["mc", "mt"], help="Method to use for mesh extraction."
+    )
 
     # add submodule for command line arguments
     # hotspot, tetrahedron, sphere
-    parser.add_argument("--shape", type=str, default="sphere", choices=["hotspot", "ours", "sphere"], help="Shape to use for SDF.")
+    parser.add_argument(
+        "--shape", type=str, default="sphere", choices=["hotspot", "ours", "sphere"], help="Shape to use for SDF."
+    )
     parser.add_argument("--input", type=str, default="", help="Input file path for the SDF in various format.")
 
     args = parser.parse_args()
@@ -120,7 +123,7 @@ if __name__ == "__main__":
 
         # Points (N, 3)
         pnts = grid_dict["grid_points"]
-        
+
         # SDF values (N,)
         if args.shape == "sphere":
             # Compute SDF for a sphere
@@ -138,38 +141,33 @@ if __name__ == "__main__":
             d3dsimplices, _ = pygdel3d.triangulate(np.array(sites))
             # d3dsimplices = scipy.spatial.Delaunay(np.array(sites)).simplices
 
-            # Go through all the simplices to found where the grid points 
+            # Go through all the simplices to found where the grid points
             # by checking each tetrahedron if it contains the grid points
             sites = torch.tensor(sites, device=0, dtype=torch.float32)
             d3dsimplices = torch.tensor(d3dsimplices, device=0)
             pnts = torch.tensor(pnts, device=0, dtype=torch.float32)
-            
-            # Found the index of the closest tetrahedron for each point 
+
+            # Found the index of the closest tetrahedron for each point
             # using pytorch3d with knn=1
             t0 = time.time()
             _, idx, _ = pytorch3d.ops.knn_points(
-                pnts.unsqueeze(0), 
-                sites.unsqueeze(0), 
-                K=10, 
-                return_nn=True, 
-                return_sorted=True
+                pnts.unsqueeze(0), sites.unsqueeze(0), K=10, return_nn=True, return_sorted=True
             )
             t1 = time.time()
             print(f"Time to find closest tetrahedron: {t1 - t0:.4f} seconds")
             idx = idx.squeeze(0)  # (N, 1) -> (N,)
             print(idx.shape)
-            index_points = voronoiaccel.tetrahedra_index(d3dsimplices.cpu().numpy(), 
-                                           pnts.cpu().numpy(), 
-                                           sites.cpu().numpy(),  
-                                           idx.cpu().numpy())
+            index_points = voronoiaccel.tetrahedra_index(
+                d3dsimplices.cpu().numpy(), pnts.cpu().numpy(), sites.cpu().numpy(), idx.cpu().numpy()
+            )
             index_points = torch.tensor(index_points, device=0, dtype=torch.int32)
 
             # Filter all points with -1 index
             # Not that the following code will run with -1 index but the interpolation will be invalid
             valid_mask = index_points != -1
-           
+
             sdf_values = torch.zeros(pnts.shape[0], device=0, dtype=torch.float32)
-            
+
             # Get all tet points vectorized based of index_points
             tet_points = sites[d3dsimplices[index_points]]
             tet_sdfs = sdf_values[d3dsimplices[index_points]]
@@ -182,13 +180,11 @@ if __name__ == "__main__":
                 v1 = tet[:, 1]
                 v2 = tet[:, 2]
                 v3 = tet[:, 3]
+
                 # Compute volumes for barycentric coordinates
                 def vol(a, b, c, d):
-                    return torch.abs(torch.einsum(
-                        'ij,ij->i',
-                        torch.cross(b - a, c - a),
-                        d - a
-                    )) / 6.0
+                    return torch.abs(torch.einsum("ij,ij->i", torch.cross(b - a, c - a), d - a)) / 6.0
+
                 v = vol(v0, v1, v2, v3)
                 w0 = vol(p, v1, v2, v3) / v
                 w1 = vol(v0, p, v2, v3) / v
@@ -207,13 +203,15 @@ if __name__ == "__main__":
 
         else:
             raise ValueError(f"Unknown shape: {args.shape}")
-        
+
         # Reshape SDF values to 3D grid
         # TODO: Weird reshape, should be fixed
-        z = sdf_values.reshape(
-            grid_dict["xyz"][1].shape[0], grid_dict["xyz"][0].shape[0], grid_dict["xyz"][2].shape[0]
-            ).transpose(1, 0, 2).astype(np.float32)
-        
+        z = (
+            sdf_values.reshape(grid_dict["xyz"][1].shape[0], grid_dict["xyz"][0].shape[0], grid_dict["xyz"][2].shape[0])
+            .transpose(1, 0, 2)
+            .astype(np.float32)
+        )
+
         # Extract mesh with marching cubes
         verts, faces, normals, values = grid_to_mesh(grid_dict, z, scale=args.scale, translate=args.translate)
     elif args.method == "mt":
@@ -244,17 +242,19 @@ if __name__ == "__main__":
             sdf_values = data["sdf_values"]
 
             # Convert to torch tensors
-            pnts = torch.tensor(sites, device=0, dtype=torch.float32).cpu().numpy() # Depending on the delaunay implementation
+            pnts = (
+                torch.tensor(sites, device=0, dtype=torch.float32).cpu().numpy()
+            )  # Depending on the delaunay implementation
             sdf_values = torch.tensor(sdf_values, device=0, dtype=torch.float32)
-            
+
         else:
             # Create a regular grid for the mesh extraction
             grid_dict = get_3d_grid(resolution=args.resolution)
-            pnts = grid_dict["grid_points"] 
-            
+            pnts = grid_dict["grid_points"]
+
             # Add small random noise to the points
             noise = np.random.normal(scale=1e-4, size=pnts.shape)
-            pnts += noise # TODO: This is a hack to avoid numerical issues with the SDF computation
+            pnts += noise  # TODO: This is a hack to avoid numerical issues with the SDF computation
 
             # Evaluate the SDF at the grid points
             sdf_values = None
@@ -270,7 +270,7 @@ if __name__ == "__main__":
 
         # Use gDel3D to build the tetrahedral mesh
         print("Building tetrahedral mesh using pygdel3d...")
-        
+
         # d3dsimplices, _ = pygdel3d.triangulate(np.array(pnts))
         d3dsimplices = scipy.spatial.Delaunay(pnts).simplices
 
@@ -283,7 +283,7 @@ if __name__ == "__main__":
         vertices_list, faces_list = marching_tetrehedra_mesh
         verts = vertices_list[0].detach().cpu().numpy()
         faces = faces_list[0].detach().cpu().numpy()
-        normals = None # Assuming normals are not computed in this case (TODO: Implement if needed)
+        normals = None  # Assuming normals are not computed in this case (TODO: Implement if needed)
 
     if args.output != "":
         # Save mesh to file
@@ -295,8 +295,3 @@ if __name__ == "__main__":
         polyscope.init()
         polyscope_mesh = polyscope.register_surface_mesh("mesh", verts, faces)
         polyscope.show()
-
-
-
-
-
