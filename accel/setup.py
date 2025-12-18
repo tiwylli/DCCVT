@@ -26,7 +26,45 @@ class CMakeExtension(Extension):
 
 
 class CMakeBuild(build_ext):
+    def _ensure_submodules_present(self, ext: CMakeExtension) -> None:
+        sourcedir = Path(ext.sourcedir)
+        required = [
+            sourcedir / "pybind11" / "CMakeLists.txt",
+            sourcedir / "3rdparty" / "fcpw" / "CMakeLists.txt",
+        ]
+        if all(path.is_file() for path in required):
+            return
+
+        missing = ", ".join(str(path.relative_to(sourcedir)) for path in required if not path.is_file())
+        repo_root = sourcedir.parent
+
+        if os.environ.get("VORONOIACCEL_SKIP_SUBMODULE_UPDATE"):
+            raise RuntimeError(
+                f"Missing required git submodules: {missing}. "
+                "Run `git submodule update --init --recursive` and retry."
+            )
+
+        if not (repo_root / ".git").exists():
+            raise RuntimeError(
+                f"Missing required sources ({missing}) and no git metadata found at {repo_root}. "
+                "If installing from a git checkout, clone with `--recurse-submodules` or run "
+                "`git submodule update --init --recursive`."
+            )
+
+        subprocess.run(
+            ["git", "submodule", "update", "--init", "--recursive"],
+            cwd=repo_root,
+            check=True,
+        )
+
+        if not all(path.is_file() for path in required):
+            raise RuntimeError(
+                f"git submodule update completed, but required sources are still missing: {missing}."
+            )
+
     def build_extension(self, ext: CMakeExtension) -> None:
+        self._ensure_submodules_present(ext)
+
         # Must be in this form due to bug in .resolve() only fixed in Python 3.10+
         ext_fullpath = Path.cwd() / self.get_ext_fullpath(ext.name)
         extdir = ext_fullpath.parent.resolve()
@@ -49,6 +87,7 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}{os.sep}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DCMAKE_BUILD_TYPE={cfg}",  # not used on MSVC, but no harm
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
         ]
         build_args = []
         # Adding CMake arguments set as environment variable

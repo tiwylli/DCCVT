@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
+
+# CMake >= 3.28 removed compatibility with cmake_minimum_required(VERSION < 3.5).
+# Some vendored/submodule dependencies (pybind11, enoki) still declare older
+# minimums, so set this to allow configuring them without patching submodules.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum policy version for third-party CMake projects" FORCE)
+
 project(voronoiaccel)
 
 add_subdirectory(pybind11)
