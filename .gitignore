@@ -46,6 +46,8 @@ old/*.ini
 *.blend
 *.so
 venv/
+.venv/
+.venv*/
 accel/build/
 accel/voronoiaccel.egg-info/
 .DS_Store

@@ -2,6 +2,22 @@
 
 This repo contains DCCVT experiments plus several native / CUDA dependencies vendored as git submodules.
 
+## Quickstart
+
+```bash
+git clone --recurse-submodules <YOUR_REPO_URL>
+cd DCCVT
+bash scripts/bootstrap.sh
+source .venv/bin/activate
+```
+
+`bootstrap.sh` installs PyTorch by default; use `bash scripts/bootstrap.sh --help` to choose a torch wheel (`--torch cu126`, `--torch cpu`, etc.) or to run in `--offline` mode.
+
+Examples:
+
+- CUDA 12.6: `bash scripts/bootstrap.sh --torch cu126`
+- CPU-only: `bash scripts/bootstrap.sh --torch cpu`
+
 ## Entry points
 
 - `DCCVT_noDeadCode.py`
@@ -28,7 +44,7 @@ You do **not** manually clone the repos inside `3rdparty/` — they are git subm
 
 ```bash
 git clone --recurse-submodules <YOUR_REPO_URL>
-cd Kyushu_experiments-1
+cd DCCVT
 ```
 
 If you already cloned without submodules:
@@ -77,10 +93,18 @@ General notes:
 
 - Run these commands from the repo root, with your `.venv` activated.
 - `pip install -e <path>` installs a package in “editable” mode: the code stays in-place, but any compiled extensions are built and installed into your venv.
-- Patches in this repo (`3rdparty/*.patch`) are meant to be applied on top of the pinned submodule revisions. If `git apply` reports the patch is already applied, you can skip that step.
+- Patches in this repo (`3rdparty/*.patch`, `patches/*.patch`) are meant to be applied on top of the pinned submodule revisions. If `git apply` reports the patch is already applied, you can skip that step.
 - If a build fails after you changed compilers/CUDA/Python, try again after deleting the submodule’s `build/` folder (or `pip uninstall <name>` and re-run the install).
 - If you want to confirm each step worked, run the “verify” command after each install below.
 - Not every repo in `3rdparty/` needs to be installed as a Python package; the list below covers the ones imported by the main scripts in this repo.
+
+#### 5.0 Apply local patches (once)
+
+This repo includes a small number of compatibility patches (CUDA/toolchain/torch-version).
+
+```bash
+bash scripts/apply_patches.sh
+```
 
 #### 5.1 `voronoiaccel` (local pybind11/CMake extension)
 
@@ -101,7 +125,6 @@ python -c "import voronoiaccel; print('voronoiaccel OK')"
 What it is: Python bindings for the `3rdparty/gDel3D` CUDA code, exposed as `import pygdel3d`.
 
 ```bash
-bash scripts/apply_patches.sh
 pip install -e 3rdparty/gDel3D/python_bindings
 ```
 
@@ -118,14 +141,12 @@ What it is: PyTorch3D from source (so it matches your Python/PyTorch/CUDA). The 
 Note: `pytorch3d`'s `setup.py` imports `torch`, so the build must run with your already-installed PyTorch available (use `--no-build-isolation`). If you are offline / behind restricted network access, add `--no-deps` and make sure `iopath` is already installed in your environment.
 
 ```bash
-bash scripts/apply_patches.sh
 pip install -e 3rdparty/pytorch3d --no-build-isolation
 ```
 
 Offline / restricted-network variant:
 
 ```bash
-bash scripts/apply_patches.sh
 pip install -e 3rdparty/pytorch3d --no-build-isolation --no-deps
 ```
 
@@ -140,7 +161,6 @@ python -c "import pytorch3d; from pytorch3d.ops import knn_points; print('pytorc
 What it is: NVIDIA Kaolin from source. The patch loosens the torch version constraint so newer torch releases can install.
 
 ```bash
-bash scripts/apply_patches.sh
 pip install -e 3rdparty/kaolin --no-build-isolation
 ```
 
@@ -159,7 +179,6 @@ IGNORE_TORCH_VER=1 pip install -e 3rdparty/kaolin --no-build-isolation
 Offline / restricted-network variant:
 
 ```bash
-bash scripts/apply_patches.sh
 pip install -e 3rdparty/kaolin --no-build-isolation --no-deps
 ```
 
@@ -168,7 +187,6 @@ pip install -e 3rdparty/kaolin --no-build-isolation --no-deps
 What it is: Open3D built from source (the patch reduces optional components and fixes a small build issue).
 
 ```bash
-git -C 3rdparty/open3d apply ../open3d.patch
 cmake -S 3rdparty/open3d -B 3rdparty/open3d/build -GNinja -DBUILD_PYTHON_MODULE=ON -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')"
 cmake --build 3rdparty/open3d/build --config Release --target install-pip-package
 ```
