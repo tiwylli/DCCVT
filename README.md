@@ -101,6 +101,7 @@ python -c "import voronoiaccel; print('voronoiaccel OK')"
 What it is: Python bindings for the `3rdparty/gDel3D` CUDA code, exposed as `import pygdel3d`.
 
 ```bash
+./scripts/apply_patches.sh
 pip install -e 3rdparty/gDel3D/python_bindings
 ```
 
@@ -114,9 +115,18 @@ python -c "import pygdel3d; print('pygdel3d OK')"
 
 What it is: PyTorch3D from source (so it matches your Python/PyTorch/CUDA). The patch is a small compatibility tweak.
 
+Note: `pytorch3d`'s `setup.py` imports `torch`, so the build must run with your already-installed PyTorch available (use `--no-build-isolation`). If you are offline / behind restricted network access, add `--no-deps` and make sure `iopath` is already installed in your environment.
+
 ```bash
-git -C 3rdparty/pytorch3d apply ../pytorch3d.patch
-pip install -e 3rdparty/pytorch3d
+./scripts/apply_patches.sh
+pip install -e 3rdparty/pytorch3d --no-build-isolation
+```
+
+Offline / restricted-network variant:
+
+```bash
+./scripts/apply_patches.sh
+pip install -e 3rdparty/pytorch3d --no-build-isolation --no-deps
 ```
 
 Verify:

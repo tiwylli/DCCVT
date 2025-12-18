@@ -1,0 +1,19 @@
+diff --git a/GDelFlipping/src/gDel3D/GPU/CudaWrapper.h b/GDelFlipping/src/gDel3D/GPU/CudaWrapper.h
+index 2e178a5..e28c8f5 100644
+--- a/GDelFlipping/src/gDel3D/GPU/CudaWrapper.h
++++ b/GDelFlipping/src/gDel3D/GPU/CudaWrapper.h
+@@ -177,7 +177,13 @@ inline int cutGetMaxGflopsDeviceId()
+             sm_per_multiproc = arch_cores_sm[2];
+         }
+ 
+-        int compute_perf  = deviceProp.multiProcessorCount * sm_per_multiproc * deviceProp.clockRate;
++        // Newer CUDA toolkits removed some fields from cudaDeviceProp (e.g. clockRate).
++        // Query the SM clock rate via cudaDeviceGetAttribute instead.
++        int clock_rate_khz = 0;
++        CudaSafeCall(cudaDeviceGetAttribute(&clock_rate_khz, cudaDevAttrClockRate, current_device));
++        if (clock_rate_khz <= 0) clock_rate_khz = 1;
++
++        int compute_perf  = deviceProp.multiProcessorCount * sm_per_multiproc * clock_rate_khz;
+         if( compute_perf  > max_compute_perf ) {
+             // If we find GPU with SM major > 2, search only these
+             if ( best_SM_arch > 2 ) {
