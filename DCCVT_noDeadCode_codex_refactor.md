@@ -67,3 +67,81 @@ DCCVT_noDeadCode_codex.py        # entrypoint wrapper (CLI preserved)
 - No changes to numerical behavior, thresholds, or control flow.
 - No changes to CLI flags or default values.
 - No dependency changes.
+
+## Next-step concrete split plan (pending approval)
+
+### Goal
+Reduce `dccvt/pipeline.py` into focused modules without changing logic, control flow, or numerics.
+
+### Proposed modules and contents
+- `dccvt/geometry.py`
+  - Voronoi / Delaunay / clipping utilities:
+    - `get_clipped_mesh_numba`
+    - `compute_zero_crossing_vertices_3d`
+    - `compute_zero_crossing_sites_pairs`
+    - `compute_all_bisectors_vectorized`
+    - `compute_vertices_3d_vectorized`
+    - `interpolate_sdf_of_vertices`
+    - `interpolate_sdf_grad_of_vertices`
+    - `quaternion_slerp_barycentric`
+    - `quaternion_slerp`
+    - `tet_plane_clipping`
+    - `newton_step_clipping`
+    - `circumcenter_torch`
+    - `compute_voronoi_cell_centers_index_based_torch`
+    - `compute_cvt_loss_vectorized_delaunay`
+    - `compute_cvt_loss_CLIPPED_vertices`
+    - `compute_cvt_loss_true`
+    - `faces_via_dict`
+    - `get_faces`
+    - Numba helpers: `batch_sort_numba`, `sort_face_loop_numba`
+    - Small vector helpers: `_compute_normal`, `_normalize`, `_angle`
+
+- `dccvt/sdf_gradients.py`
+  - SDF gradient and curvature utilities:
+    - `sdf_space_grad_pytorch_diego_sites_tets`
+    - `sdf_space_grad_pytorch_diego`
+    - `volume_tetrahedron`
+    - `smoothed_heaviside`
+    - `tet_sdf_motion_mean_curvature_loss`
+    - `discrete_tet_volume_eikonal_loss`
+    - `estimate_eps_H`
+
+- `dccvt/upsampling.py`
+  - Adaptive upsampling:
+    - `upsampling_adaptive_vectorized_sites_sites_sdf`
+    - `build_tangent_frame`
+
+- `dccvt/mesh_ops.py`
+  - Mesh extraction + sampling:
+    - `cvt_extraction`
+    - `extract_mesh`
+    - `sample_mesh_points_heitz`
+
+- `dccvt/training.py`
+  - Optimization loops and losses:
+    - `train_DCCVT`
+    - `Voroloss_opt`
+
+- `dccvt/alpha_shape.py`
+  - Alpha-shape SDF helper:
+    - `complex_alpha_sdf`
+
+- `dccvt/runner.py`
+  - Experiment glue:
+    - `process_single_mesh`
+    - `check_if_already_processed`
+
+### Migration sequence (small, reviewable steps)
+1. Move geometry-only helpers to `dccvt/geometry.py` and update imports.
+2. Move gradient/curvature utilities to `dccvt/sdf_gradients.py` and update imports.
+3. Move upsampling helpers to `dccvt/upsampling.py` and update imports.
+4. Move mesh extraction/sample helpers to `dccvt/mesh_ops.py` and update imports.
+5. Move training loop + `Voroloss_opt` to `dccvt/training.py` and update imports.
+6. Move alpha-shape SDF to `dccvt/alpha_shape.py` and update imports.
+7. Move process/skip logic to `dccvt/runner.py` and reduce `pipeline.py` to re-exports (or delete `pipeline.py` if unused).
+
+### Guardrails
+- Do not change function bodies, control flow, or numerical operations.
+- Only adjust imports and module boundaries.
+- Keep CLI behavior and output naming identical.
