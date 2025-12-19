@@ -36,6 +36,7 @@ This project used to be installed via conda (`env.yml` is kept for reference), b
   - `git`
   - a C/C++ compiler toolchain
   - `cmake` and `ninja`
+  - Python headers (e.g. `sudo apt-get install python3.12-dev` on Ubuntu)
 - If you want GPU acceleration: a working CUDA toolkit + driver compatible with your chosen PyTorch wheel
 
 ### 1) Clone + submodules

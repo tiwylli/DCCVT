@@ -21,6 +21,37 @@ TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.22.1}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-}"
 OPEN3D_PACKAGE="${OPEN3D_PACKAGE:-open3d-cpu}"
 
+require_python_headers() {
+  local py_bin="$1"
+  local include_dir
+  include_dir="$("$py_bin" - <<'PY'
+import sysconfig
+print(sysconfig.get_config_var("INCLUDEPY") or sysconfig.get_path("include"))
+PY
+)"
+  if [[ -z "$include_dir" || ! -f "$include_dir/Python.h" ]]; then
+    cat <<EOF >&2
+[bootstrap] Missing Python headers (Python.h).
+Install your system Python dev package, e.g.:
+  sudo apt-get install python3.12-dev
+Then re-run: pip install -e accel
+EOF
+    exit 1
+  fi
+}
+
+require_cmd() {
+  local cmd="$1"
+  local hint="${2:-}"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "[bootstrap] Missing dependency: $cmd" >&2
+    if [[ -n "$hint" ]]; then
+      echo "$hint" >&2
+    fi
+    exit 1
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage: bash scripts/bootstrap.sh [options]
@@ -151,6 +182,33 @@ torch_index_url_for_variant() {
 }
 
 detect_torch_variant() {
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    local smi_out
+    smi_out="$(nvidia-smi 2>/dev/null || true)"
+    # Example: "CUDA Version: 13.0"
+    local smi_release
+    smi_release="$(printf '%s' "$smi_out" | sed -n 's/.*CUDA Version: \\([0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p' | head -n 1)"
+    local smi_major="${smi_release%.*}"
+    local smi_minor="${smi_release#*.}"
+    if [[ -n "$smi_major" && -n "$smi_minor" ]]; then
+      if [[ "$smi_major" -eq 13 ]]; then
+        echo "cu126"
+        return 0
+      fi
+      if [[ "$smi_major" -eq 12 && "$smi_minor" -ge 6 ]]; then
+        echo "cu126"
+        return 0
+      fi
+      if [[ "$smi_major" -eq 12 && "$smi_minor" -ge 4 ]]; then
+        echo "cu124"
+        return 0
+      fi
+      if [[ "$smi_major" -eq 11 ]]; then
+        echo "cu118"
+        return 0
+      fi
+    fi
+  fi
   if command -v nvcc >/dev/null 2>&1; then
     local nvcc_out
     nvcc_out="$(nvcc -V 2>/dev/null || true)"
@@ -189,6 +247,7 @@ fi
 
 VENV_PY="$VENV_DIR/bin/python"
 PIP="$VENV_PY -m pip"
+export PATH="$VENV_DIR/bin:$PATH"
 
 echo "[bootstrap] Upgrading pip tooling..."
 $PIP install -U pip setuptools wheel
@@ -232,13 +291,14 @@ fi
 echo "[bootstrap] Applying local patches..."
 bash "$ROOT/scripts/apply_patches.sh"
 
-PIP_LOCAL_FLAGS=(--no-build-isolation)
+PIP_LOCAL_FLAGS=()
 if [[ $OFFLINE -eq 1 ]]; then
-  PIP_LOCAL_FLAGS+=(--no-deps)
+  PIP_LOCAL_FLAGS+=(--no-build-isolation --no-deps)
 fi
 
 if [[ $WITH_ACCEL -eq 1 ]]; then
   echo "[bootstrap] Installing accel (voronoiaccel)..."
+  require_python_headers "$VENV_PY"
   $PIP install -e "$ROOT/accel" "${PIP_LOCAL_FLAGS[@]}"
 fi
 
@@ -246,8 +306,10 @@ if [[ $WITH_GDEL3D -eq 1 ]]; then
   if ! command -v nvcc >/dev/null 2>&1; then
     echo "[bootstrap] Skipping gDel3D: nvcc not found in PATH."
   else
+    require_cmd cmake "Install cmake (e.g. sudo apt-get install cmake) or ensure it's in PATH."
     echo "[bootstrap] Installing gDel3D python bindings (pygdel3d)..."
-    $PIP install -e "$ROOT/3rdparty/gDel3D/python_bindings" "${PIP_LOCAL_FLAGS[@]}"
+    # gDel3D's pyproject.toml does not declare cmake; avoid build isolation.
+    $PIP install -e "$ROOT/3rdparty/gDel3D/python_bindings" --no-build-isolation "${PIP_LOCAL_FLAGS[@]}"
   fi
 fi
 
@@ -256,7 +318,8 @@ if [[ $WITH_PYTORCH3D -eq 1 ]]; then
     echo "[bootstrap] Skipping pytorch3d: torch is not installed in the venv."
   else
     echo "[bootstrap] Installing pytorch3d..."
-    $PIP install -e "$ROOT/3rdparty/pytorch3d" "${PIP_LOCAL_FLAGS[@]}"
+    # pytorch3d's setup.py imports torch during build.
+    $PIP install -e "$ROOT/3rdparty/pytorch3d" --no-build-isolation "${PIP_LOCAL_FLAGS[@]}"
   fi
 fi
 
@@ -265,7 +328,8 @@ if [[ $WITH_KAOLIN -eq 1 ]]; then
     echo "[bootstrap] Skipping kaolin: torch is not installed in the venv."
   else
     echo "[bootstrap] Installing kaolin..."
-    $PIP install -e "$ROOT/3rdparty/kaolin" "${PIP_LOCAL_FLAGS[@]}"
+    # kaolin's setup.py imports torch during build.
+    $PIP install -e "$ROOT/3rdparty/kaolin" --no-build-isolation "${PIP_LOCAL_FLAGS[@]}"
   fi
 fi
 
