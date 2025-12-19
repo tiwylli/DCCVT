@@ -38,8 +38,8 @@ np.random.seed(69)
 # Generate a timestamp string for unique output folders
 import datetime
 
-# timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-timestamp = "alphashape"
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+# timestamp = "alphashape"
 
 # timestamp = "ALL_CASE_DCCVT"
 # timestamp = "FIGURE_CASE_441708"

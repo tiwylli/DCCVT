@@ -1,28 +1,29 @@
 # this file should be run to generate results comparison between DCCVT, Voromesh and the different methods of optimisation
-import os
-import sys
 import argparse
-import tqdm as tqdm
+import datetime
+import math
+import os
+import re
+import shlex
+import sys
+from collections import defaultdict
 from time import time
-import torch
-from torch import nn
-from numba import njit, prange
+
+import gudhi
+import kaolin
 import numpy as np
 import polyscope as ps
-import kaolin
-import shlex
-import re
-import gudhi
-import trimesh
-from collections import defaultdict
-from sklearn.neighbors import NearestNeighbors
 import pygdel3d
-from scipy.spatial import Delaunay
+import torch
+import tqdm as tqdm
+import trimesh
+from numba import njit, prange
 from pytorch3d.loss import chamfer_distance
 from pytorch3d.ops import knn_points
 from pytorch3d.transforms import quaternion_to_matrix
-import datetime
-import math
+from scipy.spatial import Delaunay
+from sklearn.neighbors import NearestNeighbors
+from torch import nn
 
 sys.path.append("3rdparty/HotSpot")
 from dataset import shape_3d
@@ -194,6 +195,10 @@ def load_arg_lists_from_file(path: str, defaults: dict, mesh_ids=None):
     return arg_lists
 
 
+def _add_bool_arg(parser, flag, default, help_text):
+    parser.add_argument(flag, action=argparse.BooleanOptionalAction, default=default, help=help_text)
+
+
 def define_options_parser(arg_list=None):
     parser = argparse.ArgumentParser(description="DCCVT experiments")
     parser.add_argument("--input_dims", type=int, default=DEFAULTS["input_dims"], help="Dimensionality of the input")
@@ -208,60 +213,28 @@ def define_options_parser(arg_list=None):
     parser.add_argument("--num_centroids", type=int, default=DEFAULTS["num_centroids"], help="Number of centroids")
     parser.add_argument("--sample_near", type=int, default=DEFAULTS["sample_near"], help="Samples drawn near each site")
     parser.add_argument("--target_size", type=int, default=DEFAULTS["target_size"], help="Target size for sampling")
-    parser.add_argument(
-        "--clip", action=argparse.BooleanOptionalAction, default=DEFAULTS["clip"], help="Enable/disable clipping"
-    )
+    _add_bool_arg(parser, "--clip", DEFAULTS["clip"], "Enable/disable clipping")
     parser.add_argument(
         "--grad_interpol",
         type=str,
         default=DEFAULTS["grad_interpol"],
         help="Gradient interpolation method: robust, hybrid, barycentric",
     )
-    parser.add_argument(
-        "--marching_tetrahedra",
-        action=argparse.BooleanOptionalAction,
-        default=DEFAULTS["marching_tetrahedra"],
-        help="Enable/disable marching_tetrahedra",
+    _add_bool_arg(
+        parser, "--marching_tetrahedra", DEFAULTS["marching_tetrahedra"], "Enable/disable marching_tetrahedra"
     )
-    parser.add_argument(
-        "--true_cvt",
-        action=argparse.BooleanOptionalAction,
-        default=DEFAULTS["true_cvt"],
-        help="Enable/disable true CVT loss",
-    )
-    parser.add_argument(
-        "--extract_optim",
-        action=argparse.BooleanOptionalAction,
-        default=DEFAULTS["extract_optim"],
-        help="Enable/disable extraction optimization",
-    )
+    _add_bool_arg(parser, "--true_cvt", DEFAULTS["true_cvt"], "Enable/disable true CVT loss")
+    _add_bool_arg(parser, "--extract_optim", DEFAULTS["extract_optim"], "Enable/disable extraction optimization")
     parser.add_argument(
         "--sdf_type",
         type=str,
         default=DEFAULTS["sdf_type"],
         help="SDF type: hotspot, sphere, complex_alpha",
     )
-    parser.add_argument(
-        "--no_mp",
-        action=argparse.BooleanOptionalAction,
-        default=DEFAULTS["no_mp"],
-        help="Enable/disable multiprocessing",
-    )
-    parser.add_argument(
-        "--ups_extraction",
-        action=argparse.BooleanOptionalAction,
-        default=DEFAULTS["ups_extraction"],
-        help="Enable/disable upsampling extraction",
-    )
-    parser.add_argument(
-        "--build_mesh",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable/disable build mesh",
-    )
-    parser.add_argument(
-        "--video", action=argparse.BooleanOptionalAction, default=False, help="Enable/disable video output"
-    )
+    _add_bool_arg(parser, "--no_mp", DEFAULTS["no_mp"], "Enable/disable multiprocessing")
+    _add_bool_arg(parser, "--ups_extraction", DEFAULTS["ups_extraction"], "Enable/disable upsampling extraction")
+    _add_bool_arg(parser, "--build_mesh", False, "Enable/disable build mesh")
+    _add_bool_arg(parser, "--video", False, "Enable/disable video output")
     parser.add_argument("--w_cvt", type=float, default=DEFAULTS["w_cvt"], help="Weight for CVT regularization")
     parser.add_argument(
         "--w_vertex_sdf_interpolation",
@@ -295,6 +268,47 @@ def define_options_parser(arg_list=None):
         help="Score computation [legacy, density, sqrt_curvature, cosine]",
     )
     return parser.parse_args(arg_list)
+
+
+def resolve_sdf_values(model, sites, *, verbose=False):
+    if model is None:
+        raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
+    if model.__class__.__name__ == "SDFGrid":
+        if verbose:
+            print("Using SDFGrid")
+        sdf_values = model.sdf(sites)
+    elif isinstance(model, torch.Tensor):
+        if verbose:
+            print("Using Tensor")
+        sdf_values = model.to(device)
+    else:  # nn.Module / callable
+        if verbose:
+            print("Using nn.Module / callable model")
+        sdf_values = model(sites).detach()
+    return sdf_values.squeeze()
+
+
+def compute_d3d_simplices(sites, marching_tetrahedra):
+    sites_np = sites.detach().cpu().numpy()
+    if marching_tetrahedra:
+        return Delaunay(sites_np).simplices
+    d3dsimplices, _ = pygdel3d.triangulate(sites_np)
+    return np.array(d3dsimplices)
+
+
+def build_dccvt_obj_path(args, state, variant):
+    prefix = "marching_tetrahedra" if args.marching_tetrahedra else "DCCVT"
+    return (
+        f"{args.save_path}/{prefix}_{args.upsampling}_{state}_{variant}_"
+        f"cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+    )
+
+
+def build_voromesh_obj_path(args, state):
+    return (
+        f"{args.save_path}/voromesh_{args.num_centroids}_{state}_DCCVT_"
+        f"cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+    )
 
 
 def load_model(mesh, target, trained_HotSpot):
@@ -1239,7 +1253,13 @@ def newton_step_clipping(grads, sdf_verts, new_vertices):
 
 
 def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
-    if args.w_chamfer > 0:
+    use_chamfer = args.w_chamfer > 0
+    use_cvt = args.w_cvt > 0
+    use_voroloss = args.w_voroloss > 0
+    use_sdfsmooth = args.w_sdfsmooth > 0
+    use_vertex_interp = args.w_vertex_sdf_interpolation > 0
+
+    if use_chamfer:
         optimizer = torch.optim.Adam(
             [
                 {"params": [sites], "lr": args.lr_sites},
@@ -1250,15 +1270,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
     else:
         optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
         # SDF at original sites
-        if sites_sdf is None:
-            raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
-        if sites_sdf.__class__.__name__ == "SDFGrid":
-            sdf_values = sites_sdf.sdf(sites)
-        elif isinstance(sites_sdf, torch.Tensor):
-            sdf_values = sites_sdf.to(device)
-        else:  # nn.Module / callable
-            sdf_values = sites_sdf(sites).detach()
-        sdf_values = sdf_values.squeeze()  # (N,)
+        sdf_values = resolve_sdf_values(sites_sdf, sites, verbose=False)
         sites_sdf = sdf_values.requires_grad_()
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=1.0)
     #
@@ -1276,16 +1288,10 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
     for epoch in tqdm.tqdm(range(args.num_iterations)):
         optimizer.zero_grad()
 
-        if args.w_cvt > 0 or args.w_chamfer > 0:
-            sites_np = sites.detach().cpu().numpy()
-            if args.marching_tetrahedra:
-                d3dsimplices = Delaunay(sites_np).simplices
+        if use_cvt or use_chamfer:
+            d3dsimplices = compute_d3d_simplices(sites, args.marching_tetrahedra)
 
-            else:
-                d3dsimplices, _ = pygdel3d.triangulate(sites_np)
-                d3dsimplices = np.array(d3dsimplices)
-
-        if args.w_chamfer > 0:
+        if use_chamfer:
             if args.marching_tetrahedra:
                 d3dsimplices = torch.tensor(d3dsimplices, device=device)
                 marching_tetrehedra_mesh = kaolin.ops.conversions.marching_tetrahedra(
@@ -1330,11 +1336,11 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
             else:
                 chamfer_loss_mesh, _ = chamfer_distance(mnfld_points.detach(), v_vect.unsqueeze(0))
 
-        if args.w_voroloss > 0:
+        if use_voroloss:
             voroloss_loss = voroloss(mnfld_points.squeeze(0), sites).mean()
 
-        if args.w_cvt > 0:
-            if args.w_voroloss > 0:
+        if use_cvt:
+            if use_voroloss:
                 cvt_loss = compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
             else:
                 # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
@@ -1346,7 +1352,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
 
         sites_loss = args.w_cvt / 1 * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
-        if args.w_sdfsmooth > 0:
+        if use_sdfsmooth:
             if sites_sdf_grads is None:
                 sites_sdf_grads, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(
                     sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach()
@@ -1363,7 +1369,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
             shl = args.w_sdfsmooth * tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3dsimplices, eps_H)
             sdf_loss = eik_loss + shl
 
-        if args.w_vertex_sdf_interpolation > 0:
+        if use_vertex_interp:
             steps_verts = tet_probs[1]
             # all_vor_vertices = compute_vertices_3d_vectorized(sites, d3dsimplices)  # (M,3)
             # vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3dsimplices, sites, sites_sdf)
@@ -1395,7 +1401,7 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
                 upsampled = args.upsampling
                 sites = sites.detach().requires_grad_(True)
 
-                if args.w_chamfer > 0:
+                if use_chamfer:
                     sites_sdf = sites_sdf.detach().requires_grad_(True)
                     optimizer = torch.optim.Adam(
                         [
@@ -1412,29 +1418,21 @@ def train_DCCVT(sites, sites_sdf, mnfld_points, hotspot_model, args):
                 continue
 
             if d3dsimplices is None:
-                if args.marching_tetrahedra:
-                    d3dsimplices = Delaunay(sites_np).simplices
-                else:
-                    d3dsimplices, _ = pygdel3d.triangulate(sites_np)
-                    d3dsimplices = np.array(d3dsimplices)
+                d3dsimplices = compute_d3d_simplices(sites, args.marching_tetrahedra)
 
             if sites_sdf_grads is None or sites_sdf_grads.shape[0] != sites_sdf.shape[0]:
                 sites_sdf_grads, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(
                     sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach().clone()
                 )
 
-            if args.w_chamfer > 0:
+            if use_chamfer:
                 sites, sites_sdf = upsampling_adaptive_vectorized_sites_sites_sdf(
                     sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method, score=args.score
                 )
                 sites = sites.detach().requires_grad_(True)
                 sites_sdf = sites_sdf.detach().requires_grad_(True)
 
-                if args.marching_tetrahedra:
-                    d3dsimplices = Delaunay(sites.detach().cpu().numpy()).simplices
-                else:
-                    d3dsimplices, _ = pygdel3d.triangulate(sites.detach().cpu().numpy())
-                    d3dsimplices = np.array(d3dsimplices)
+                d3dsimplices = compute_d3d_simplices(sites, args.marching_tetrahedra)
 
                 optimizer = torch.optim.Adam(
                     [
@@ -1890,30 +1888,14 @@ def cvt_extraction(sites, sites_sdf, d3dsimplices, build_faces=False):
 
 def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=None, t=time()):
     print(f"Extracting mesh at state: {state} with upsampling: {args.upsampling}")
-    # SDF at original sites
-    if model is None:
-        raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
-    if model.__class__.__name__ == "SDFGrid":
-        print("Using SDFGrid")
-        sdf_values = model.sdf(sites)
-    elif isinstance(model, torch.Tensor):
-        print("Using Tensor")
-        sdf_values = model.to(device)
-    else:  # nn.Module / callable
-        print("Using nn.Module / callable model")
-        sdf_values = model(sites).detach()
-
-    sdf_values = sdf_values.squeeze()  # (N,)
+    sdf_values = resolve_sdf_values(model, sites, verbose=True)  # (N,)
 
     sites_np = sites.detach().cpu().numpy()
     d3dsimplices = Delaunay(sites_np).simplices
 
     if args.w_chamfer > 0:
         v_vect, f_vect = cvt_extraction(sites, sdf_values, d3dsimplices, True)
-        if args.marching_tetrahedra:
-            output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_intDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
-        else:
-            output_obj_file = f"{args.save_path}/DCCVT_{args.upsampling}_{state}_intDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        output_obj_file = build_dccvt_obj_path(args, state, "intDCCVT")
         save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
         save_target_pc_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
@@ -1921,10 +1903,7 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = get_clipped_mesh_numba(
             sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
         )
-        if args.marching_tetrahedra:
-            output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_projDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
-        else:
-            output_obj_file = f"{args.save_path}/DCCVT_{args.upsampling}_{state}_projDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        output_obj_file = build_dccvt_obj_path(args, state, "projDCCVT")
         save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
         save_target_pc_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
@@ -1933,7 +1912,7 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = get_clipped_mesh_numba(
             sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
         )
-        output_obj_file = f"{args.save_path}/voromesh_{args.num_centroids}_{state}_DCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        output_obj_file = build_voromesh_obj_path(args, state)
         save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
     if args.w_mc > 0:
@@ -1949,10 +1928,7 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
         faces = faces_list[0]
         vertices_np = vertices.detach().cpu().numpy()  # Shape [N, 3]
         faces_np = faces.detach().cpu().numpy()  # Shape [M, 3] (triangles)
-        if args.marching_tetrahedra:
-            output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_MT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
-        else:
-            output_obj_file = f"{args.save_path}/DCCVT_{args.upsampling}_{state}_MT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        output_obj_file = build_dccvt_obj_path(args, state, "MT")
         save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj(output_obj_file, vertices_np, faces_np)
 
@@ -2026,6 +2002,8 @@ def process_single_mesh(arg_list):
     args = define_options_parser(arg_list)
     args.save_path = f"{args.output}" if args.save_path is None else args.save_path
     os.makedirs(args.save_path, exist_ok=True)
+    use_chamfer = args.w_chamfer > 0
+    use_voroloss = args.w_voroloss > 0
 
     # if not os.path.exists(f"{args.save_path}/marching_tetrahedra_{args.upsampling}_final_MT.obj"):
     output_obj_file = check_if_already_processed(args)
@@ -2037,7 +2015,7 @@ def process_single_mesh(arg_list):
             model, mnfld_points = load_model(args.mesh, args.target_size, args.trained_HotSpot)
             sites = init_sites(mnfld_points, args.num_centroids, args.sample_near, args.input_dims)
 
-            if args.w_chamfer > 0:
+            if use_chamfer:
                 if args.sdf_type == "bounding_sphere":
                     # bounding sphere of mnfld points
                     radius = torch.norm(mnfld_points, dim=-1).max().item() + 0.1
@@ -2056,7 +2034,7 @@ def process_single_mesh(arg_list):
             # Extract the initial mesh
             extract_mesh(sites, sdf, mnfld_points, 0, args, state="init")
 
-            if args.w_chamfer > 0 or args.w_voroloss > 0:
+            if use_chamfer or use_voroloss:
                 t0 = time()
                 sites, sdf = train_DCCVT(sites, sdf, mnfld_points, model, args)
                 ti = time() - t0
@@ -2478,23 +2456,13 @@ def build_tangent_frame(normals):  # normals: (B, 3)
 def check_if_already_processed(args):
     state = "final"
     if args.w_chamfer > 0:
-        if args.marching_tetrahedra:
-            output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_intDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
-        else:
-            output_obj_file = f"{args.save_path}/DCCVT_{args.upsampling}_{state}_intDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
-        if args.marching_tetrahedra:
-            output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_projDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
-        else:
-            output_obj_file = f"{args.save_path}/DCCVT_{args.upsampling}_{state}_projDCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        output_obj_file = build_dccvt_obj_path(args, state, "projDCCVT")
     if args.w_voroloss > 0:
-        output_obj_file = f"{args.save_path}/voromesh_{args.num_centroids}_{state}_DCCVT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        output_obj_file = build_voromesh_obj_path(args, state)
     if args.w_mc > 0:
         print("todo: implement MC loss extraction")
     if args.w_mt > 0:
-        if args.marching_tetrahedra:
-            output_obj_file = f"{args.save_path}/marching_tetrahedra_{args.upsampling}_{state}_MT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
-        else:
-            output_obj_file = f"{args.save_path}/DCCVT_{args.upsampling}_{state}_MT_cvt{int(args.w_cvt)}_sdfsmooth{int(args.w_sdfsmooth)}.obj"
+        output_obj_file = build_dccvt_obj_path(args, state, "MT")
     return output_obj_file
 
 
