@@ -14,6 +14,7 @@ WITH_ACCEL=1
 WITH_GDEL3D=1
 WITH_PYTORCH3D=1
 WITH_KAOLIN=1
+BUILD_JOBS="${BUILD_JOBS:-}"
 
 TORCH_VARIANT="${TORCH_VARIANT:-auto}" # auto|cpu|cu118|cu124|cu126
 TORCH_VERSION="${TORCH_VERSION:-2.7.1}"
@@ -75,6 +76,7 @@ Options:
   --with-pytorch3d        install `pytorch3d` (requires torch)
   --with-kaolin           install `kaolin` (requires torch)
   --with-all              enable all of the above
+  --jobs <n>              parallel build jobs for native extensions (default: auto)
 
 Environment variables:
   VENV_DIR, PYTHON_BIN    override defaults (same as options)
@@ -83,6 +85,7 @@ Environment variables:
   TORCHVISION_VERSION     override --torchvision-version
   TORCH_INDEX_URL         override computed index URL (e.g. https://download.pytorch.org/whl/cu126)
   OPEN3D_PACKAGE          override --open3d-package
+  BUILD_JOBS              override --jobs
 EOF
 }
 
@@ -147,6 +150,10 @@ while [[ $# -gt 0 ]]; do
       WITH_KAOLIN=1
       shift
       ;;
+    --jobs)
+      BUILD_JOBS="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -162,6 +169,34 @@ done
 if ! command -v git >/dev/null 2>&1; then
   echo "Missing dependency: git" >&2
   exit 1
+fi
+
+detect_build_jobs() {
+  if command -v nproc >/dev/null 2>&1; then
+    nproc
+    return 0
+  fi
+  if command -v getconf >/dev/null 2>&1; then
+    getconf _NPROCESSORS_ONLN
+    return 0
+  fi
+  echo 1
+}
+
+if [[ -z "$BUILD_JOBS" ]]; then
+  BUILD_JOBS="$(detect_build_jobs)"
+fi
+
+if [[ -n "$BUILD_JOBS" ]]; then
+  if [[ -z "${CMAKE_BUILD_PARALLEL_LEVEL:-}" ]]; then
+    export CMAKE_BUILD_PARALLEL_LEVEL="$BUILD_JOBS"
+  fi
+  if [[ -z "${MAKEFLAGS:-}" ]]; then
+    export MAKEFLAGS="-j$BUILD_JOBS"
+  fi
+  if [[ -z "${MAX_JOBS:-}" ]]; then
+    export MAX_JOBS="$BUILD_JOBS"
+  fi
 fi
 
 echo "[bootstrap] Updating submodules..."
@@ -233,6 +268,30 @@ detect_torch_variant() {
     fi
   fi
   echo "cpu"
+}
+
+detect_cuda_home() {
+  if command -v nvcc >/dev/null 2>&1; then
+    local nvcc_path
+    nvcc_path="$(command -v nvcc)"
+    if [[ -n "$nvcc_path" ]]; then
+      (cd "$(dirname "$nvcc_path")/.." && pwd)
+      return 0
+    fi
+  fi
+  return 1
+}
+
+ensure_cuda_env() {
+  if command -v nvcc >/dev/null 2>&1; then
+    if [[ -z "${CUDA_HOME:-}" ]]; then
+      CUDA_HOME="$(detect_cuda_home || true)"
+      if [[ -n "$CUDA_HOME" ]]; then
+        export CUDA_HOME
+      fi
+    fi
+    export FORCE_CUDA=1
+  fi
 }
 
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -318,6 +377,7 @@ if [[ $WITH_PYTORCH3D -eq 1 ]]; then
     echo "[bootstrap] Skipping pytorch3d: torch is not installed in the venv."
   else
     echo "[bootstrap] Installing pytorch3d..."
+    ensure_cuda_env
     # pytorch3d's setup.py imports torch during build.
     $PIP install -e "$ROOT/3rdparty/pytorch3d" --no-build-isolation "${PIP_LOCAL_FLAGS[@]}"
   fi
@@ -328,6 +388,7 @@ if [[ $WITH_KAOLIN -eq 1 ]]; then
     echo "[bootstrap] Skipping kaolin: torch is not installed in the venv."
   else
     echo "[bootstrap] Installing kaolin..."
+    ensure_cuda_env
     # kaolin's setup.py imports torch during build.
     $PIP install -e "$ROOT/3rdparty/kaolin" --no-build-isolation "${PIP_LOCAL_FLAGS[@]}"
   fi

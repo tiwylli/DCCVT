@@ -57,7 +57,7 @@ timestamp = "alphashape"
 # timestamp = "Ablation_64764"
 
 # Default parameters for the DCCVT experiments
-ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments"
+ROOT_DIR = "/home/wc1172/dev/DCCVT"
 # User beltegeuse:
 if os.environ.get("USER", "") == "beltegeuse":
     ROOT_DIR = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments"
@@ -80,6 +80,7 @@ DEFAULTS = {
     "ups_extraction": False,
     "build_mesh": False,
     "video": False,
+    "visualize": False,
     "sdf_type": "hotspot",  # "hotspot", "sphere", "complex_alpha"
     "w_cvt": 0,
     "w_sdfsmooth": 0,
@@ -128,6 +129,15 @@ DEFAULTS = {
         # "96481",
     ],
 }
+
+_PS_INITIALIZED = False
+
+
+def ensure_polyscope_initialized():
+    global _PS_INITIALIZED
+    if not _PS_INITIALIZED:
+        ps.init()
+        _PS_INITIALIZED = True
 
 import os, re, shlex
 
@@ -266,6 +276,12 @@ def define_options_parser(arg_list=None):
     )
     parser.add_argument(
         "--video", action=argparse.BooleanOptionalAction, default=False, help="Enable/disable video output"
+    )
+    parser.add_argument(
+        "--visualize",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULTS["visualize"],
+        help="Enable/disable Polyscope visualization",
     )
     parser.add_argument("--w_cvt", type=float, default=DEFAULTS["w_cvt"], help="Weight for CVT regularization")
     parser.add_argument(
@@ -666,8 +682,14 @@ def extract_mesh(sites, model, target_pc, time, args, state="", d3dsimplices=Non
         save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
         su.save_obj(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
         su.save_target_pc_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
-        ps.register_surface_mesh("mesh", v_vect.detach().cpu().numpy(), f_vect)
-        ps.show()
+        if args.visualize:
+            try:
+                print("printing")
+                ensure_polyscope_initialized()
+                ps.register_surface_mesh("mesh", v_vect.detach().cpu().numpy(), f_vect)
+                ps.show()
+            except Exception as exc:
+                print(f"Polyscope visualization skipped: {exc}")
 
     if args.w_voroloss > 0:
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = su.get_clipped_mesh_numba(
@@ -860,6 +882,7 @@ def check_if_already_processed(args):
 
 
 if __name__ == "__main__":
+    ps.init()
     root = argparse.ArgumentParser(add_help=True)
     root.add_argument(
         "--args-file",
