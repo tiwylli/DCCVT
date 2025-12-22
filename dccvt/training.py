@@ -1,6 +1,5 @@
 """Optimization loops and loss definitions for DCCVT."""
 
-from time import time
 from typing import Any, Tuple
 
 import kaolin
@@ -11,13 +10,13 @@ from pytorch3d.ops import knn_points
 from torch import nn
 
 from dccvt.geometry import (
-    compute_cvt_loss_CLIPPED_vertices,
+    compute_clipped_mesh,
+    compute_cvt_loss_delaunay,
+    compute_cvt_loss_from_clipped_vertices,
     compute_cvt_loss_true,
-    compute_cvt_loss_vectorized_delaunay,
-    compute_d3d_simplices,
-    get_clipped_mesh_numba,
+    compute_delaunay_simplices,
 )
-from dccvt.mesh_ops import cvt_extraction, extract_mesh, sample_mesh_points_heitz
+from dccvt.mesh_ops import extract_cvt_mesh, extract_mesh, sample_mesh_points_heitz
 from dccvt.model_utils import resolve_sdf_values
 from dccvt.runtime import device
 from dccvt.sdf_gradients import (
@@ -26,10 +25,14 @@ from dccvt.sdf_gradients import (
     sdf_space_grad_pytorch_diego_sites_tets,
     tet_sdf_motion_mean_curvature_loss,
 )
-from dccvt.upsampling import upsampling_adaptive_vectorized_sites_sites_sdf
-class Voroloss_opt(nn.Module):
-    def __init__(self):
-        super(Voroloss_opt, self).__init__()
+from dccvt.upsampling import upsample_sites_adaptive
+
+
+class VoronoiLoss(nn.Module):
+    """Voronoi-based point-to-cell loss."""
+
+    def __init__(self) -> None:
+        super().__init__()
         self.knn = 16
 
     def __call__(self, points, spoints):
@@ -43,7 +46,9 @@ class Voroloss_opt(nn.Module):
         vector_length = (point_to_voronoi_center[:, None, :] * voronoi_edge).sum(-1) / voronoi_edge_l
         sq_dist = (vector_length - voronoi_edge_l / 2) ** 2
         return sq_dist.min(1)[0]
-def train_DCCVT(
+
+
+def run_dccvt_training(
     sites: torch.Tensor,
     sites_sdf: Any,
     mnfld_points: torch.Tensor,
@@ -56,6 +61,7 @@ def train_DCCVT(
     use_voroloss = args.w_voroloss > 0
     use_sdfsmooth = args.w_sdfsmooth > 0
     use_vertex_interp = args.w_vertex_sdf_interpolation > 0
+    manifold_points = mnfld_points
 
     if use_chamfer:
         optimizer = torch.optim.Adam(
@@ -73,21 +79,19 @@ def train_DCCVT(
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=1.0)
     #
     upsampled = 0.0
-    epoch = 0
-    t0 = time()
     cvt_loss = 0
     chamfer_loss_mesh = 0
     voroloss_loss = 0
     sdf_loss = 0
     d3dsimplices = None
     sites_sdf_grads = None
-    voroloss = Voroloss_opt().to(device)
+    voroloss = VoronoiLoss().to(device)
 
     for epoch in tqdm.tqdm(range(args.num_iterations)):
         optimizer.zero_grad()
 
         if use_cvt or use_chamfer:
-            d3dsimplices = compute_d3d_simplices(sites, args.marching_tetrahedra)
+            d3dsimplices = compute_delaunay_simplices(sites, args.marching_tetrahedra)
 
         if use_chamfer:
             if args.marching_tetrahedra:
@@ -98,7 +102,7 @@ def train_DCCVT(
                 vertices_list, faces_list = marching_tetrehedra_mesh
                 v_vect = vertices_list[0]
                 # f_or_clipped_v = faces_list[0]
-                _, f_or_clipped_v, _, _, _ = get_clipped_mesh_numba(
+                _, f_or_clipped_v, _, _, _ = compute_clipped_mesh(
                     sites,
                     None,
                     d3dsimplices.detach().cpu().numpy(),
@@ -111,10 +115,10 @@ def train_DCCVT(
                 )
             else:
                 if args.extract_optim:
-                    v_vect, f_or_clipped_v = cvt_extraction(sites, sites_sdf, d3dsimplices, False)
+                    v_vect, f_or_clipped_v = extract_cvt_mesh(sites, sites_sdf, d3dsimplices, False)
                     sites_sdf_grads = None
                 else:
-                    v_vect, f_or_clipped_v, sites_sdf_grads, tet_probs, W = get_clipped_mesh_numba(
+                    v_vect, f_or_clipped_v, sites_sdf_grads, tet_probs, W = compute_clipped_mesh(
                         sites,
                         None,
                         d3dsimplices,
@@ -129,24 +133,24 @@ def train_DCCVT(
             if args.build_mesh:
                 triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_or_clipped_v for i in range(1, len(f) - 1)]
                 triangle_faces = torch.tensor(triangle_faces, device=device)
-                hs_p = sample_mesh_points_heitz(v_vect, triangle_faces, num_samples=mnfld_points.shape[0])
-                chamfer_loss_mesh, _ = chamfer_distance(mnfld_points.detach(), hs_p.unsqueeze(0))
+                hs_p = sample_mesh_points_heitz(v_vect, triangle_faces, num_samples=manifold_points.shape[0])
+                chamfer_loss_mesh, _ = chamfer_distance(manifold_points.detach(), hs_p.unsqueeze(0))
             else:
-                chamfer_loss_mesh, _ = chamfer_distance(mnfld_points.detach(), v_vect.unsqueeze(0))
+                chamfer_loss_mesh, _ = chamfer_distance(manifold_points.detach(), v_vect.unsqueeze(0))
 
         if use_voroloss:
-            voroloss_loss = voroloss(mnfld_points.squeeze(0), sites).mean()
+            voroloss_loss = voroloss(manifold_points.squeeze(0), sites).mean()
 
         if use_cvt:
             if use_voroloss:
-                cvt_loss = compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
+                cvt_loss = compute_cvt_loss_delaunay(sites, None, d3dsimplices)
             else:
-                # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay(sites, None, d3dsimplices)
-                # cvt_loss = lf.compute_cvt_loss_vectorized_delaunay_volume(sites, None, d3dsimplices)
+                # cvt_loss = lf.compute_cvt_loss_delaunay(sites, None, d3dsimplices)
+                # cvt_loss = lf.compute_cvt_loss_delaunay_volume(sites, None, d3dsimplices)
                 if args.true_cvt:
                     cvt_loss = compute_cvt_loss_true(sites, d3dsimplices, f_or_clipped_v)
                 else:
-                    cvt_loss = compute_cvt_loss_CLIPPED_vertices(sites, d3dsimplices, f_or_clipped_v)
+                    cvt_loss = compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, f_or_clipped_v)
 
         sites_loss = args.w_cvt / 1 * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
@@ -169,9 +173,9 @@ def train_DCCVT(
 
         if use_vertex_interp:
             steps_verts = tet_probs[1]
-            # all_vor_vertices = compute_vertices_3d_vectorized(sites, d3dsimplices)  # (M,3)
-            # vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3dsimplices, sites, sites_sdf)
-            # _, _, used_tet = compute_zero_crossing_vertices_3d(sites, None, None, d3dsimplices, sites_sdf)
+            # all_vor_vertices = compute_circumcenters(sites, d3dsimplices)  # (M,3)
+            # vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3dsimplices, sites, sites_sdf)
+            # _, _, used_tet = find_zero_crossing_vertices_3d(sites, None, None, d3dsimplices, sites_sdf)
 
             # projected_verts_sdf = vertices_sdf[used_tet] - steps_verts.norm(dim=1)
 
@@ -216,7 +220,7 @@ def train_DCCVT(
                 continue
 
             if d3dsimplices is None:
-                d3dsimplices = compute_d3d_simplices(sites, args.marching_tetrahedra)
+                d3dsimplices = compute_delaunay_simplices(sites, args.marching_tetrahedra)
 
             if sites_sdf_grads is None or sites_sdf_grads.shape[0] != sites_sdf.shape[0]:
                 sites_sdf_grads, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(
@@ -224,13 +228,13 @@ def train_DCCVT(
                 )
 
             if use_chamfer:
-                sites, sites_sdf = upsampling_adaptive_vectorized_sites_sites_sdf(
+                sites, sites_sdf = upsample_sites_adaptive(
                     sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method, score=args.score
                 )
                 sites = sites.detach().requires_grad_(True)
                 sites_sdf = sites_sdf.detach().requires_grad_(True)
 
-                d3dsimplices = compute_d3d_simplices(sites, args.marching_tetrahedra)
+                d3dsimplices = compute_delaunay_simplices(sites, args.marching_tetrahedra)
 
                 optimizer = torch.optim.Adam(
                     [
@@ -245,7 +249,7 @@ def train_DCCVT(
                 sites_sdf_grads, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(
                     sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach().clone()
                 )
-                sites, sites_sdf = upsampling_adaptive_vectorized_sites_sites_sdf(
+                sites, sites_sdf = upsample_sites_adaptive(
                     sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method, score=args.score
                 )
                 sites = sites.detach().requires_grad_(True)
@@ -255,12 +259,12 @@ def train_DCCVT(
 
             if args.ups_extraction:
                 with torch.no_grad():
-                    extract_mesh(sites, sites_sdf, mnfld_points, 0, args, state=f"{int(upsampled)}ups")
+                    extract_mesh(sites, sites_sdf, manifold_points, 0, args, state=f"{int(upsampled)}ups")
 
             upsampled += 1.0
             print("sites length AFTER: ", len(sites))
 
         if args.video:
-            extract_mesh(sites, sites_sdf, mnfld_points, 0, args, state=f"{int(epoch)}")
+            extract_mesh(sites, sites_sdf, manifold_points, 0, args, state=f"{int(epoch)}")
 
     return sites, sites_sdf

@@ -32,13 +32,13 @@ def resolve_sdf_values(model, sites, *, verbose: bool = False) -> torch.Tensor:
     return sdf_values.squeeze()
 
 
-def load_model(mesh: str, target: int, trained_HotSpot: str) -> Tuple[nn.Module, torch.Tensor]:
+def load_hotspot_model(mesh_path: str, target_size: int, hotspot_weights_path: str) -> Tuple[nn.Module, torch.Tensor]:
     """Load a HotSpot model and return the model and manifold points."""
     loss_type = "igr_w_heat"
     loss_weights = [350, 0, 0, 1, 0, 0, 20]
     train_set = shape_3d.ReconDataset(
-        file_path=mesh + ".ply",
-        n_points=target * target * 150,  # 15000, #args.n_points,
+        file_path=mesh_path + ".ply",
+        n_points=target_size * target_size * 150,  # 15000, #args.n_points,
         n_samples=10001,  # args.n_iterations,
         grid_res=256,  # args.grid_res,
         grid_range=1.1,  # args.grid_range,
@@ -72,11 +72,13 @@ def load_model(mesh: str, target: int, trained_HotSpot: str) -> Tuple[nn.Module,
         map_location = torch.device("cuda")
     else:
         map_location = torch.device("cpu")
-    model.load_state_dict(torch.load(trained_HotSpot, weights_only=True, map_location=map_location))
+    model.load_state_dict(torch.load(hotspot_weights_path, weights_only=True, map_location=map_location))
     return model, mnfld_points
 
 
-def init_sites(mnfld_points: torch.Tensor, num_centroids: int, sample_near: int, input_dims: int) -> torch.Tensor:
+def init_sites_from_mnfld_points(
+    mnfld_points: torch.Tensor, num_centroids: int, sample_near: int, input_dims: int
+) -> torch.Tensor:
     """Initialize Voronoi sites for optimization."""
     noise_scale = 0.005
     domain_limit = 1
@@ -106,8 +108,9 @@ def init_sites(mnfld_points: torch.Tensor, num_centroids: int, sample_near: int,
     return sites
 
 
-def init_sdf(model: nn.Module, sites: torch.Tensor) -> torch.Tensor:
+def init_sdf_from_model(model: nn.Module, sites: torch.Tensor) -> torch.Tensor:
     """Initialize SDF values at sites from the model."""
     sdf_values = model(sites)
     sdf_values = sdf_values.detach().squeeze(-1).requires_grad_()
     return sdf_values
+

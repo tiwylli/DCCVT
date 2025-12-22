@@ -15,7 +15,11 @@ class _SafeDict(dict):
         return "{" + key + "}"
 
 
-def load_arg_lists_from_file(path: str, defaults: Dict[str, object], mesh_ids: Optional[Iterable[str]] = None) -> List[List[str]]:
+def parse_args_template_file(
+    path: str,
+    defaults: Dict[str, object],
+    mesh_ids: Optional[Iterable[str]] = None,
+) -> List[List[str]]:
     """Load an args template file and return a list of argv-style lists."""
     if mesh_ids is None:
         mesh_ids = list(defaults.get("mesh_ids", []))
@@ -81,7 +85,7 @@ def _add_bool_arg(parser: argparse.ArgumentParser, flag: str, default: bool, hel
     parser.add_argument(flag, action=argparse.BooleanOptionalAction, default=default, help=help_text)
 
 
-def define_options_parser(
+def parse_experiment_args(
     arg_list: Optional[List[str]] = None, defaults: Optional[Dict[str, object]] = None
 ) -> argparse.Namespace:
     """Parse per-mesh experiment arguments from an argv list."""
@@ -156,3 +160,4 @@ def define_options_parser(
         help="Score computation [legacy, density, sqrt_curvature, cosine]",
     )
     return parser.parse_args(arg_list)
+

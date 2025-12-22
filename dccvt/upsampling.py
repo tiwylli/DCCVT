@@ -4,7 +4,9 @@ import math
 from typing import Tuple
 
 import torch
-def upsampling_adaptive_vectorized_sites_sites_sdf(
+
+
+def upsample_sites_adaptive(
     sites: torch.Tensor,  # (N,3)
     simplices=None,  # np.ndarray (M,4) if tri is None
     model=None,  # SDFGrid | nn.Module | Tensor (N,)
@@ -326,6 +328,7 @@ def upsampling_adaptive_vectorized_sites_sites_sdf(
 
 
 def build_tangent_frame(normals):  # normals: (B, 3)
+    """Build a local tangent frame given normal vectors."""
     B = normals.shape[0]
     device = normals.device
 
@@ -341,4 +344,3 @@ def build_tangent_frame(normals):  # normals: (B, 3)
     tangent2 = torch.nn.functional.normalize(torch.cross(normals, tangent1, dim=1), dim=1)
 
     return torch.stack([tangent1, tangent2, normals], dim=-1)  # (B, 3, 3)
-

@@ -6,7 +6,7 @@ from typing import Iterable, List
 import numpy as np
 
 
-def save_npz(sites, sites_sdf, time, args, output_file: str) -> None:
+def save_npz_bundle(sites, sites_sdf, time, args, output_file: str) -> None:
     np.savez(
         output_file,
         sites=sites.detach().cpu().numpy(),
@@ -16,7 +16,7 @@ def save_npz(sites, sites_sdf, time, args, output_file: str) -> None:
     )
 
 
-def save_obj(filename: str, vertices, faces) -> None:
+def save_obj_mesh(filename: str, vertices, faces) -> None:
     """
     Save a mesh to an OBJ file.
 
@@ -36,7 +36,7 @@ def save_obj(filename: str, vertices, faces) -> None:
             f.write(f"f {indices}\n")
 
 
-def save_target_pc_ply(filename: str, points) -> None:
+def save_point_cloud_ply(filename: str, points) -> None:
     """
     Save a point cloud to a PLY file.
 
@@ -56,7 +56,7 @@ def save_target_pc_ply(filename: str, points) -> None:
             f.write(f"{p[0]} {p[1]} {p[2]}\n")
 
 
-def copy_script(arg_lists: Iterable[List[str]], script_path: str, output_dir: str) -> None:
+def copy_experiment_script(arg_lists: Iterable[List[str]], script_path: str, output_dir: str) -> None:
     script_copy_path = os.path.join(output_dir, os.path.basename(script_path))
     os.makedirs(output_dir, exist_ok=True)
     with open(script_copy_path, "w") as f:
@@ -68,3 +68,4 @@ def copy_script(arg_lists: Iterable[List[str]], script_path: str, output_dir: st
         for arg_list in arg_lists:
             f.write(" ".join(arg_list) + "\n")
         print(f"Copied script to {script_copy_path} and arg lists to {arg_list_file}")
+

@@ -6,9 +6,9 @@ import sys
 from typing import Optional
 
 from dccvt import config
-from dccvt.argparse_utils import load_arg_lists_from_file
-from dccvt.io_utils import copy_script
-from dccvt.pipeline import process_single_mesh
+from dccvt.argparse_utils import parse_args_template_file
+from dccvt.io_utils import copy_experiment_script
+from dccvt.pipeline import run_single_mesh_experiment
 import dccvt.runtime  # initialize device + seeds
 
 
@@ -37,7 +37,9 @@ def main(script_path: Optional[str] = None) -> None:
     if root_args.args_file:
         # Provide DEFAULTS + timestamp to formatting
         merged_defaults = config.DEFAULTS | {"timestamp": config.timestamp, "ROOT_DIR": config.ROOT_DIR}
-        arg_lists = load_arg_lists_from_file(root_args.args_file, defaults=merged_defaults, mesh_ids=mesh_ids_override)
+        arg_lists = parse_args_template_file(
+            root_args.args_file, defaults=merged_defaults, mesh_ids=mesh_ids_override
+        )
         if root_args.dry_run:
             for i, a in enumerate(arg_lists):
                 print(f"[{i}] {a}")
@@ -48,7 +50,7 @@ def main(script_path: Optional[str] = None) -> None:
     if script_path is None:
         script_path = __file__
 
-    copy_script(arg_lists, script_path, config.DEFAULTS["output"])
+    copy_experiment_script(arg_lists, script_path, config.DEFAULTS["output"])
 
     for arg_list in arg_lists:
-        process_single_mesh(arg_list)
+        run_single_mesh_experiment(arg_list)

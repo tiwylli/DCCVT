@@ -7,12 +7,19 @@ import torch
 from scipy.spatial import Delaunay
 import time
 
-from dccvt.geometry import compute_vertices_3d_vectorized, get_clipped_mesh_numba, get_faces, interpolate_sdf_of_vertices
-from dccvt.geometry import compute_zero_crossing_vertices_3d
-from dccvt.io_utils import save_npz, save_obj, save_target_pc_ply
+from dccvt.geometry import (
+    compute_circumcenters,
+    compute_clipped_mesh,
+    find_zero_crossing_vertices_3d,
+    get_faces,
+    interpolate_vertex_sdf_values,
+)
+from dccvt.io_utils import save_npz_bundle, save_obj_mesh, save_point_cloud_ply
 from dccvt.model_utils import resolve_sdf_values
-from dccvt.paths import build_dccvt_obj_path, build_voromesh_obj_path
+from dccvt.paths import make_dccvt_obj_path, make_voromesh_obj_path
 from dccvt.runtime import device
+
+
 def sample_mesh_points_heitz(vertices: torch.Tensor, faces: torch.LongTensor, num_samples: int) -> torch.Tensor:
     """
     Uniformly (area weighted) sample points on a triangular mesh
@@ -70,34 +77,34 @@ def sample_mesh_points_heitz(vertices: torch.Tensor, faces: torch.LongTensor, nu
     return samples
 
 
-def cvt_extraction(sites, sites_sdf, d3dsimplices, build_faces=False):
+def extract_cvt_mesh(sites, sites_sdf, d3dsimplices, build_faces: bool = False):
     """
     Extracts a mesh from the given sites and their SDF values.
     """
     d3d = torch.tensor(d3dsimplices, device=device)  # (M,4)
-    all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
+    all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
 
-    all_vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
+    all_vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3d, sites, sites_sdf)
 
     # print("Voronoi vertices shape:", all_vor_vertices.shape, "SDF values shape:", all_vertices_sdf.shape)
 
-    vertices_to_compute, zero_crossing_sites_pairs, used_tet = compute_zero_crossing_vertices_3d(
+    vertices_to_compute, zero_crossing_sites_pairs, used_tet = find_zero_crossing_vertices_3d(
         sites, None, None, d3dsimplices, sites_sdf
     )
-    vertices = compute_vertices_3d_vectorized(sites, vertices_to_compute)
+    vertices = compute_circumcenters(sites, vertices_to_compute)
 
-    sdf_verts = interpolate_sdf_of_vertices(vertices, d3d[used_tet], sites, sites_sdf)
+    sdf_verts = interpolate_vertex_sdf_values(vertices, d3d[used_tet], sites, sites_sdf)
 
     # print("Vertices to compute:", vertices.shape, "SDF values shape:", sdf_verts.shape)
 
     tet_sites = sites[d3d[used_tet]]  # (M,4,3)
     tet_sdf = sites_sdf[d3d[used_tet]]  # (M,4)
-    signs = torch.sign(tet_sdf)  # (M,4)
-    sign_sum = torch.abs(signs.sum(dim=1))  # (M,)
-    valid_mask = sign_sum < 4  # (M,) True if there's a sign change
+    # signs = torch.sign(tet_sdf)  # (M,4)
+    # sign_sum = torch.abs(signs.sum(dim=1))  # (M,)
+    # valid_mask = sign_sum < 4  # (M,) True if there's a sign change
 
-    cross_mask = signs.unsqueeze(2) * signs.unsqueeze(1) < 0  # (M,4,4)
-    site_mask = cross_mask.any(dim=2)  # (M,4) True if site has at least one sign change edge
+    # cross_mask = signs.unsqueeze(2) * signs.unsqueeze(1) < 0  # (M,4,4)
+    # site_mask = cross_mask.any(dim=2)  # (M,4) True if site has at least one sign change edge
 
     # -------------
     # Broadcast vertex to shape (M, 4, 3)
@@ -162,27 +169,27 @@ def extract_mesh(
     d3dsimplices = Delaunay(sites_np).simplices
 
     if args.w_chamfer > 0:
-        v_vect, f_vect = cvt_extraction(sites, sdf_values, d3dsimplices, True)
-        output_obj_file = build_dccvt_obj_path(args, state, "intDCCVT")
-        save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
-        save_obj(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
-        save_target_pc_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
+        v_vect, f_vect = extract_cvt_mesh(sites, sdf_values, d3dsimplices, True)
+        output_obj_file = make_dccvt_obj_path(args, state, "intDCCVT")
+        save_npz_bundle(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
+        save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
+        save_point_cloud_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
 
-        v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = get_clipped_mesh_numba(
+        v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = compute_clipped_mesh(
             sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
         )
-        output_obj_file = build_dccvt_obj_path(args, state, "projDCCVT")
-        save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
-        save_obj(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
-        save_target_pc_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
+        output_obj_file = make_dccvt_obj_path(args, state, "projDCCVT")
+        save_npz_bundle(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
+        save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
+        save_point_cloud_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
 
     if args.w_voroloss > 0:
-        v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = get_clipped_mesh_numba(
+        v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = compute_clipped_mesh(
             sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
         )
-        output_obj_file = build_voromesh_obj_path(args, state)
-        save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
-        save_obj(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
+        output_obj_file = make_voromesh_obj_path(args, state)
+        save_npz_bundle(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
+        save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
     if args.w_mc > 0:
         # TODO:
         print("todo: implement MC loss extraction")
@@ -196,7 +203,6 @@ def extract_mesh(
         faces = faces_list[0]
         vertices_np = vertices.detach().cpu().numpy()  # Shape [N, 3]
         faces_np = faces.detach().cpu().numpy()  # Shape [M, 3] (triangles)
-        output_obj_file = build_dccvt_obj_path(args, state, "MT")
-        save_npz(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
-        save_obj(output_obj_file, vertices_np, faces_np)
-
+        output_obj_file = make_dccvt_obj_path(args, state, "MT")
+        save_npz_bundle(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
+        save_obj_mesh(output_obj_file, vertices_np, faces_np)
