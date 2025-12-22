@@ -85,74 +85,74 @@ def volume_tetrahedron(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, d: tor
     return torch.abs((ad * n).sum(dim=-1)) / 6.0
 
 
-def compute_sdf_gradients_sites(sites: torch.Tensor, sdf: torch.Tensor, tets: torch.Tensor) -> torch.Tensor:
-    """
-    Estimate per-site SDF gradients using tet gradients and volume-weighted averaging.
+# def compute_sdf_gradients_sites(sites: torch.Tensor, sdf: torch.Tensor, tets: torch.Tensor) -> torch.Tensor:
+#     """
+#     Estimate per-site SDF gradients using tet gradients and volume-weighted averaging.
 
-    This is a legacy helper; prefer compute_sdf_gradients_sites_tets when both outputs
-    are needed.
+#     This is a legacy helper; prefer compute_sdf_gradients_sites_tets when both outputs
+#     are needed.
 
-    Args:
-        sites: (N, 3) vertex coordinates.
-        sdf: (N,) SDF values per site.
-        tets: (M, 4) tetra indices into `sites`.
+#     Args:
+#         sites: (N, 3) vertex coordinates.
+#         sdf: (N,) SDF values per site.
+#         tets: (M, 4) tetra indices into `sites`.
 
-    Returns:
-        grad_sdf: (N, 3) per-site gradient estimates.
-    """
-    M = tets.shape[0]
-    tet_ids = tets
-    a, b, c, d = (
-        sites[tet_ids[:, 0]],
-        sites[tet_ids[:, 1]],
-        sites[tet_ids[:, 2]],
-        sites[tet_ids[:, 3]],
-    )
-    sdf_a, sdf_b, sdf_c, sdf_d = (
-        sdf[tet_ids[:, 0]],
-        sdf[tet_ids[:, 1]],
-        sdf[tet_ids[:, 2]],
-        sdf[tet_ids[:, 3]],
-    )
+#     Returns:
+#         grad_sdf: (N, 3) per-site gradient estimates.
+#     """
+#     M = tets.shape[0]
+#     tet_ids = tets
+#     a, b, c, d = (
+#         sites[tet_ids[:, 0]],
+#         sites[tet_ids[:, 1]],
+#         sites[tet_ids[:, 2]],
+#         sites[tet_ids[:, 3]],
+#     )
+#     sdf_a, sdf_b, sdf_c, sdf_d = (
+#         sdf[tet_ids[:, 0]],
+#         sdf[tet_ids[:, 1]],
+#         sdf[tet_ids[:, 2]],
+#         sdf[tet_ids[:, 3]],
+#     )
 
-    center = (a + b + c + d) / 4
-    sdf_center = (sdf_a + sdf_b + sdf_c + sdf_d) / 4
+#     center = (a + b + c + d) / 4
+#     sdf_center = (sdf_a + sdf_b + sdf_c + sdf_d) / 4
 
-    volume = volume_tetrahedron(a, b, c, d)
+#     volume = volume_tetrahedron(a, b, c, d)
 
-    # Build dX: (M, 4, 3)
-    X = torch.stack([a, b, c, d], dim=1)  # (M, 4, 3)
-    dX = X - center[:, None, :]
+#     # Build dX: (M, 4, 3)
+#     X = torch.stack([a, b, c, d], dim=1)  # (M, 4, 3)
+#     dX = X - center[:, None, :]
 
-    dX_T = dX.transpose(1, 2)  # (M, 3, 4)
-    G = torch.bmm(dX_T, dX)  # (M, 3, 3)
-    # Inverse G: (M, 3, 3)
-    Ginv = torch.linalg.pinv(G)  # stable pseudo-inverse for singular cases
-    # Ginv = torch.linalg.inv(G)  # faster, uses LU
+#     dX_T = dX.transpose(1, 2)  # (M, 3, 4)
+#     G = torch.bmm(dX_T, dX)  # (M, 3, 3)
+#     # Inverse G: (M, 3, 3)
+#     Ginv = torch.linalg.pinv(G)  # stable pseudo-inverse for singular cases
+#     # Ginv = torch.linalg.inv(G)  # faster, uses LU
 
-    # Weights: Ginv @ dX^T -> (M, 3, 4)
-    # W = torch.einsum('mij,mkj->mki', Ginv, dX)  # (M, 4, 3)
-    W = torch.einsum("mij,mnj->mni", Ginv, dX)
+#     # Weights: Ginv @ dX^T -> (M, 3, 4)
+#     # W = torch.einsum('mij,mkj->mki', Ginv, dX)  # (M, 4, 3)
+#     W = torch.einsum("mij,mnj->mni", Ginv, dX)
 
-    sdf_stack = torch.stack([sdf_a, sdf_b, sdf_c, sdf_d], dim=1)  # (M, 4)
-    sdf_diff = sdf_stack - sdf_center[:, None]
+#     sdf_stack = torch.stack([sdf_a, sdf_b, sdf_c, sdf_d], dim=1)  # (M, 4)
+#     sdf_diff = sdf_stack - sdf_center[:, None]
 
-    elem = torch.einsum("mi,mij->mj", sdf_diff, W)  # (M, 3)
+#     elem = torch.einsum("mi,mij->mj", sdf_diff, W)  # (M, 3)
 
-    grad_sdf = torch.zeros_like(sites)  # (N, 3)
-    weights_tot = torch.zeros_like(sdf)  # (N,)
+#     grad_sdf = torch.zeros_like(sites)  # (N, 3)
+#     weights_tot = torch.zeros_like(sdf)  # (N,)
 
-    for i in range(4):
-        ids = tet_ids[:, i]
-        grad_contrib = elem * volume[:, None]  # (M, 3)
-        grad_sdf.index_add_(0, ids, grad_contrib)
-        weights_tot.index_add_(0, ids, volume)
+#     for i in range(4):
+#         ids = tet_ids[:, i]
+#         grad_contrib = elem * volume[:, None]  # (M, 3)
+#         grad_sdf.index_add_(0, ids, grad_contrib)
+#         weights_tot.index_add_(0, ids, volume)
 
-    # Avoid division by zero (e.g., isolated vertices)
-    weights_tot_clamped = weights_tot.clamp(min=1e-8).unsqueeze(1)  # (N, 1)
-    grad_sdf /= weights_tot_clamped
+#     # Avoid division by zero (e.g., isolated vertices)
+#     weights_tot_clamped = weights_tot.clamp(min=1e-8).unsqueeze(1)  # (N, 1)
+#     grad_sdf /= weights_tot_clamped
 
-    return grad_sdf
+#     return grad_sdf
 
 
 def smoothed_heaviside(phi: torch.Tensor, eps_H: torch.Tensor) -> torch.Tensor:
