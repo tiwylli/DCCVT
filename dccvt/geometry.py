@@ -11,7 +11,7 @@ from pytorch3d.transforms import quaternion_to_matrix
 from scipy.spatial import Delaunay
 
 from dccvt.device import device
-from dccvt.sdf_gradients import sdf_space_grad_pytorch_diego_sites_tets, volume_tetrahedron
+from dccvt.sdf_gradients import compute_sdf_gradients_sites_tets, volume_tetrahedron
 
 
 def compute_delaunay_simplices(sites: torch.Tensor, marching_tetrahedra: bool) -> np.ndarray:
@@ -73,7 +73,7 @@ def compute_clipped_mesh(
         else:
             # print("-> clipping")
             vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3d, sites, sites_sdf)
-            sites_sdf_grad, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3d)  # (M,3)
+            sites_sdf_grad, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)  # (M,3)
 
             if grad_interpol == "barycentric":
                 # Use barycentric weights for interpolation
@@ -124,7 +124,7 @@ def compute_clipped_mesh(
         else:
             # print("-> clipping")
             vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3d, sites, sites_sdf)
-            sites_sdf_grad, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3d)
+            sites_sdf_grad, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)
             if grad_interpol == "barycentric":
                 # print("-> using barycentric weights for interpolation")
                 # Use barycentric weights for interpolation

@@ -85,8 +85,6 @@ def extract_cvt_mesh(sites, sites_sdf, d3dsimplices, build_faces: bool = False):
 
     all_vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3d, sites, sites_sdf)
 
-    # print("Voronoi vertices shape:", all_vor_vertices.shape, "SDF values shape:", all_vertices_sdf.shape)
-
     vertices_to_compute, zero_crossing_sites_pairs, used_tet = find_zero_crossing_vertices_3d(
         sites, None, None, d3dsimplices, sites_sdf
     )
@@ -94,18 +92,9 @@ def extract_cvt_mesh(sites, sites_sdf, d3dsimplices, build_faces: bool = False):
 
     sdf_verts = interpolate_vertex_sdf_values(vertices, d3d[used_tet], sites, sites_sdf)
 
-    # print("Vertices to compute:", vertices.shape, "SDF values shape:", sdf_verts.shape)
-
     tet_sites = sites[d3d[used_tet]]  # (M,4,3)
     tet_sdf = sites_sdf[d3d[used_tet]]  # (M,4)
-    # signs = torch.sign(tet_sdf)  # (M,4)
-    # sign_sum = torch.abs(signs.sum(dim=1))  # (M,)
-    # valid_mask = sign_sum < 4  # (M,) True if there's a sign change
 
-    # cross_mask = signs.unsqueeze(2) * signs.unsqueeze(1) < 0  # (M,4,4)
-    # site_mask = cross_mask.any(dim=2)  # (M,4) True if site has at least one sign change edge
-
-    # -------------
     # Broadcast vertex to shape (M, 4, 3)
     v = vertices.unsqueeze(1)  # (M, 1, 3)
     phi_v = sdf_verts.unsqueeze(1)  # (M, 1)

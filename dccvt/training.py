@@ -20,9 +20,9 @@ from dccvt.mesh_ops import extract_cvt_mesh, extract_mesh, sample_mesh_points_he
 from dccvt.model_utils import resolve_sdf_values
 from dccvt.device import device
 from dccvt.sdf_gradients import (
+    compute_sdf_gradients_sites_tets,
     discrete_tet_volume_eikonal_loss,
     estimate_eps_H,
-    sdf_space_grad_pytorch_diego_sites_tets,
     tet_sdf_motion_mean_curvature_loss,
 )
 from dccvt.upsampling import upsample_sites_adaptive
@@ -160,7 +160,7 @@ def run_dccvt_training(
 
         if use_sdfsmooth:
             if sites_sdf_grads is None:
-                sites_sdf_grads, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(
+                sites_sdf_grads, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(
                     sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach()
                 )
             if epoch % 100 == 0 and epoch <= 500:
@@ -231,7 +231,7 @@ def run_dccvt_training(
                 d3dsimplices = compute_delaunay_simplices(sites, args.marching_tetrahedra)
 
             if sites_sdf_grads is None or sites_sdf_grads.shape[0] != sites_sdf.shape[0]:
-                sites_sdf_grads, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(
+                sites_sdf_grads, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(
                     sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach().clone()
                 )
 
@@ -254,7 +254,7 @@ def run_dccvt_training(
                 print("Estimated eps_H: ", eps_H)
             else:
                 sites_sdf = hotspot_model(sites).squeeze(-1)
-                sites_sdf_grads, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(
+                sites_sdf_grads, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(
                     sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach().clone()
                 )
                 sites, sites_sdf = upsample_sites_adaptive(
