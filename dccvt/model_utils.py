@@ -6,7 +6,7 @@ from typing import Tuple
 import torch
 from torch import nn
 
-from dccvt.runtime import device
+from dccvt.device import device
 
 sys.path.append("3rdparty/HotSpot")
 from dataset import shape_3d
@@ -113,4 +113,3 @@ def init_sdf_from_model(model: nn.Module, sites: torch.Tensor) -> torch.Tensor:
     sdf_values = model(sites)
     sdf_values = sdf_values.detach().squeeze(-1).requires_grad_()
     return sdf_values
-

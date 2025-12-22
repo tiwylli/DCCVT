@@ -10,7 +10,7 @@ from numba import njit, prange
 from pytorch3d.transforms import quaternion_to_matrix
 from scipy.spatial import Delaunay
 
-from dccvt.runtime import device
+from dccvt.device import device
 from dccvt.sdf_gradients import sdf_space_grad_pytorch_diego_sites_tets, volume_tetrahedron
 
 

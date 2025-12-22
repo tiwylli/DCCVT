@@ -8,8 +8,8 @@ from typing import Optional
 from dccvt import config
 from dccvt.argparse_utils import parse_args_template_file
 from dccvt.io_utils import copy_experiment_script
-from dccvt.pipeline import run_single_mesh_experiment
-import dccvt.runtime  # initialize device + seeds
+from dccvt.runner import run_single_mesh_experiment
+import dccvt.device  # initialize device + seeds
 
 
 def main(script_path: Optional[str] = None) -> None:

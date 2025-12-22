@@ -12,7 +12,7 @@ from dccvt.argparse_utils import parse_experiment_args
 from dccvt.mesh_ops import extract_mesh
 from dccvt.model_utils import init_sdf_from_model, init_sites_from_mnfld_points, load_hotspot_model
 from dccvt.paths import make_dccvt_obj_path, make_voromesh_obj_path
-from dccvt.runtime import device
+from dccvt.device import device
 from dccvt.training import run_dccvt_training
 
 
@@ -53,7 +53,6 @@ def run_single_mesh_experiment(arg_list: List[str]) -> None:
                 elif args.sdf_type == "complex_alpha":
                     sdf = complex_alpha_sdf(mnfld_points, sites)
                     print("sdf:", sdf.shape, sdf.dtype, sdf.is_leaf)
-
                 else:
                     sdf = init_sdf_from_model(model, sites)
             else:

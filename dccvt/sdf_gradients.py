@@ -129,6 +129,7 @@ def sdf_space_grad_pytorch_diego(sites, sdf, tets):
     grad_sdf /= weights_tot_clamped
 
     return grad_sdf
+
 def smoothed_heaviside(phi, eps_H):
     H = torch.zeros_like(phi)
     mask1 = phi < -eps_H

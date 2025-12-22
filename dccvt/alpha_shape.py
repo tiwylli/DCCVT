@@ -8,7 +8,9 @@ import torch
 import trimesh
 from sklearn.neighbors import NearestNeighbors
 
-from dccvt.runtime import device
+from dccvt.device import device
+
+
 def complex_alpha_sdf(mnfld_points: torch.Tensor, sites: torch.Tensor) -> torch.Tensor:
     def alpha_shape_3d(points: np.ndarray, alpha: float):
         """
@@ -73,5 +75,4 @@ def complex_alpha_sdf(mnfld_points: torch.Tensor, sites: torch.Tensor) -> torch.
     S = -trimesh.proximity.signed_distance(mesh, sites.detach().cpu().numpy())
     sdf0 = torch.from_numpy(S).to(device, dtype=torch.float32).requires_grad_()
     return sdf0
-
 

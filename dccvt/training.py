@@ -18,7 +18,7 @@ from dccvt.geometry import (
 )
 from dccvt.mesh_ops import extract_cvt_mesh, extract_mesh, sample_mesh_points_heitz
 from dccvt.model_utils import resolve_sdf_values
-from dccvt.runtime import device
+from dccvt.device import device
 from dccvt.sdf_gradients import (
     discrete_tet_volume_eikonal_loss,
     estimate_eps_H,

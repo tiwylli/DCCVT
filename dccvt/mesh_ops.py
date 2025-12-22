@@ -17,7 +17,7 @@ from dccvt.geometry import (
 from dccvt.io_utils import save_npz_bundle, save_obj_mesh, save_point_cloud_ply
 from dccvt.model_utils import resolve_sdf_values
 from dccvt.paths import make_dccvt_obj_path, make_voromesh_obj_path
-from dccvt.runtime import device
+from dccvt.device import device
 
 
 def sample_mesh_points_heitz(vertices: torch.Tensor, faces: torch.LongTensor, num_samples: int) -> torch.Tensor:
