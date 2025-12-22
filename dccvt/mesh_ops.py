@@ -5,7 +5,6 @@ from typing import Any
 import kaolin
 import torch
 from scipy.spatial import Delaunay
-import time
 
 from dccvt.geometry import (
     compute_circumcenters,
@@ -155,23 +154,23 @@ def extract_mesh(
     sites: torch.Tensor,
     model: Any,
     target_pc: torch.Tensor,
-    time: float,
+    elapsed_time: float,
     args: Any,
     state: str = "",
     d3dsimplices: Any = None,
-    t=time.time(),
 ) -> None:
     """Extract mesh artifacts for the current state and persist them to disk."""
     print(f"Extracting mesh at state: {state} with upsampling: {args.upsampling}")
     sdf_values = resolve_sdf_values(model, sites, verbose=True)  # (N,)
 
-    sites_np = sites.detach().cpu().numpy()
-    d3dsimplices = Delaunay(sites_np).simplices
+    if d3dsimplices is None:
+        sites_np = sites.detach().cpu().numpy()
+        d3dsimplices = Delaunay(sites_np).simplices
 
     if args.w_chamfer > 0:
         v_vect, f_vect = extract_cvt_mesh(sites, sdf_values, d3dsimplices, True)
         output_obj_file = make_dccvt_obj_path(args, state, "intDCCVT")
-        save_npz_bundle(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
+        save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
         save_point_cloud_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
 
@@ -179,7 +178,7 @@ def extract_mesh(
             sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
         )
         output_obj_file = make_dccvt_obj_path(args, state, "projDCCVT")
-        save_npz_bundle(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
+        save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
         save_point_cloud_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
 
@@ -188,7 +187,7 @@ def extract_mesh(
             sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
         )
         output_obj_file = make_voromesh_obj_path(args, state)
-        save_npz_bundle(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
+        save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
     if args.w_mc > 0:
         # TODO:
@@ -204,5 +203,5 @@ def extract_mesh(
         vertices_np = vertices.detach().cpu().numpy()  # Shape [N, 3]
         faces_np = faces.detach().cpu().numpy()  # Shape [M, 3] (triangles)
         output_obj_file = make_dccvt_obj_path(args, state, "MT")
-        save_npz_bundle(sites, sdf_values, time, args, output_obj_file.replace(".obj", ".npz"))
+        save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj_mesh(output_obj_file, vertices_np, faces_np)

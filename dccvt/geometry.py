@@ -210,6 +210,7 @@ def find_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None, mo
 
     if vor is not None:
         neighbors = torch.tensor(np.array(vor.ridge_points), device=device)
+        zero_crossing_pairs = neighbors
     else:
         zero_crossing_pairs = find_zero_crossing_site_pairs(all_tetrahedra, sdf_values)
 
@@ -750,7 +751,7 @@ def compute_cvt_loss_delaunay(sites, delaunay, simplices=None):
     centroids, _ = compute_voronoi_cell_centers(sites, delaunay, simplices)
     centroids = centroids.to(device)
     diff = torch.linalg.norm(sites - centroids, dim=1)
-    penalties = torch.where(abs(diff) < 0.1, diff, torch.tensor(0.0, device=sites.device))
+    penalties = torch.where(diff.abs() < 0.1, diff, torch.zeros_like(diff))
     # cvt_loss = torch.mean(penalties**2)
     cvt_loss = torch.mean(torch.abs(penalties))
     return cvt_loss
@@ -882,7 +883,7 @@ def compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, all_vor_vertices
     centroids /= counts.clamp(min=1).unsqueeze(1)  # Avoid division by zero
 
     diff = torch.linalg.norm(sites - centroids, dim=1)
-    penalties = torch.where(abs(diff) < 0.5, diff, torch.tensor(0.0, device=sites.device))
+    penalties = torch.where(diff.abs() < 0.5, diff, torch.zeros_like(diff))
     # print number of zero in penalties
     # print("Number of zero in penalties: ", torch.sum(penalties == 0.0).item())
     cvt_loss = torch.mean(torch.abs(penalties))
@@ -890,11 +891,11 @@ def compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, all_vor_vertices
 
 
 def compute_cvt_loss_true(sites, d3d, vertices=None):
-    if vertices == None:
+    if vertices is None:
         vertices = compute_circumcenters(sites, d3d)
 
     # Concat sites and vertices to compute the Voronoi diagram
-    points = torch.concatenate((sites, vertices), axis=0)
+    points = torch.cat((sites, vertices), dim=0)
     # Avoid to get coplanar tet which create issue if the current algorithm
     points += (torch.rand_like(points) - 0.5) * 0.00001  # 0.001 % of the space ish
     d3dsimplices, _ = pygdel3d.triangulate(points.detach().cpu().numpy())

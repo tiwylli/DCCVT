@@ -6,7 +6,7 @@ from typing import Any, List
 
 import torch
 
-from dccvt import config
+from dccvt import argparse_utils as config_utils
 from dccvt.alpha_shape import complex_alpha_sdf
 from dccvt.argparse_utils import parse_experiment_args
 from dccvt.mesh_ops import extract_mesh
@@ -18,19 +18,19 @@ from dccvt.training import run_dccvt_training
 
 def run_single_mesh_experiment(arg_list: List[str]) -> None:
     """Run a single mesh experiment from a parsed argv list."""
-    args = parse_experiment_args(arg_list, defaults=config.DEFAULTS)
+    args = parse_experiment_args(arg_list, defaults=config_utils.DEFAULTS)
     args.save_path = f"{args.output}" if args.save_path is None else args.save_path
     os.makedirs(args.save_path, exist_ok=True)
     use_chamfer = args.w_chamfer > 0
     use_voroloss = args.w_voroloss > 0
 
-    # if not os.path.exists(f"{args.save_path}/marching_tetrahedra_{args.upsampling}_final_MT.obj"):
-    output_obj_file = check_if_already_processed(args)
-    if os.path.exists(output_obj_file):
-        print(f"Skipping already processed mesh: {output_obj_file}")
-    else:
-        print("args: ", args)
-        try:
+    output_files = expected_output_files(args)
+    if output_files and all(os.path.exists(path) for path in output_files):
+        print(f"Skipping already processed mesh: {args.mesh}")
+        return
+
+    print("args: ", args)
+    try:
             model, mnfld_points = load_hotspot_model(
                 mesh_path=args.mesh,
                 target_size=args.target_size,
@@ -68,21 +68,22 @@ def run_single_mesh_experiment(arg_list: List[str]) -> None:
 
             # Extract the final mesh
             extract_mesh(sites, sdf, mnfld_points, ti, args, state="final")
-        except Exception as e:
-            print(f"Error processing mesh {args.mesh}: {e}")
-        else:
-            print(f"Finished processing mesh: {args.mesh}")
-            torch.cuda.empty_cache()
+    except Exception as e:
+        print(f"Error processing mesh {args.mesh}: {e}")
+    else:
+        print(f"Finished processing mesh: {args.mesh}")
+        torch.cuda.empty_cache()
 
 
-def check_if_already_processed(args: Any) -> str:
+def expected_output_files(args: Any) -> List[str]:
     state = "final"
-    if args.w_chamfer > 0:
-        output_obj_file = make_dccvt_obj_path(args, state, "projDCCVT")
+    outputs: List[str] = []
+    if args.w_mt > 0:
+        outputs.append(make_dccvt_obj_path(args, state, "MT"))
     if args.w_voroloss > 0:
-        output_obj_file = make_voromesh_obj_path(args, state)
+        outputs.append(make_voromesh_obj_path(args, state))
+    if args.w_chamfer > 0:
+        outputs.append(make_dccvt_obj_path(args, state, "projDCCVT"))
     if args.w_mc > 0:
         print("todo: implement MC loss extraction")
-    if args.w_mt > 0:
-        output_obj_file = make_dccvt_obj_path(args, state, "MT")
-    return output_obj_file
+    return outputs

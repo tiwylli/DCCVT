@@ -2,8 +2,8 @@
 @mesh_ids : 313444 
 
 # -------------- Figure 6 -------
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b64_nearsample --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 24 --clip --w_mt 1 --sample_near 6000
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 16 --clip --w_mt 1 --sample_near 4096 --score conservative
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 24 --clip --sample_near 6000
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 16 --clip --sample_near 4096 --upsampling 5 --score conservative --target_size 19000
 
 --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b64 --w_voroloss 1000 --w_cvt 0.01 --num_centroids 24
 

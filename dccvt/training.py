@@ -35,8 +35,8 @@ class VoronoiLoss(nn.Module):
         super().__init__()
         self.knn = 16
 
-    def __call__(self, points, spoints):
-        """points, self.points"""
+    def forward(self, points: torch.Tensor, spoints: torch.Tensor) -> torch.Tensor:
+        """Compute point-to-cell distances for Voronoi regions."""
         # WARNING: fecthing for knn
         with torch.no_grad():
             indices = knn_points(points[None, :], spoints[None, :], K=self.knn).idx[0]
@@ -86,11 +86,15 @@ def run_dccvt_training(
     d3dsimplices = None
     sites_sdf_grads = None
     voroloss = VoronoiLoss().to(device)
+    eps_H = None
+    tet_probs = None
 
     for epoch in tqdm.tqdm(range(args.num_iterations)):
         optimizer.zero_grad()
 
         if use_cvt or use_chamfer:
+            d3dsimplices = compute_delaunay_simplices(sites, args.marching_tetrahedra)
+        if use_sdfsmooth and d3dsimplices is None:
             d3dsimplices = compute_delaunay_simplices(sites, args.marching_tetrahedra)
 
         if use_chamfer:
@@ -152,7 +156,7 @@ def run_dccvt_training(
                 else:
                     cvt_loss = compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, f_or_clipped_v)
 
-        sites_loss = args.w_cvt / 1 * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
+        sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
 
         if use_sdfsmooth:
             if sites_sdf_grads is None:
@@ -165,6 +169,8 @@ def run_dccvt_training(
             elif epoch % 100 == 0 and epoch <= 800:
                 eps_H = estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 2).detach()
                 print("Estimated eps_H: ", eps_H)
+            elif eps_H is None:
+                eps_H = estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 2).detach()
 
             # eik_loss = args.w_sdfsmooth / 1000 * lf.tet_sdf_grad_eikonal_loss(sites, tets_sdf_grads, d3dsimplices)
             eik_loss = args.w_sdfsmooth / 10 * discrete_tet_volume_eikonal_loss(sites, sites_sdf_grads, d3dsimplices)
@@ -172,6 +178,8 @@ def run_dccvt_training(
             sdf_loss = eik_loss + shl
 
         if use_vertex_interp:
+            if tet_probs is None:
+                raise ValueError("Vertex SDF interpolation requires grad_interpol='robust' or 'hybrid'.")
             steps_verts = tet_probs[1]
             # all_vor_vertices = compute_circumcenters(sites, d3dsimplices)  # (M,3)
             # vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3dsimplices, sites, sites_sdf)

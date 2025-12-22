@@ -1,19 +1,26 @@
 """Model and initialization helpers for DCCVT."""
 
+from __future__ import annotations
+
 import sys
-from typing import Tuple
+from pathlib import Path
+from typing import Any, Tuple
 
 import torch
 from torch import nn
 
 from dccvt.device import device
 
-sys.path.append("3rdparty/HotSpot")
-from dataset import shape_3d
-import models.Net as Net
+_HOTSPOT_PATH = Path(__file__).resolve().parents[1] / "3rdparty" / "HotSpot"
 
 
-def resolve_sdf_values(model, sites, *, verbose: bool = False) -> torch.Tensor:
+def _ensure_hotspot_on_path() -> None:
+    hotspot_path = str(_HOTSPOT_PATH)
+    if hotspot_path not in sys.path:
+        sys.path.append(hotspot_path)
+
+
+def resolve_sdf_values(model: Any, sites: torch.Tensor, *, verbose: bool = False) -> torch.Tensor:
     """Resolve SDF values from a grid, tensor, or callable model."""
     if model is None:
         raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
@@ -34,6 +41,15 @@ def resolve_sdf_values(model, sites, *, verbose: bool = False) -> torch.Tensor:
 
 def load_hotspot_model(mesh_path: str, target_size: int, hotspot_weights_path: str) -> Tuple[nn.Module, torch.Tensor]:
     """Load a HotSpot model and return the model and manifold points."""
+    _ensure_hotspot_on_path()
+    try:
+        from dataset import shape_3d
+        import models.Net as Net
+    except ImportError as exc:
+        raise ImportError(
+            f"HotSpot dependencies not found at {_HOTSPOT_PATH}. "
+            "Ensure the 3rdparty/HotSpot subtree is available."
+        ) from exc
     loss_type = "igr_w_heat"
     loss_weights = [350, 0, 0, 1, 0, 0, 20]
     train_set = shape_3d.ReconDataset(
@@ -89,7 +105,10 @@ def init_sites_from_mnfld_points(
         x = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
         y = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
         z = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
-        meshgrid = torch.meshgrid(x, y, z)
+        try:
+            meshgrid = torch.meshgrid(x, y, z, indexing="ij")
+        except TypeError:
+            meshgrid = torch.meshgrid(x, y, z)
         meshgrid = torch.stack(meshgrid, dim=3).view(-1, 3)
         meshgrid += torch.randn_like(meshgrid) * noise_scale
 

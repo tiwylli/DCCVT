@@ -124,6 +124,8 @@ def upsample_sites_adaptive(
     # # Construct cumsum of the scores WITHOUT sorting
     cumsum_scores = torch.cumsum(score, dim=0)
     total_score = cumsum_scores[-1].item()  # Last element is the total sum
+    if total_score <= eps:
+        return sites, sdf_values
     cumsum_scores /= total_score  # Normalize to [0, 1]
 
     # Sample M indices based on the cumulative distribution
@@ -279,7 +281,7 @@ def upsample_sites_adaptive(
         updated_sites = torch.cat([sites, new_sites], dim=0)  # (N+4K,3)
         updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)  # (N+4K,)
 
-    elif "random":
+    elif ups_method == "random":
         eps = 1e-12
         # Inputs
         centroids = sites[cand]  # (K,3)

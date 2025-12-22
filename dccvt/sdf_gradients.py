@@ -2,6 +2,8 @@
 
 import numpy as np
 import torch
+
+
 def sdf_space_grad_pytorch_diego_sites_tets(sites, sdf, tets):
     """
     Compute the spatial gradient of the SDF at each site (vertex) and each tetrahedron.

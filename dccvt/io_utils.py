@@ -1,6 +1,7 @@
 """Filesystem IO helpers for saving meshes, point clouds, and metadata."""
 
-import os
+from pathlib import Path
+import shutil
 from typing import Iterable, List
 
 import numpy as np
@@ -57,15 +58,14 @@ def save_point_cloud_ply(filename: str, points) -> None:
 
 
 def copy_experiment_script(arg_lists: Iterable[List[str]], script_path: str, output_dir: str) -> None:
-    script_copy_path = os.path.join(output_dir, os.path.basename(script_path))
-    os.makedirs(output_dir, exist_ok=True)
-    with open(script_copy_path, "w") as f:
-        f.write(open(script_path).read())
+    output_dir_path = Path(output_dir)
+    output_dir_path.mkdir(parents=True, exist_ok=True)
+    script_copy_path = output_dir_path / Path(script_path).name
+    shutil.copy2(script_path, script_copy_path)
 
-    # copy arg_lists in other file
-    arg_list_file = os.path.join(output_dir, "arg_lists.txt")
-    with open(arg_list_file, "w") as f:
+    # Copy arg_lists to a sidecar file for reproducibility
+    arg_list_file = output_dir_path / "arg_lists.txt"
+    with arg_list_file.open("w", encoding="utf-8") as f:
         for arg_list in arg_lists:
             f.write(" ".join(arg_list) + "\n")
-        print(f"Copied script to {script_copy_path} and arg lists to {arg_list_file}")
-
+    print(f"Copied script to {script_copy_path} and arg lists to {arg_list_file}")
