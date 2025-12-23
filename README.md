@@ -1,4 +1,4 @@
-# DCCVT (Kyushu experiments)
+# DCCVT: Differentiable Clipped Centroidal Voronoi Tessellation
 
 This repo contains DCCVT experiments plus several native / CUDA dependencies vendored as git submodules. The notes below cover first-party code and workflows (everything outside `3rdparty/`).
 
