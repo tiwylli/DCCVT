@@ -33,7 +33,7 @@ np.random.seed(69)
 
 ROOT_DIR = DCCVT_ROOT
 GT_DIR = os.path.join(ROOT_DIR, "mesh/thingi32/")
-EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/Best_DCCVT/")  # /thingi32/
+EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/20251222_182320/")
 N_POINTS = 100000
 
 

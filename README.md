@@ -94,7 +94,7 @@ General notes:
 
 - Run these commands from the repo root, with your `.venv` activated.
 - `pip install -e <path>` installs a package in “editable” mode: the code stays in-place, but any compiled extensions are built and installed into your venv.
-- Patches in this repo (`3rdparty/*.patch`, `patches/*.patch`) are meant to be applied on top of the pinned submodule revisions. If `git apply` reports the patch is already applied, you can skip that step.
+- Patches in this repo (`3rdparty/*.patch`) are meant to be applied on top of the pinned submodule revisions. If `git apply` reports the patch is already applied, you can skip that step.
 - If a build fails after you changed compilers/CUDA/Python, try again after deleting the submodule’s `build/` folder (or `pip uninstall <name>` and re-run the install).
 - If you want to confirm each step worked, run the “verify” command after each install below.
 - Not every repo in `3rdparty/` needs to be installed as a Python package; the list below covers the ones imported by the main scripts in this repo.
@@ -216,6 +216,9 @@ Notes:
 
 - If you see `Warp CUDA error ...` messages, it usually means `warp-lang` can't find a usable CUDA driver/runtime on your machine. This repo typically expects a working CUDA install for GPU runs.
 
-## Legacy conda env (reference only)
 
-If you really want the historical conda environment: `env.yml`.
+
+## Example command to run metrics_figs_scripts
+python3 metrics_figs_scripts/DCCVT_batch_render.py /path/to/obj_folder --recursive --filter final --resolution 512 512
+
+python3 metrics_figs_scripts/DCCVT_figs_metrics.py --root-dir /home/wc1172/dev/DCCVT --experiments-dir /path/to/obj_folder --include-final
