@@ -11,30 +11,8 @@ from pytorch3d.transforms import quaternion_to_matrix
 from scipy.spatial import Delaunay
 
 from dccvt.device import device
+from dccvt.model_utils import resolve_sdf_values_or_fallback
 from dccvt.sdf_gradients import compute_sdf_gradients_sites_tets, volume_tetrahedron
-
-
-def _eval_sdf_values(
-    sites: torch.Tensor,
-    model: Any,
-    *,
-    fallback: Optional[torch.Tensor] = None,
-    flatten: bool = False,
-) -> torch.Tensor:
-    if model is None:
-        if fallback is None:
-            sdf_values = model(sites).detach()
-        else:
-            sdf_values = fallback
-    elif model.__class__.__name__ == "SDFGrid":
-        sdf_values = model.sdf(sites)
-    elif isinstance(model, torch.Tensor):
-        sdf_values = model
-    else:
-        sdf_values = model(sites).detach()
-    if flatten:
-        sdf_values = sdf_values.view(-1)
-    return sdf_values
 
 
 def _tetra_edges(tetrahedra: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -49,6 +27,10 @@ def _tetra_edges(tetrahedra: torch.Tensor, device: torch.device) -> torch.Tensor
         ],
         dim=0,
     ).to(device)
+
+
+def _as_tet_tensor(d3dsimplices: Any, device: torch.device) -> torch.Tensor:
+    return torch.as_tensor(d3dsimplices, device=device).detach()
 
 
 def _barycentric_weights(
@@ -161,12 +143,6 @@ def compute_clipped_mesh(
     d3dsimplices:    torch.LongTensor of shape (M,4) from Delaunay
     """
     device = sites.device
-    vertices_sdf = None
-    vertices_sdf_grad = None
-    sdf_verts = None
-    grads = None
-    proj_vertices = None
-    tet_probs = None
     if d3dsimplices is None:
         print("Computing Delaunay simplices...")
         sites_np = sites.detach().cpu().numpy()
@@ -177,7 +153,7 @@ def compute_clipped_mesh(
         print("Min vertex index in simplices:", d3dsimplices.min())
         print("Site index range:", sites_np.shape[0])
 
-    d3d = torch.tensor(d3dsimplices).to(device).detach()  # (M,4)
+    d3d = _as_tet_tensor(d3dsimplices, device)  # (M,4)
 
     if build_mesh:
         # print("-> tracing mesh")
@@ -267,15 +243,15 @@ def find_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None, mo
     Returns:
         zero_crossing_vertices_index (list of triplets): List of sites indices (si, sj, sk) where atleast 2 sites have opposing SDF signs.
     """
-    sdf_values = _eval_sdf_values(sites, model)
+    sdf_values = resolve_sdf_values_or_fallback(sites, model)
 
     if tri is not None:
-        all_tetrahedra = torch.tensor(np.array(tri.simplices), device=device)
+        all_tetrahedra = torch.as_tensor(np.array(tri.simplices), device=device)
     else:
-        all_tetrahedra = torch.tensor(np.array(simplices), device=device)
+        all_tetrahedra = torch.as_tensor(np.array(simplices), device=device)
 
     if vor is not None:
-        neighbors = torch.tensor(np.array(vor.ridge_points), device=device)
+        neighbors = torch.as_tensor(np.array(vor.ridge_points), device=device)
         zero_crossing_pairs = neighbors
     else:
         zero_crossing_pairs = find_zero_crossing_site_pairs(all_tetrahedra, sdf_values)
@@ -368,7 +344,7 @@ def interpolate_vertex_sdf_values(
 
 def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
     with torch.no_grad():
-        d3d = torch.tensor(d3dsimplices).to(device).detach()  # (M,4)
+        d3d = _as_tet_tensor(d3dsimplices, device)  # (M,4)
         # Generate all edges of each simplex
         #    torch.combinations gives the 6 index‐pairs within a 4‐long row
         comb = torch.combinations(torch.arange(d3d.shape[1], device=device), r=2)  # (6,2)
@@ -386,7 +362,7 @@ def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
         torch.cuda.empty_cache()
 
         # Evaluate SDF at each site
-        sdf = _eval_sdf_values(sites, model, fallback=sites_sdf, flatten=True)  # (N,)
+        sdf = resolve_sdf_values_or_fallback(sites, model, fallback=sites_sdf, flatten=True)  # (N,)
 
         sdf_i = sdf[ridges[:, 0]]
         sdf_j = sdf[ridges[:, 1]]
@@ -867,7 +843,7 @@ def circumcenter_torch(points, simplices):
 
 
 def compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, all_vor_vertices):
-    d3dsimplices = torch.tensor(d3dsimplices, device=sites.device).detach()
+    d3dsimplices = torch.as_tensor(d3dsimplices, device=sites.device).detach()
     # compute centroids
     indices = d3dsimplices.flatten()  # Flatten simplex indices
     centers = all_vor_vertices.repeat_interleave(d3dsimplices.shape[1], dim=0).to(sites.device)
@@ -892,7 +868,7 @@ def compute_cvt_loss_true(sites, d3d, vertices=None):
     points += (torch.rand_like(points) - 0.5) * 0.00001  # 0.001 % of the space ish
     d3dsimplices, _ = pygdel3d.triangulate(points.detach().cpu().numpy())
     # d3dsimplices = Delaunay(points.detach().cpu().numpy()).simplices
-    d3dsimplices = torch.tensor(d3dsimplices, dtype=torch.int64, device=sites.device)
+    d3dsimplices = torch.as_tensor(d3dsimplices, dtype=torch.int64, device=sites.device)
 
     ############ 2D Case (Triangles) ############
     # Compute the areas of all simplices (in 2D triangles)

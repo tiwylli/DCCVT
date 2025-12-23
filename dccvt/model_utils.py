@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
 
 import torch
 from torch import nn
@@ -20,23 +20,45 @@ def _ensure_hotspot_on_path() -> None:
         sys.path.append(hotspot_path)
 
 
-def resolve_sdf_values(model: Any, sites: torch.Tensor, *, verbose: bool = False) -> torch.Tensor:
-    """Resolve SDF values from a grid, tensor, or callable model."""
+def _resolve_sdf_values_impl(model: Any, sites: torch.Tensor, *, verbose: bool = False) -> torch.Tensor:
     if model is None:
         raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
     if model.__class__.__name__ == "SDFGrid":
         if verbose:
             print("Using SDFGrid")
-        sdf_values = model.sdf(sites)
-    elif isinstance(model, torch.Tensor):
+        return model.sdf(sites)
+    if isinstance(model, torch.Tensor):
         if verbose:
             print("Using Tensor")
-        sdf_values = model.to(device)
-    else:  # nn.Module / callable
-        if verbose:
-            print("Using nn.Module / callable model")
-        sdf_values = model(sites).detach()
-    return sdf_values.squeeze()
+        return model.to(device)
+    if verbose:
+        print("Using nn.Module / callable model")
+    return model(sites).detach()
+
+
+def resolve_sdf_values(model: Any, sites: torch.Tensor, *, verbose: bool = False) -> torch.Tensor:
+    """Resolve SDF values from a grid, tensor, or callable model."""
+    return _resolve_sdf_values_impl(model, sites, verbose=verbose).squeeze()
+
+
+def resolve_sdf_values_or_fallback(
+    sites: torch.Tensor,
+    model: Any,
+    *,
+    fallback: Optional[torch.Tensor] = None,
+    flatten: bool = False,
+    verbose: bool = False,
+) -> torch.Tensor:
+    """Resolve SDF values, optionally using a provided fallback tensor."""
+    if model is None:
+        if fallback is None:
+            raise ValueError("`model` must be provided when no fallback is supplied")
+        sdf_values = fallback
+    else:
+        sdf_values = _resolve_sdf_values_impl(model, sites, verbose=verbose)
+    if flatten:
+        return sdf_values.view(-1)
+    return sdf_values
 
 
 def load_hotspot_model(mesh_path: str, target_size: int, hotspot_weights_path: str) -> Tuple[nn.Module, torch.Tensor]:

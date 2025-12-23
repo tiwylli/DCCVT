@@ -69,6 +69,11 @@ def _setup_optimizer(
     return optimizer, sdf_values.requires_grad_()
 
 
+def _as_tet_tensor(d3dsimplices: Any, *, clone: bool = False) -> torch.Tensor:
+    tets = torch.as_tensor(d3dsimplices, device=device).detach()
+    return tets.clone() if clone else tets
+
+
 def _update_delaunay(
     sites: torch.Tensor,
     d3dsimplices: Any,
@@ -95,7 +100,7 @@ def _compute_chamfer_geometry(
     W = None
 
     if args.marching_tetrahedra:
-        d3dsimplices = torch.tensor(d3dsimplices, device=device)
+        d3dsimplices = _as_tet_tensor(d3dsimplices)
         marching_tetrehedra_mesh = kaolin.ops.conversions.marching_tetrahedra(
             sites.unsqueeze(0), d3dsimplices, sites_sdf.unsqueeze(0), return_tet_idx=False
         )
@@ -177,9 +182,7 @@ def _compute_sdfsmooth_loss(
     args: Any,
 ):
     if sites_sdf_grads is None:
-        sites_sdf_grads, _, W = compute_sdf_gradients_sites_tets(
-            sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach()
-        )
+        sites_sdf_grads, _, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, _as_tet_tensor(d3dsimplices))
     if epoch % 100 == 0 and epoch <= 500:
         eps_H = estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 5).detach()
         print("Estimated eps_H: ", eps_H)
@@ -258,7 +261,7 @@ def _maybe_upsample(
 
     if sites_sdf_grads is None or sites_sdf_grads.shape[0] != sites_sdf.shape[0]:
         sites_sdf_grads, _, W = compute_sdf_gradients_sites_tets(
-            sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach().clone()
+            sites, sites_sdf, _as_tet_tensor(d3dsimplices, clone=True)
         )
 
     if use_chamfer:
@@ -281,7 +284,7 @@ def _maybe_upsample(
     else:
         sites_sdf = hotspot_model(sites).squeeze(-1)
         sites_sdf_grads, _, W = compute_sdf_gradients_sites_tets(
-            sites, sites_sdf, torch.tensor(d3dsimplices).to(device).detach().clone()
+            sites, sites_sdf, _as_tet_tensor(d3dsimplices, clone=True)
         )
         sites, sites_sdf = upsample_sites_adaptive(
             sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method, score=args.score

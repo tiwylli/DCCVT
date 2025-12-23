@@ -19,6 +19,24 @@ from dccvt.paths import make_dccvt_obj_path, make_voromesh_obj_path
 from dccvt.device import device
 
 
+def _ensure_d3dsimplices(sites: torch.Tensor, d3dsimplices: Any) -> Any:
+    if d3dsimplices is not None:
+        return d3dsimplices
+    sites_np = sites.detach().cpu().numpy()
+    return Delaunay(sites_np).simplices
+
+
+def _compute_clipped_mesh_outputs(
+    sites: torch.Tensor,
+    sdf_values: torch.Tensor,
+    d3dsimplices: Any,
+    args: Any,
+):
+    return compute_clipped_mesh(
+        sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
+    )
+
+
 def sample_mesh_points_heitz(vertices: torch.Tensor, faces: torch.LongTensor, num_samples: int) -> torch.Tensor:
     """
     Uniformly (area weighted) sample points on a triangular mesh
@@ -80,12 +98,10 @@ def extract_cvt_mesh(sites, sites_sdf, d3dsimplices, build_faces: bool = False):
     """
     Extracts a mesh from the given sites and their SDF values.
     """
-    d3d = torch.tensor(d3dsimplices, device=device)  # (M,4)
+    d3d = torch.as_tensor(d3dsimplices, device=device)  # (M,4)
     all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
 
-    all_vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3d, sites, sites_sdf)
-
-    vertices_to_compute, zero_crossing_sites_pairs, used_tet = find_zero_crossing_vertices_3d(
+    vertices_to_compute, _, used_tet = find_zero_crossing_vertices_3d(
         sites, None, None, d3dsimplices, sites_sdf
     )
     vertices = compute_circumcenters(sites, vertices_to_compute)
@@ -151,30 +167,27 @@ def extract_mesh(
     """Extract mesh artifacts for the current state and persist them to disk."""
     print(f"Extracting mesh at state: {state} with upsampling: {args.upsampling}")
     sdf_values = resolve_sdf_values(model, sites, verbose=True)  # (N,)
+    d3dsimplices = _ensure_d3dsimplices(sites, d3dsimplices)
 
-    if d3dsimplices is None:
-        sites_np = sites.detach().cpu().numpy()
-        d3dsimplices = Delaunay(sites_np).simplices
+    clipped_cache = None
 
     if args.w_chamfer > 0:
         v_vect, f_vect = extract_cvt_mesh(sites, sdf_values, d3dsimplices, True)
         output_obj_file = make_dccvt_obj_path(args, state, "intDCCVT")
         save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
-        save_point_cloud_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
 
-        v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = compute_clipped_mesh(
-            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
-        )
+        clipped_cache = _compute_clipped_mesh_outputs(sites, sdf_values, d3dsimplices, args)
+        v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = clipped_cache
         output_obj_file = make_dccvt_obj_path(args, state, "projDCCVT")
         save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
         save_point_cloud_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
 
     if args.w_voroloss > 0:
-        v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = compute_clipped_mesh(
-            sites, None, d3dsimplices, args.clip, sdf_values, True, False, args.grad_interpol, args.no_mp
-        )
+        if clipped_cache is None:
+            clipped_cache = _compute_clipped_mesh_outputs(sites, sdf_values, d3dsimplices, args)
+        v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = clipped_cache
         output_obj_file = make_voromesh_obj_path(args, state)
         save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
@@ -182,7 +195,7 @@ def extract_mesh(
         # TODO:
         print("todo: implement MC loss extraction")
     if args.w_mt > 0:
-        d3dsimplices = torch.tensor(d3dsimplices, device=device)
+        d3dsimplices = torch.as_tensor(d3dsimplices, device=device)
         marching_tetrehedra_mesh = kaolin.ops.conversions.marching_tetrahedra(
             sites.unsqueeze(0), d3dsimplices, sdf_values.unsqueeze(0), return_tet_idx=False
         )
