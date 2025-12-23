@@ -1,22 +1,30 @@
-import polyscope as ps
-import trimesh
-import numpy as np
-import matplotlib.pyplot as plt
+import argparse
 import glob
 import os
+from pathlib import Path
+import sys
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+ACCEL_DIR = ROOT_DIR / "accel"
+if str(ACCEL_DIR) not in sys.path:
+    sys.path.append(str(ACCEL_DIR))
+
+import matplotlib.pyplot as plt
+import numpy as np
 from PIL import Image
-import argparse
-import sdfpred_utils.sdfpred_utils as su
+import polyscope as ps
+import trimesh
+
+import metrics_figs_scripts.metrics_utils as su
 import fcpw
 import voronoiaccel
-import sys
+from dccvt.argparse_utils import DEFAULTS
 
 N_POINTS = 10000000 // 100
 ERROR_SCALE = 1e5
-GT_DIR = "/home/wylliam/dev/Kyushu_experiments/mesh/thingi32/"
-# Beltegeuse default
-if os.environ.get("USER", "") == "beltegeuse":
-    GT_DIR = "/home/beltegeuse/projects/Voronoi/Kyushu_experiments/mesh/thingi32/"
+GT_DIR = DEFAULTS["mesh"]
 
 
 def rescale_hotspot(mesh_path):

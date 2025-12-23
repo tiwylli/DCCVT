@@ -1,18 +1,30 @@
-from skimage import measure
-import numpy as np
-from sdfpred_utils.Steik_utils import get_3d_grid
 import argparse
-import trimesh
-import polyscope
+from pathlib import Path
 import sys
+import time
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+ACCEL_DIR = ROOT_DIR / "accel"
+if str(ACCEL_DIR) not in sys.path:
+    sys.path.append(str(ACCEL_DIR))
+HOTSPOT_DIR = ROOT_DIR / "3rdparty" / "HotSpot"
+if str(HOTSPOT_DIR) not in sys.path:
+    sys.path.append(str(HOTSPOT_DIR))
+
+from skimage import measure
+import kaolin
+import numpy as np
+import polyscope
+import pygdel3d
+import pytorch3d.ops
+import scipy.spatial
 import torch
 import tqdm
-import kaolin
-import pygdel3d
-import scipy.spatial
+import trimesh
 import voronoiaccel
-import pytorch3d.ops
-import time
+from utils.utils import get_3d_grid
 
 
 def grid_to_mesh(grid_dict, z, scale=1.0, translate=(0, 0, 0)):
@@ -48,7 +60,6 @@ def sdf_sphere(pnts):
 
 ####### HOTSPOT SDF ########
 
-sys.path.append("3rdparty/HotSpot")
 import models.Net as Net
 
 

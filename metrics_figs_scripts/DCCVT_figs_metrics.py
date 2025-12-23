@@ -1,14 +1,27 @@
-import os
-import re
-import json
-import tqdm
-import torch
-import pandas as pd
-import numpy as np
-import sdfpred_utils.sdfpred_utils as su
-import polyscope as ps
 import argparse
+import json
+import os
+from pathlib import Path
+import re
+import sys
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+ACCEL_DIR = ROOT_DIR / "accel"
+if str(ACCEL_DIR) not in sys.path:
+    sys.path.append(str(ACCEL_DIR))
+
+import numpy as np
+import pandas as pd
+import polyscope as ps
+import torch
+import tqdm
+
+import metrics_figs_scripts.metrics_utils as su
 import voronoiaccel
+from dccvt.argparse_utils import ROOT_DIR as DCCVT_ROOT
+from dccvt.device import device
 
 
 # ---------------------------
@@ -18,7 +31,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Compute metrics over experiment folders.")
     parser.add_argument(
         "--root-dir",
-        default="/home/wylliam/dev/Kyushu_experiments/",
+        default=DCCVT_ROOT,
         help="Project root directory (default matches current script).",
     )
     parser.add_argument(
@@ -68,8 +81,10 @@ def get_args():
 # ---------------------------
 # Config (device, RNG)
 # ---------------------------
-device = torch.device("cuda:0")
-print("Using device:", torch.cuda.get_device_name(device))
+if device.type == "cuda":
+    print("Using device:", torch.cuda.get_device_name(device))
+else:
+    print("Using device:", device)
 torch.manual_seed(69)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
