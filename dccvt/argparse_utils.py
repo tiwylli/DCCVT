@@ -1,12 +1,102 @@
-"""Argument parsing helpers for DCCVT experiments."""
+"""Argument parsing helpers and configuration for DCCVT experiments."""
+
+from __future__ import annotations
 
 import argparse
+import datetime
 import os
+from pathlib import Path
 import re
 import shlex
 from typing import Dict, Iterable, List, Optional
 
-from dccvt import config
+
+def _resolve_root_dir() -> Path:
+    env_root = os.environ.get("DCCVT_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    return Path(__file__).resolve().parents[1]
+
+
+# Generate a timestamp string for unique output folders
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+# Default parameters for the DCCVT experiments
+ROOT_DIR = str(_resolve_root_dir())
+
+DEFAULTS = {
+    "output": f"{ROOT_DIR}/outputs/{timestamp}/",
+    "mesh": f"{ROOT_DIR}/mesh/thingi32/",  # "mesh": f"{ROOT_DIR}/mesh/thingi32_150k/",
+    "trained_HotSpot": f"{ROOT_DIR}/hotspots_model/",
+    "input_dims": 3,
+    "num_iterations": 1000,
+    "num_centroids": 16,  # ** input_dims
+    "sample_near": 0,  # # ** input_dims
+    "target_size": 32,  # 32 # ** input_dims
+    "clip": False,
+    "grad_interpol": "robust",  # , hybrid, barycentric",  # False
+    "marching_tetrahedra": False,  # True
+    "true_cvt": False,  # True
+    "extract_optim": False,  # True
+    "no_mp": False,  # True
+    "ups_extraction": False,
+    "build_mesh": False,
+    "video": False,
+    "sdf_type": "hotspot",  # "hotspot", "sphere", "complex_alpha"
+    "w_cvt": 0,
+    "w_sdfsmooth": 0,
+    "w_voroloss": 0,  # 1000
+    "w_chamfer": 0,  # 1000
+    "w_vertex_sdf_interpolation": 0,
+    "w_mt": 0,  # 1000
+    "w_mc": 0,  # 1000
+    # "w_bpa": 0,  # 1000
+    "upsampling": 0,  # 0
+    "ups_method": "tet_frame",  # "tet_random", "random" "tet_frame_remove_parent"
+    "score": "conservative",  # "legacy" "density", "cosine", "conservative"
+    "lr_sites": 0.0005,
+    "mesh_ids": [  # 64764],
+        # "252119",
+        # "313444",  # lucky cat
+        # "316358",
+        # "354371",
+        # # "398259", this mesh destroys our results
+        # "441708",  # bunny
+        # "44234",
+        # "47984",
+        # "527631",
+        # "53159",
+        # "58168",
+        # "64444",
+        "64764",  # gargoyle
+        # "68380",
+        # "68381",
+        # "72870",
+        # "72960",
+        # "73075",
+        # "75496",
+        # "75655",
+        # "75656",
+        # "75662",
+        # "75665",
+        # "76277",
+        # "77245",
+        # "78671",
+        # "79241",
+        # "90889",
+        # "92763",
+        # "92880",
+        # "95444",
+        # "96481",
+    ],
+}
+
+
+def update_timestamp(new_timestamp: str) -> None:
+    """Update the global timestamp and keep DEFAULTS["output"] consistent."""
+    global timestamp
+    timestamp = new_timestamp
+    DEFAULTS["output"] = f"{ROOT_DIR}/outputs/{timestamp}/"
 
 
 class _SafeDict(dict):
@@ -15,7 +105,11 @@ class _SafeDict(dict):
         return "{" + key + "}"
 
 
-def load_arg_lists_from_file(path: str, defaults: Dict[str, object], mesh_ids: Optional[Iterable[str]] = None) -> List[List[str]]:
+def parse_args_template_file(
+    path: str,
+    defaults: Dict[str, object],
+    mesh_ids: Optional[Iterable[str]] = None,
+) -> List[List[str]]:
     """Load an args template file and return a list of argv-style lists."""
     if mesh_ids is None:
         mesh_ids = list(defaults.get("mesh_ids", []))
@@ -81,12 +175,12 @@ def _add_bool_arg(parser: argparse.ArgumentParser, flag: str, default: bool, hel
     parser.add_argument(flag, action=argparse.BooleanOptionalAction, default=default, help=help_text)
 
 
-def define_options_parser(
+def parse_experiment_args(
     arg_list: Optional[List[str]] = None, defaults: Optional[Dict[str, object]] = None
 ) -> argparse.Namespace:
     """Parse per-mesh experiment arguments from an argv list."""
     if defaults is None:
-        defaults = config.DEFAULTS
+        defaults = DEFAULTS
 
     parser = argparse.ArgumentParser(description="DCCVT experiments")
     parser.add_argument("--input_dims", type=int, default=defaults["input_dims"], help="Dimensionality of the input")
@@ -121,8 +215,8 @@ def define_options_parser(
     )
     _add_bool_arg(parser, "--no_mp", defaults["no_mp"], "Enable/disable multiprocessing")
     _add_bool_arg(parser, "--ups_extraction", defaults["ups_extraction"], "Enable/disable upsampling extraction")
-    _add_bool_arg(parser, "--build_mesh", False, "Enable/disable build mesh")
-    _add_bool_arg(parser, "--video", False, "Enable/disable video output")
+    _add_bool_arg(parser, "--build_mesh", defaults["build_mesh"], "Enable/disable build mesh")
+    _add_bool_arg(parser, "--video", defaults["video"], "Enable/disable video output")
     parser.add_argument("--w_cvt", type=float, default=defaults["w_cvt"], help="Weight for CVT regularization")
     parser.add_argument(
         "--w_vertex_sdf_interpolation",
@@ -143,7 +237,7 @@ def define_options_parser(
         "--ups_method",
         type=str,
         default=defaults["ups_method"],
-        help="Upsampling method either tet_frame or tet_random or random",
+        help="Upsampling method: tet_frame, tet_frame_remove_parent, tet_random, or random",
     )
     parser.add_argument("--lr_sites", type=float, default=defaults["lr_sites"], help="Learning rate for sites")
     parser.add_argument(

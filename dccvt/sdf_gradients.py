@@ -1,19 +1,32 @@
 """SDF gradient, curvature, and regularization utilities."""
 
+from __future__ import annotations
+
+from typing import Tuple
+
 import numpy as np
 import torch
-def sdf_space_grad_pytorch_diego_sites_tets(sites, sdf, tets):
+
+
+def compute_sdf_gradients_sites_tets(
+    sites: torch.Tensor, sdf: torch.Tensor, tets: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Compute the spatial gradient of the SDF at each site (vertex) and each tetrahedron.
+    Estimate SDF gradients at tet level and aggregate to per-site gradients.
+
+    The SDF gradient within each tetrahedron is treated as constant, computed from a
+    least-squares fit to the SDF values at the tet's vertices. Per-site gradients are
+    a volume-weighted average of adjacent tet gradients.
 
     Args:
-        sites: (N, 3) tensor of 3D vertex coordinates.
-        sdf: (N,) tensor of SDF values at each vertex.
-        tets: (M, 4) tensor of tetrahedral indices.
+        sites: (N, 3) vertex coordinates.
+        sdf: (N,) SDF values per site.
+        tets: (M, 4) tetra indices into `sites`.
 
     Returns:
-        grad_sdf: (N, 3) estimated SDF gradient at each site (vertex-wise average of surrounding tet gradients)
-        grad_sdf_tet: (M, 3) estimated SDF gradient inside each tetrahedron (constant per tet)
+        grad_sdf: (N, 3) per-site gradient estimates.
+        grad_sdf_tet: (M, 3) per-tet gradient estimates.
+        W: (M, 4, 3) least-squares weights used to fit gradients.
     """
     M = tets.shape[0]
     tet_ids = tets
@@ -63,7 +76,8 @@ def sdf_space_grad_pytorch_diego_sites_tets(sites, sdf, tets):
     return grad_sdf, grad_sdf_tet, W
 
 
-def volume_tetrahedron(a, b, c, d):
+def volume_tetrahedron(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, d: torch.Tensor) -> torch.Tensor:
+    """Compute the absolute volume for each tetrahedron defined by (a, b, c, d)."""
     ad = a - d
     bd = b - d
     cd = c - d
@@ -71,65 +85,78 @@ def volume_tetrahedron(a, b, c, d):
     return torch.abs((ad * n).sum(dim=-1)) / 6.0
 
 
-def sdf_space_grad_pytorch_diego(sites, sdf, tets):
-    # sites: (N, 3)
-    # sdf: (N,)
-    # tets: (M, 4)
+# def compute_sdf_gradients_sites(sites: torch.Tensor, sdf: torch.Tensor, tets: torch.Tensor) -> torch.Tensor:
+#     """
+#     Estimate per-site SDF gradients using tet gradients and volume-weighted averaging.
 
-    M = tets.shape[0]
-    tet_ids = tets
-    a, b, c, d = (
-        sites[tet_ids[:, 0]],
-        sites[tet_ids[:, 1]],
-        sites[tet_ids[:, 2]],
-        sites[tet_ids[:, 3]],
-    )
-    sdf_a, sdf_b, sdf_c, sdf_d = (
-        sdf[tet_ids[:, 0]],
-        sdf[tet_ids[:, 1]],
-        sdf[tet_ids[:, 2]],
-        sdf[tet_ids[:, 3]],
-    )
+#     This is a legacy helper; prefer compute_sdf_gradients_sites_tets when both outputs
+#     are needed.
 
-    center = (a + b + c + d) / 4
-    sdf_center = (sdf_a + sdf_b + sdf_c + sdf_d) / 4
+#     Args:
+#         sites: (N, 3) vertex coordinates.
+#         sdf: (N,) SDF values per site.
+#         tets: (M, 4) tetra indices into `sites`.
 
-    volume = volume_tetrahedron(a, b, c, d)
+#     Returns:
+#         grad_sdf: (N, 3) per-site gradient estimates.
+#     """
+#     M = tets.shape[0]
+#     tet_ids = tets
+#     a, b, c, d = (
+#         sites[tet_ids[:, 0]],
+#         sites[tet_ids[:, 1]],
+#         sites[tet_ids[:, 2]],
+#         sites[tet_ids[:, 3]],
+#     )
+#     sdf_a, sdf_b, sdf_c, sdf_d = (
+#         sdf[tet_ids[:, 0]],
+#         sdf[tet_ids[:, 1]],
+#         sdf[tet_ids[:, 2]],
+#         sdf[tet_ids[:, 3]],
+#     )
 
-    # Build dX: (M, 4, 3)
-    X = torch.stack([a, b, c, d], dim=1)  # (M, 4, 3)
-    dX = X - center[:, None, :]
+#     center = (a + b + c + d) / 4
+#     sdf_center = (sdf_a + sdf_b + sdf_c + sdf_d) / 4
 
-    dX_T = dX.transpose(1, 2)  # (M, 3, 4)
-    G = torch.bmm(dX_T, dX)  # (M, 3, 3)
-    # Inverse G: (M, 3, 3)
-    Ginv = torch.linalg.pinv(G)  # stable pseudo-inverse for singular cases
-    # Ginv = torch.linalg.inv(G)  # faster, uses LU
+#     volume = volume_tetrahedron(a, b, c, d)
 
-    # Weights: Ginv @ dX^T -> (M, 3, 4)
-    # W = torch.einsum('mij,mkj->mki', Ginv, dX)  # (M, 4, 3)
-    W = torch.einsum("mij,mnj->mni", Ginv, dX)
+#     # Build dX: (M, 4, 3)
+#     X = torch.stack([a, b, c, d], dim=1)  # (M, 4, 3)
+#     dX = X - center[:, None, :]
 
-    sdf_stack = torch.stack([sdf_a, sdf_b, sdf_c, sdf_d], dim=1)  # (M, 4)
-    sdf_diff = sdf_stack - sdf_center[:, None]
+#     dX_T = dX.transpose(1, 2)  # (M, 3, 4)
+#     G = torch.bmm(dX_T, dX)  # (M, 3, 3)
+#     # Inverse G: (M, 3, 3)
+#     Ginv = torch.linalg.pinv(G)  # stable pseudo-inverse for singular cases
+#     # Ginv = torch.linalg.inv(G)  # faster, uses LU
 
-    elem = torch.einsum("mi,mij->mj", sdf_diff, W)  # (M, 3)
+#     # Weights: Ginv @ dX^T -> (M, 3, 4)
+#     # W = torch.einsum('mij,mkj->mki', Ginv, dX)  # (M, 4, 3)
+#     W = torch.einsum("mij,mnj->mni", Ginv, dX)
 
-    grad_sdf = torch.zeros_like(sites)  # (N, 3)
-    weights_tot = torch.zeros_like(sdf)  # (N,)
+#     sdf_stack = torch.stack([sdf_a, sdf_b, sdf_c, sdf_d], dim=1)  # (M, 4)
+#     sdf_diff = sdf_stack - sdf_center[:, None]
 
-    for i in range(4):
-        ids = tet_ids[:, i]
-        grad_contrib = elem * volume[:, None]  # (M, 3)
-        grad_sdf.index_add_(0, ids, grad_contrib)
-        weights_tot.index_add_(0, ids, volume)
+#     elem = torch.einsum("mi,mij->mj", sdf_diff, W)  # (M, 3)
 
-    # Avoid division by zero (e.g., isolated vertices)
-    weights_tot_clamped = weights_tot.clamp(min=1e-8).unsqueeze(1)  # (N, 1)
-    grad_sdf /= weights_tot_clamped
+#     grad_sdf = torch.zeros_like(sites)  # (N, 3)
+#     weights_tot = torch.zeros_like(sdf)  # (N,)
 
-    return grad_sdf
-def smoothed_heaviside(phi, eps_H):
+#     for i in range(4):
+#         ids = tet_ids[:, i]
+#         grad_contrib = elem * volume[:, None]  # (M, 3)
+#         grad_sdf.index_add_(0, ids, grad_contrib)
+#         weights_tot.index_add_(0, ids, volume)
+
+#     # Avoid division by zero (e.g., isolated vertices)
+#     weights_tot_clamped = weights_tot.clamp(min=1e-8).unsqueeze(1)  # (N, 1)
+#     grad_sdf /= weights_tot_clamped
+
+#     return grad_sdf
+
+
+def smoothed_heaviside(phi: torch.Tensor, eps_H: torch.Tensor) -> torch.Tensor:
+    """Smooth Heaviside step function used by curvature regularization."""
     H = torch.zeros_like(phi)
     mask1 = phi < -eps_H
     mask2 = phi > eps_H
@@ -141,7 +168,10 @@ def smoothed_heaviside(phi, eps_H):
     return H
 
 
-def tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, tets, eps_H) -> torch.Tensor:
+def tet_sdf_motion_mean_curvature_loss(
+    sites: torch.Tensor, sites_sdf: torch.Tensor, W: torch.Tensor, tets: torch.Tensor, eps_H: torch.Tensor
+) -> torch.Tensor:
+    """Approximate motion-mean-curvature loss using tet-level gradients of a smoothed SDF."""
     if eps_H is None:
         eps_H = estimate_eps_H(sites, tets)  # adaptive bandwidth
     sdf_H = smoothed_heaviside(sites_sdf, eps_H)  # (M,)
@@ -171,13 +201,14 @@ def tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, tets, eps_H) -> torc
     return penalties
 
 
-def discrete_tet_volume_eikonal_loss(sites, sites_sdf_grad, tets: torch.Tensor) -> torch.Tensor:
+def discrete_tet_volume_eikonal_loss(
+    sites: torch.Tensor, sites_sdf_grad: torch.Tensor, tets: torch.Tensor
+) -> torch.Tensor:
     """
-    Eikonal regularization loss.
+    Eikonal regularization loss weighted by tet volumes.
 
     Args:
         sites_sdf_grad: Tensor of shape (N, 3) containing ∇φ at each site.
-        variant: 'a' for E1a: ½ mean((||∇φ|| - 1)²)
     Returns:
         A scalar tensor containing the eikonal loss.
     """
@@ -203,7 +234,8 @@ def discrete_tet_volume_eikonal_loss(sites, sites_sdf_grad, tets: torch.Tensor) 
     return loss
 
 
-def estimate_eps_H(sites, tets, multiplier=1.5):
+def estimate_eps_H(sites: torch.Tensor, tets: torch.Tensor, multiplier: float = 1.5) -> torch.Tensor:
+    """Estimate a smoothing bandwidth from average tet edge length."""
     # Get all unique edges
     comb = torch.combinations(torch.arange(4), r=2)  # (6,2)
     edges = tets[:, comb]  # (M, 6, 2)

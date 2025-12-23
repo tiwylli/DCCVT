@@ -1,25 +1,39 @@
-import os
-import trimesh
-import numpy as np
 import argparse
-import torch
-import sdfpred_utils.sdfpred_utils as su
-import tqdm
-import json
+import os
+from pathlib import Path
+import sys
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+ACCEL_DIR = ROOT_DIR / "accel"
+if str(ACCEL_DIR) not in sys.path:
+    sys.path.append(str(ACCEL_DIR))
+
+import numpy as np
 import pandas as pd
+import torch
+import tqdm
+import trimesh
+
+import metrics_figs_scripts.metrics_utils as su
+from dccvt.argparse_utils import ROOT_DIR as DCCVT_ROOT
+from dccvt.device import device
 
 # cuda devices
-device = torch.device("cuda:0")
-print("Using device: ", torch.cuda.get_device_name(device))
+if device.type == "cuda":
+    print("Using device: ", torch.cuda.get_device_name(device))
+else:
+    print("Using device: ", device)
 # Improve reproducibility
 torch.manual_seed(69)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 np.random.seed(69)
 
-ROOT_DIR = "/home/wylliam/dev/Kyushu_experiments/"
-GT_DIR = ROOT_DIR + "mesh/thingi32/"
-EXPERIMENTS_DIR = ROOT_DIR + "outputs/Best_DCCVT/"  # /thingi32/
+ROOT_DIR = DCCVT_ROOT
+GT_DIR = os.path.join(ROOT_DIR, "mesh/thingi32/")
+EXPERIMENTS_DIR = os.path.join(ROOT_DIR, "outputs/20251222_182320/")
 N_POINTS = 100000
 
 

@@ -10,15 +10,123 @@ from numba import njit, prange
 from pytorch3d.transforms import quaternion_to_matrix
 from scipy.spatial import Delaunay
 
-from dccvt.runtime import device
-from dccvt.sdf_gradients import sdf_space_grad_pytorch_diego_sites_tets, volume_tetrahedron
-def compute_d3d_simplices(sites: torch.Tensor, marching_tetrahedra: bool) -> np.ndarray:
+from dccvt.device import device
+from dccvt.model_utils import resolve_sdf_values_or_fallback
+from dccvt.sdf_gradients import compute_sdf_gradients_sites_tets, volume_tetrahedron
+
+
+def _tetra_edges(tetrahedra: torch.Tensor, device: torch.device) -> torch.Tensor:
+    return torch.cat(
+        [
+            tetrahedra[:, [0, 1]],
+            tetrahedra[:, [1, 2]],
+            tetrahedra[:, [2, 3]],
+            tetrahedra[:, [3, 0]],
+            tetrahedra[:, [0, 2]],
+            tetrahedra[:, [1, 3]],
+        ],
+        dim=0,
+    ).to(device)
+
+
+def _as_tet_tensor(d3dsimplices: Any, device: torch.device) -> torch.Tensor:
+    return torch.as_tensor(d3dsimplices, device=device).detach()
+
+
+def _barycentric_weights(
+    vertices: torch.Tensor,
+    v_pos: torch.Tensor,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    x0 = v_pos[:, 0]
+    x1 = v_pos[:, 1]
+    x2 = v_pos[:, 2]
+    x3 = v_pos[:, 3]
+
+    e1 = x1 - x0
+    e2 = x2 - x0
+    e3 = x3 - x0
+
+    c1 = torch.cross(e2, e3, dim=1)
+    c2 = torch.cross(e3, e1, dim=1)
+    c3 = torch.cross(e1, e2, dim=1)
+
+    adj_D = torch.stack([c1, c2, c3], dim=2)
+    det_D = (e1 * c1).sum(dim=1, keepdim=True)
+
+    rhs = vertices - x0
+    w123 = torch.bmm(adj_D.transpose(1, 2), rhs.unsqueeze(-1)).squeeze(-1) / (det_D + eps)
+    w0 = 1.0 - w123.sum(dim=1, keepdim=True)
+    return torch.cat([w0, w123], dim=1)
+
+
+def _project_vertices_by_method(
+    grad_interpol: str,
+    *,
+    all_vor_vertices: torch.Tensor,
+    d3d: torch.Tensor,
+    sites: torch.Tensor,
+    sites_sdf: torch.Tensor,
+    sites_sdf_grad: torch.Tensor,
+    vertices_sdf: torch.Tensor,
+    vertices: torch.Tensor,
+    tet_indices,
+    quaternion_slerp: bool,
+):
+    tet_probs = None
+    if grad_interpol == "barycentric":
+        vertices_sdf_grad, bary_w = interpolate_vertex_sdf_gradients(
+            all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
+        )
+        sdf_verts = vertices_sdf[tet_indices]
+        grads = vertices_sdf_grad[tet_indices]
+        proj_vertices = project_vertices_newton(grads, sdf_verts, vertices)
+    elif grad_interpol == "robust":
+        proj_vertices, tet_probs = project_vertices_to_tet_plane(
+            d3d[tet_indices], sites, sites_sdf, sites_sdf_grad, vertices
+        )
+    elif grad_interpol == "hybrid":
+        vertices_sdf_grad, bary_w = interpolate_vertex_sdf_gradients(
+            all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
+        )
+        sdf_verts = vertices_sdf[tet_indices]
+        grads = vertices_sdf_grad[tet_indices]
+        proj_vertices = project_vertices_newton(grads, sdf_verts, vertices)
+
+        tpc_proj_v, tet_probs = project_vertices_to_tet_plane(
+            d3d[tet_indices], sites, sites_sdf, sites_sdf_grad, vertices
+        )
+        neg_row_mask = (bary_w[tet_indices] < 0).any(dim=1)
+        proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
+    else:
+        raise ValueError(f"Unknown grad_interpol: {grad_interpol}")
+    return proj_vertices, tet_probs
+
+
+def _accumulate_centroids(
+    indices: torch.Tensor,
+    values: torch.Tensor,
+    num_sites: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    centroids = torch.zeros(num_sites, values.shape[1], dtype=values.dtype, device=device)
+    counts = torch.zeros(num_sites, device=device, dtype=values.dtype)
+    centroids.index_add_(0, indices, values)
+    counts.index_add_(0, indices, torch.ones(values.shape[0], device=device, dtype=values.dtype))
+    centroids /= counts.clamp(min=1).unsqueeze(1)
+    return centroids, counts
+
+
+def compute_delaunay_simplices(sites: torch.Tensor, marching_tetrahedra: bool) -> np.ndarray:
+    """Compute Delaunay simplices for sites (scipy or pygdel3d depending on mode)."""
     sites_np = sites.detach().cpu().numpy()
     if marching_tetrahedra:
         return Delaunay(sites_np).simplices
     d3dsimplices, _ = pygdel3d.triangulate(sites_np)
     return np.array(d3dsimplices)
-def get_clipped_mesh_numba(
+
+
+def compute_clipped_mesh(
     sites: torch.Tensor,
     model: Any,
     d3dsimplices: Any,
@@ -35,12 +143,6 @@ def get_clipped_mesh_numba(
     d3dsimplices:    torch.LongTensor of shape (M,4) from Delaunay
     """
     device = sites.device
-    vertices_sdf = None
-    vertices_sdf_grad = None
-    sdf_verts = None
-    grads = None
-    proj_vertices = None
-    tet_probs = None
     if d3dsimplices is None:
         print("Computing Delaunay simplices...")
         sites_np = sites.detach().cpu().numpy()
@@ -51,11 +153,11 @@ def get_clipped_mesh_numba(
         print("Min vertex index in simplices:", d3dsimplices.min())
         print("Site index range:", sites_np.shape[0])
 
-    d3d = torch.tensor(d3dsimplices).to(device).detach()  # (M,4)
+    d3d = _as_tet_tensor(d3dsimplices, device)  # (M,4)
 
     if build_mesh:
         # print("-> tracing mesh")
-        all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
+        all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
         faces = get_faces(d3dsimplices, sites, all_vor_vertices, model, sites_sdf)  # (R0, List of simplices)
         # Compact the vertex list
         used = {idx for face in faces for idx in face}
@@ -67,101 +169,57 @@ def get_clipped_mesh_numba(
             return new_vertices, new_faces, None, None, None
         else:
             # print("-> clipping")
-            vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
-            sites_sdf_grad, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3d)  # (M,3)
-
-            if grad_interpol == "barycentric":
-                # Use barycentric weights for interpolation
-                vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
-                    all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
-                )
-                sdf_verts = vertices_sdf[sorted(used)]
-                grads = vertices_sdf_grad[sorted(used)]
-                proj_vertices = newton_step_clipping(grads, sdf_verts, new_vertices)
-            elif grad_interpol == "robust":
-                proj_vertices, tet_probs = tet_plane_clipping(
-                    d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
-                )
-                # proj_vertices = tet_grads_clipping(
-                #     new_vertices, vertices_sdf[sorted(used)], tets_sdf_grads[sorted(used)]
-                # )
-            elif grad_interpol == "hybrid":
-                # print("-> using barycentric weights for interpolation")
-                # Use barycentric weights for interpolation
-                vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
-                    all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
-                )
-                sdf_verts = vertices_sdf[sorted(used)]
-                grads = vertices_sdf_grad[sorted(used)]
-                proj_vertices = newton_step_clipping(grads, sdf_verts, new_vertices)
-
-                tpc_proj_v, tet_probs = tet_plane_clipping(
-                    d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
-                )
-                # replace proj_vertices with tpc_proj_v where bary_w has negative component
-                neg_row_mask = (bary_w[sorted(used)] < 0).any(dim=1)  # (K,)
-                # print("bary_w", neg_row_mask.shape, "num bad:", neg_row_mask.sum().item())
-                proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
-
+            vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3d, sites, sites_sdf)
+            sites_sdf_grad, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)  # (M,3)
+            proj_vertices, _ = _project_vertices_by_method(
+                grad_interpol,
+                all_vor_vertices=all_vor_vertices,
+                d3d=d3d,
+                sites=sites,
+                sites_sdf=sites_sdf,
+                sites_sdf_grad=sites_sdf_grad,
+                vertices_sdf=vertices_sdf,
+                vertices=new_vertices,
+                tet_indices=sorted(used),
+                quaternion_slerp=quaternion_slerp,
+            )
             return proj_vertices, new_faces, sites_sdf_grad, tets_sdf_grads, W
     else:
         # print("-> not tracing mesh")
-        all_vor_vertices = compute_vertices_3d_vectorized(sites, d3d)  # (M,3)
-        vertices_to_compute, bisectors_to_compute, used_tet = compute_zero_crossing_vertices_3d(
+        all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
+        vertices_to_compute, bisectors_to_compute, used_tet = find_zero_crossing_vertices_3d(
             sites, None, None, d3dsimplices, sites_sdf
         )
-        vertices = compute_vertices_3d_vectorized(sites, vertices_to_compute)
-        bisectors = compute_all_bisectors_vectorized(sites, bisectors_to_compute)
+        vertices = compute_circumcenters(sites, vertices_to_compute)
+        bisectors = compute_bisector_midpoints(sites, bisectors_to_compute)
         # points = torch.cat((vertices, bisectors), 0)
         if not clip:
             # print("-> not clipping")
             return vertices, None, None, None, None
         else:
             # print("-> clipping")
-            vertices_sdf = interpolate_sdf_of_vertices(all_vor_vertices, d3d, sites, sites_sdf)
-            sites_sdf_grad, tets_sdf_grads, W = sdf_space_grad_pytorch_diego_sites_tets(sites, sites_sdf, d3d)
-            if grad_interpol == "barycentric":
-                # print("-> using barycentric weights for interpolation")
-                # Use barycentric weights for interpolation
-                vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
-                    all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
-                )
-                sdf_verts = vertices_sdf[used_tet]
-                grads = vertices_sdf_grad[used_tet]
-                proj_vertices = newton_step_clipping(grads, sdf_verts, vertices)
+            vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3d, sites, sites_sdf)
+            sites_sdf_grad, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)
+            proj_vertices, tet_probs = _project_vertices_by_method(
+                grad_interpol,
+                all_vor_vertices=all_vor_vertices,
+                d3d=d3d,
+                sites=sites,
+                sites_sdf=sites_sdf,
+                sites_sdf_grad=sites_sdf_grad,
+                vertices_sdf=vertices_sdf,
+                vertices=vertices,
+                tet_indices=used_tet,
+                quaternion_slerp=quaternion_slerp,
+            )
 
-                # tpc_proj_v, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
-                # # replace proj_vertices with tpc_proj_v where bary_w has negative component
-                # neg_row_mask = (bary_w[used_tet] < 0).any(dim=1)  # (K,)
-                # print("bary_w", neg_row_mask.shape, "num bad:", neg_row_mask.sum().item())
-                # proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
-            elif grad_interpol == "robust":
-                proj_vertices, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
-                # proj_vertices = tet_grads_clipping(vertices, vertices_sdf[used_tet], tets_sdf_grads[used_tet])
-            elif grad_interpol == "hybrid":
-                # print("-> using barycentric weights for interpolation")
-                # Use barycentric weights for interpolation
-                vertices_sdf_grad, bary_w = interpolate_sdf_grad_of_vertices(
-                    all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
-                )
-                sdf_verts = vertices_sdf[used_tet]
-                grads = vertices_sdf_grad[used_tet]
-                proj_vertices = newton_step_clipping(grads, sdf_verts, vertices)
-
-                tpc_proj_v, tet_probs = tet_plane_clipping(d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices)
-                # replace proj_vertices with tpc_proj_v where bary_w has negative component
-                neg_row_mask = (bary_w[used_tet] < 0).any(dim=1)  # (K,)
-                # print("bary_w", neg_row_mask.shape, "num bad:", neg_row_mask.sum().item())
-                proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
-
-            # in paper this will be considered a regularisation
             if not no_mp:
                 bisectors_sdf = (sites_sdf[bisectors_to_compute[:, 0]] + sites_sdf[bisectors_to_compute[:, 1]]) / 2
                 bisectors_sdf_grad = (
                     sites_sdf_grad[bisectors_to_compute[:, 0]] + sites_sdf_grad[bisectors_to_compute[:, 1]]
                 ) / 2
 
-                proj_bisectors = newton_step_clipping(bisectors_sdf_grad, bisectors_sdf, bisectors)  # (M,3)
+                proj_bisectors = project_vertices_newton(bisectors_sdf_grad, bisectors_sdf, bisectors)  # (M,3)
 
                 proj_points = torch.cat((proj_vertices, proj_bisectors), 0)
             else:
@@ -171,7 +229,9 @@ def get_clipped_mesh_numba(
             vert_for_clipped_cvt[used_tet] = proj_vertices
             # proj_points = proj_vertices
             return proj_points, vert_for_clipped_cvt, sites_sdf_grad, tet_probs, W
-def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None, model=None):
+
+
+def find_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None, model=None):
     """
     Computes the indices of the sites composing vertices where neighboring sites have opposite or zero SDF values.
 
@@ -182,23 +242,18 @@ def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None,
     Returns:
         zero_crossing_vertices_index (list of triplets): List of sites indices (si, sj, sk) where atleast 2 sites have opposing SDF signs.
     """
-    if model.__class__.__name__ == "SDFGrid":
-        sdf_values = model.sdf(sites)
-    # model might be a [sites, 1] tensor
-    elif isinstance(model, torch.Tensor):
-        sdf_values = model
-    else:
-        sdf_values = model(sites).detach()  # Assuming model outputs (N, 1) or (N,) tensor
+    sdf_values = resolve_sdf_values_or_fallback(sites, model)
 
     if tri is not None:
-        all_tetrahedra = torch.tensor(np.array(tri.simplices), device=device)
+        all_tetrahedra = torch.as_tensor(np.array(tri.simplices), device=device)
     else:
-        all_tetrahedra = torch.tensor(np.array(simplices), device=device)
+        all_tetrahedra = torch.as_tensor(np.array(simplices), device=device)
 
     if vor is not None:
-        neighbors = torch.tensor(np.array(vor.ridge_points), device=device)
+        neighbors = torch.as_tensor(np.array(vor.ridge_points), device=device)
+        zero_crossing_pairs = neighbors
     else:
-        zero_crossing_pairs = compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values)
+        zero_crossing_pairs = find_zero_crossing_site_pairs(all_tetrahedra, sdf_values)
 
     # Check if vertices has a pair of zero crossing sites
     sdf_0 = sdf_values[all_tetrahedra[:, 0]]  # First site in each pair
@@ -220,18 +275,10 @@ def compute_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None,
         zero_crossing_pairs,
         mask_zero_crossing_faces,
     )
-def compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values):
-    tetra_edges = torch.cat(
-        [
-            all_tetrahedra[:, [0, 1]],
-            all_tetrahedra[:, [1, 2]],
-            all_tetrahedra[:, [2, 3]],
-            all_tetrahedra[:, [3, 0]],
-            all_tetrahedra[:, [0, 2]],
-            all_tetrahedra[:, [1, 3]],
-        ],
-        dim=0,
-    ).to(device)
+
+
+def find_zero_crossing_site_pairs(all_tetrahedra, sdf_values):
+    tetra_edges = _tetra_edges(all_tetrahedra, device)
     # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
     tetra_edges, _ = torch.sort(tetra_edges, dim=1)
     # neighbors = torch.unique(tetra_edges, dim=0)
@@ -247,7 +294,7 @@ def compute_zero_crossing_sites_pairs(all_tetrahedra, sdf_values):
     return zero_crossing_pairs
 
 
-def compute_all_bisectors_vectorized(sites, bisectors_to_compute):
+def compute_bisector_midpoints(sites, bisectors_to_compute):
     """
     Computes the bisector points for given pairs of sites in 3D.
 
@@ -266,7 +313,9 @@ def compute_all_bisectors_vectorized(sites, bisectors_to_compute):
     bisectors = (si + sj) / 2  # Shape: (M, N)
 
     return bisectors
-def interpolate_sdf_of_vertices(
+
+
+def interpolate_vertex_sdf_values(
     vertices: torch.Tensor,  # (M, 3)  positions of Voronoi vertices (e.g. circumcenters)
     tets: torch.LongTensor,  # (M, 4)  indices of the 4 sites per tetrahedron
     sites: torch.Tensor,  # (N, 3)  coordinates of the sites
@@ -284,34 +333,7 @@ def interpolate_sdf_of_vertices(
     v_pos = sites[tets]  # (M, 4, 3)
     v_phi = sdf[tets]  # (M, 4)
 
-    x0 = v_pos[:, 0]  # (M, 3)
-    x1 = v_pos[:, 1]
-    x2 = v_pos[:, 2]
-    x3 = v_pos[:, 3]
-
-    # Build D = [x1 - x0 | x2 - x0 | x3 - x0]
-    e1 = x1 - x0
-    e2 = x2 - x0
-    e3 = x3 - x0
-
-    D = torch.stack([e1, e2, e3], dim=2)  # (M,3,3)
-
-    c1 = torch.cross(e2, e3, dim=1)  # cofactor for col 0
-    c2 = torch.cross(e3, e1, dim=1)  # cofactor for col 1
-    c3 = torch.cross(e1, e2, dim=1)  # cofactor for col 2
-
-    adj_D = torch.stack([c1, c2, c3], dim=2)  # (M, 3, 3)
-
-    # Determinant of D
-    det_D = (e1 * c1).sum(dim=1, keepdim=True)  # (M, 1)
-
-    # Right-hand side: x - x0
-    rhs = vertices - x0  # (M, 3)
-
-    # Inverse: D⁻¹ @ rhs = adj(D)^T @ rhs / det(D)
-    w123 = torch.bmm(adj_D.transpose(1, 2), rhs.unsqueeze(-1)).squeeze(-1) / (det_D + 1e-12)  # (M, 3)
-    w0 = 1.0 - w123.sum(dim=1, keepdim=True)  # (M, 1)
-    W = torch.cat([w0, w123], dim=1)  # (M, 4)
+    W = _barycentric_weights(vertices, v_pos)  # (M, 4)
 
     # Interpolate SDF
     phi_v = (W * v_phi).sum(dim=1)  # (M,)
@@ -321,7 +343,7 @@ def interpolate_sdf_of_vertices(
 
 def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
     with torch.no_grad():
-        d3d = torch.tensor(d3dsimplices).to(device).detach()  # (M,4)
+        d3d = _as_tet_tensor(d3dsimplices, device)  # (M,4)
         # Generate all edges of each simplex
         #    torch.combinations gives the 6 index‐pairs within a 4‐long row
         comb = torch.combinations(torch.arange(d3d.shape[1], device=device), r=2)  # (6,2)
@@ -339,10 +361,7 @@ def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
         torch.cuda.empty_cache()
 
         # Evaluate SDF at each site
-        if model is not None:
-            sdf = model(sites).detach().view(-1)  # (N,)
-        else:
-            sdf = sites_sdf  # (N,)
+        sdf = resolve_sdf_values_or_fallback(sites, model, fallback=sites_sdf, flatten=True)  # (N,)
 
         sdf_i = sdf[ridges[:, 0]]
         sdf_j = sdf[ridges[:, 1]]
@@ -490,7 +509,7 @@ def _angle(idx, vertices, ctr, normal, ref):
     return 2 * np.pi - ang if sign else ang
 
 
-def compute_vertices_3d_vectorized(sites, vertices_to_compute):
+def compute_circumcenters(sites, vertices_to_compute):
     """
     Computes the circumcenters of multiple tetrahedra in a vectorized manner.
 
@@ -527,7 +546,7 @@ def compute_vertices_3d_vectorized(sites, vertices_to_compute):
     return circumcenters  # Shape: (M, 3)
 
 
-def interpolate_sdf_grad_of_vertices(
+def interpolate_vertex_sdf_gradients(
     vertices: torch.Tensor,  # (M, 3) positions of Voronoi vertices
     tets: torch.LongTensor,  # (M, 4) indices of sites per tetrahedron
     sites: torch.Tensor,  # (N, 3) coordinates of the sites
@@ -546,31 +565,7 @@ def interpolate_sdf_grad_of_vertices(
     v_pos = sites[tets]  # (M, 4, 3)
     v_grad = site_grads[tets]  # (M, 4, 3)
 
-    x0, x1, x2, x3 = v_pos[:, 0], v_pos[:, 1], v_pos[:, 2], v_pos[:, 3]
-    e1 = x1 - x0
-    e2 = x2 - x0
-    e3 = x3 - x0
-
-    D = torch.stack([e1, e2, e3], dim=2)  # (M, 3, 3)
-
-    # Cofactors of D
-    c1 = torch.cross(e2, e3, dim=1)
-    c2 = torch.cross(e3, e1, dim=1)
-    c3 = torch.cross(e1, e2, dim=1)
-    adj_D = torch.stack([c1, c2, c3], dim=2)  # (M, 3, 3)
-
-    # Determinant
-    det_D = (e1 * c1).sum(dim=1, keepdim=True)  # (M, 1)
-
-    # Vector from x0 to each vertex
-    rhs = vertices - x0  # (M, 3)
-
-    # Solve D⁻¹ (x - x0)
-    w123 = torch.bmm(adj_D.transpose(1, 2), rhs.unsqueeze(-1)).squeeze(-1) / (det_D + 1e-12)  # (M, 3)
-    w0 = 1.0 - w123.sum(dim=1, keepdim=True)
-    W = torch.cat([w0, w123], dim=1)  # (M, 4)
-
-    # we = torch.abs(W).max(dim=1, keepdim=True)[0]  # (M, 1)
+    W = _barycentric_weights(vertices, v_pos)  # (M, 4)
 
     if quaternion_slerp:
         # Use quaternion SLERP for interpolation
@@ -665,13 +660,14 @@ def quaternion_slerp(q1: torch.Tensor, q2: torch.Tensor, t: torch.Tensor) -> tor
     return s1 * q1 + s2 * q2  # (..., 4)
 
 
-def tet_plane_clipping(
+def project_vertices_to_tet_plane(
     tets: torch.Tensor,  # (M, 4)
     sites: torch.Tensor,  # (N, 3)
     sdf_values: torch.Tensor,  # (N,)
     sdf_grads: torch.Tensor,  # (N, 3)
     voronoi_vertices: torch.Tensor,  # (M, 3)
 ) -> torch.Tensor:
+    """Project Voronoi vertices onto the fitted tet plane."""
     eps = 1e-8
     # Gather tet-specific data
     tet_sites = sites[tets]  # (M, 4, 3)
@@ -710,7 +706,7 @@ def tet_plane_clipping(
     return projected_verts, (site_step_dir, steps_verts, tet_sites)
 
 
-def newton_step_clipping(grads, sdf_verts, new_vertices):
+def project_vertices_newton(grads, sdf_verts, new_vertices):
     """
     Perform a single Newton step to clip vertices based on their SDF values and gradients.
     This function is used to refine the positions of Voronoi vertices after computing their SDFs.
@@ -725,15 +721,20 @@ def newton_step_clipping(grads, sdf_verts, new_vertices):
     proj_vertices = new_vertices - step
 
     return proj_vertices
-def compute_cvt_loss_vectorized_delaunay(sites, delaunay, simplices=None):
-    centroids, _ = compute_voronoi_cell_centers_index_based_torch(sites, delaunay, simplices)
+
+
+def compute_cvt_loss_delaunay(sites, delaunay, simplices=None):
+    """Compute CVT loss from Delaunay simplices."""
+    centroids, _ = compute_voronoi_cell_centers(sites, delaunay, simplices)
     centroids = centroids.to(device)
     diff = torch.linalg.norm(sites - centroids, dim=1)
-    penalties = torch.where(abs(diff) < 0.1, diff, torch.tensor(0.0, device=sites.device))
+    penalties = torch.where(diff.abs() < 0.1, diff, torch.zeros_like(diff))
     # cvt_loss = torch.mean(penalties**2)
     cvt_loss = torch.mean(torch.abs(penalties))
     return cvt_loss
-def compute_voronoi_cell_centers_index_based_torch(sites, delau, simplices=None):
+
+
+def compute_voronoi_cell_centers(sites, delau, simplices=None):
     """Compute Voronoi cell centers (circumcenters) for 2D or 3D Delaunay triangulation in PyTorch."""
     # simplices = torch.tensor(delaunay.simplices, dtype=torch.long)
     if simplices is None:
@@ -755,12 +756,7 @@ def compute_voronoi_cell_centers_index_based_torch(sites, delau, simplices=None)
     # Group circumcenters per point
     M = len(points)
     # Compute the sum of centers for each index
-    centroids = torch.zeros(M, 3, dtype=torch.float32, device=sites.device)
-    counts = torch.zeros(M, device=sites.device)
-
-    centroids.index_add_(0, indices, centers)  # Sum centers per unique index
-    counts.index_add_(0, indices, torch.ones(centers.shape[0], device=centers.device))  # Count occurrences
-    centroids /= counts.clamp(min=1).unsqueeze(1)  # Avoid division by zero
+    centroids, _ = _accumulate_centroids(indices, centers, M, sites.device)
 
     distances = torch.norm(centroids[indices] - centers, dim=1)
     num_sites = centroids.shape[0]
@@ -845,21 +841,16 @@ def circumcenter_torch(points, simplices):
         raise ValueError("Only 2D (triangles) and 3D (tetrahedra) are supported.")
 
 
-def compute_cvt_loss_CLIPPED_vertices(sites, d3dsimplices, all_vor_vertices):
-    d3dsimplices = torch.tensor(d3dsimplices, device=sites.device).detach()
+def compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, all_vor_vertices):
+    d3dsimplices = torch.as_tensor(d3dsimplices, device=sites.device).detach()
     # compute centroids
     indices = d3dsimplices.flatten()  # Flatten simplex indices
     centers = all_vor_vertices.repeat_interleave(d3dsimplices.shape[1], dim=0).to(sites.device)
     M = len(sites)
-    centroids = torch.zeros(M, 3, dtype=torch.float32, device=sites.device)
-    counts = torch.zeros(M, device=sites.device)
-
-    centroids.index_add_(0, indices, centers)  # Sum centers per unique index
-    counts.index_add_(0, indices, torch.ones(centers.shape[0], device=centers.device))  # Count occurrences
-    centroids /= counts.clamp(min=1).unsqueeze(1)  # Avoid division by zero
+    centroids, _ = _accumulate_centroids(indices, centers, M, sites.device)
 
     diff = torch.linalg.norm(sites - centroids, dim=1)
-    penalties = torch.where(abs(diff) < 0.5, diff, torch.tensor(0.0, device=sites.device))
+    penalties = torch.where(diff.abs() < 0.5, diff, torch.zeros_like(diff))
     # print number of zero in penalties
     # print("Number of zero in penalties: ", torch.sum(penalties == 0.0).item())
     cvt_loss = torch.mean(torch.abs(penalties))
@@ -867,16 +858,16 @@ def compute_cvt_loss_CLIPPED_vertices(sites, d3dsimplices, all_vor_vertices):
 
 
 def compute_cvt_loss_true(sites, d3d, vertices=None):
-    if vertices == None:
-        vertices = compute_vertices_3d_vectorized(sites, d3d)
+    if vertices is None:
+        vertices = compute_circumcenters(sites, d3d)
 
     # Concat sites and vertices to compute the Voronoi diagram
-    points = torch.concatenate((sites, vertices), axis=0)
+    points = torch.cat((sites, vertices), dim=0)
     # Avoid to get coplanar tet which create issue if the current algorithm
     points += (torch.rand_like(points) - 0.5) * 0.00001  # 0.001 % of the space ish
     d3dsimplices, _ = pygdel3d.triangulate(points.detach().cpu().numpy())
     # d3dsimplices = Delaunay(points.detach().cpu().numpy()).simplices
-    d3dsimplices = torch.tensor(d3dsimplices, dtype=torch.int64, device=sites.device)
+    d3dsimplices = torch.as_tensor(d3dsimplices, dtype=torch.int64, device=sites.device)
 
     ############ 2D Case (Triangles) ############
     # Compute the areas of all simplices (in 2D triangles)
@@ -915,5 +906,3 @@ def compute_cvt_loss_true(sites, d3d, vertices=None):
     # print("Sites shape:", sites.shape)
     # return centroids, vertices
     return cvt_loss
-
-
