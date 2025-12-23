@@ -213,7 +213,6 @@ def compute_clipped_mesh(
                 quaternion_slerp=quaternion_slerp,
             )
 
-            # in paper this will be considered a regularisation
             if not no_mp:
                 bisectors_sdf = (sites_sdf[bisectors_to_compute[:, 0]] + sites_sdf[bisectors_to_compute[:, 1]]) / 2
                 bisectors_sdf_grad = (
