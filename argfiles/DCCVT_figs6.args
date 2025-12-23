@@ -1,0 +1,27 @@
+# ----------------------------------------------- RUN FIGURE CASES ------------------------------------441708 
+@mesh_ids : 64764
+
+# -------------- Figure 6 -------
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 24 --clip --w_mt 1 --sample_near 18944
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample --w_chamfer 1000 --num_centroids 24 --clip --marching_tetrahedra --w_mt 1 --sample_near 18944
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample --w_voroloss 1000 --w_cvt 0.01 --num_centroids 24 --sample_near 18944
+
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_ups --w_chamfer 1000 --upsampling 10 --clip --marching_tetrahedra --w_mt 1
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_ups --w_voroloss 1000 --w_cvt 0.01 --upsampling 10
+
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample_ups --w_chamfer 1000 --upsampling 10 --clip --marching_tetrahedra --w_mt 1 --sample_near 4096
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample_ups --w_voroloss 1000 --w_cvt 0.01 --upsampling 10 --sample_near 4096
+
+
+
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_nearsample --w_voroloss 1000 --w_cvt 0.01 --upsampling 0 --sample_near 4096
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_ups --w_voroloss 1000 --w_cvt 0.01 --upsampling 10
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_nearsample_ups --w_voroloss 1000 --w_cvt 0.01 --upsampling 10 --sample_near 4096
+
+
+# You can temporarily override the mesh set for subsequent lines:
+# @mesh_ids: 313444 441708
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id} --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 0 --num_centroids 32 --clip --w_mt 1 --marching_tetrahedra
+

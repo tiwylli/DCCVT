@@ -1,0 +1,120 @@
+# ----------------------------------------------- RUN FIGURE CASES ------------------------------------441708  
+@mesh_ids : 64764 
+# Baseline 16 - 
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b16 --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 16 --clip --w_mt 1
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b16 --w_voroloss 1000 --w_cvt 0.01 --num_centroids 16
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b16 --w_chamfer 1000 --num_centroids 16 --clip --marching_tetrahedra --w_mt 1
+
+# Baseline 24 - HOLD
+#PROBLEM --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b24 --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 24 --clip --w_mt 1
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b24 --w_voroloss 1000 --w_cvt 0.01 --num_centroids 24
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b24 --w_chamfer 1000 --num_centroids 24 --clip --marching_tetrahedra --w_mt 1
+
+# Baseline 32 - 
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32 --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32 --w_voroloss 1000 --w_cvt 0.01 --num_centroids 32
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32 --w_chamfer 1000 --num_centroids 32 --clip --marching_tetrahedra --w_mt 1
+
+# Baseline 32 unconverged  
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32 --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32 --w_voroloss 1000 --w_cvt 0.01 --num_centroids 32
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32 --w_chamfer 1000 --num_centroids 32 --clip --marching_tetrahedra --w_mt 1
+
+# Baseline 64 - 
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b64 --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 64 --clip --w_mt 1
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b64 --w_voroloss 1000 --w_cvt 0.01 --num_centroids 64
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b64 --w_chamfer 1000 --num_centroids 64 --clip --marching_tetrahedra --w_mt 1
+
+# Baseline converged upsampling - 
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --upsampling 10 --clip --marching_tetrahedra --w_mt 1
+
+# Baseline unconverged upsampling
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_ups --w_chamfer 1000 --upsampling 10 --clip --marching_tetrahedra --w_mt 1
+
+# Hybrid init converged -  
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_nearsample --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 24 --clip --w_mt 1 --sample_near 18944
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_nearsample --w_chamfer 1000 --num_centroids 24 --clip --marching_tetrahedra --w_mt 1 --sample_near 18944
+
+# Hybrid init converged upsampling - 
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_nearsample_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_nearsample_ups --w_chamfer 1000 --upsampling 10 --clip --marching_tetrahedra --w_mt 1 --sample_near 4096
+
+# Hybrid init unconverged upsampling
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_nearsample_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_nearsample_ups --w_chamfer 1000 --upsampling 10 --clip --marching_tetrahedra --w_mt 1 --sample_near 4096
+
+# Hybrid init unconverged 
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_nearsample --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 24 --clip --w_mt 1 --sample_near 18944
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_nearsample --w_chamfer 1000 --num_centroids 24 --clip --marching_tetrahedra --w_mt 1 --sample_near 18944
+
+
+# Robust projection simply look at baseline 32
+# barycentric grads interpol - 
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_bgi --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1 --barycentric_grads
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_bgi --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1 --barycentric_grads
+
+# Approx CVT loss simply look at baseline 32
+# True CVT
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_trueCVT --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1 --true_cvt
+
+#TODO upsampling designs and flags
+
+
+#-------------- Figure 4 -------
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32 --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32 --w_voroloss 1000 --w_cvt 0.01 --num_centroids 32
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32 --w_chamfer 1000 --num_centroids 32 --clip --marching_tetrahedra --w_mt 1
+
+#-------------- Figure 5 -------
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_100_b32_nearsample_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --score conservative
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_100_b32_nearsample_ups --w_chamfer 1000 --upsampling 10 --clip --marching_tetrahedra --w_mt 1 --sample_near 4096 --score conservative
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_100_b32_nearsample_ups --w_voroloss 1000 --w_cvt 0.01 --upsampling 10 --sample_near 4096 --score conservative
+
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_100_b32_nearsample --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 24 --clip --w_mt 1 --sample_near 18944
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_100_b32_nearsample --w_chamfer 1000 --num_centroids 24 --clip --marching_tetrahedra --w_mt 1 --sample_near 18944
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_100_b32_nearsample --w_voroloss 1000 --w_cvt 0.01 --num_centroids 24 --sample_near 18944
+
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_100_b32_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --score conservative
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_100_b32_ups --w_chamfer 1000 --upsampling 10 --clip --marching_tetrahedra --w_mt 1 --score conservative
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_100_b32_ups --w_voroloss 1000 --w_cvt 0.01 --upsampling 10
+
+
+############
+#---------------- figure 3 with hybrid projection optim with bunny 441708
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b16_bgi --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 16 --clip --w_mt 1 --barycentric_grads
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_bgi --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1 --barycentric_grads
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b64_bgi --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 64 --clip --w_mt 1 --barycentric_grads
+
+#---------------- figure 5 with hybrid projection optim with gargoyle 64764
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32_bgi --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1 --barycentric_grads
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample_bgi --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 24 --clip --w_mt 1 --sample_near 18944 --barycentric_grads
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_ups_bgi --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --barycentric_grads
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample_ups_bgi --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --barycentric_grads
+
+#------------------ figure 3 with 150k points
+#--mesh {mesh}{mesh_id}_150k --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}_150k.pth --output {output}{mesh_id}_b16_150k --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 16 --clip --w_mt 1
+#--mesh {mesh}{mesh_id}_150k --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}_150k.pth --output {output}{mesh_id}_b16_150k --w_voroloss 1000 --w_cvt 0.01 --num_centroids 16
+#--mesh {mesh}{mesh_id}_150k --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}_150k.pth --output {output}{mesh_id}_b16_150k --w_chamfer 1000 --num_centroids 16 --clip --marching_tetrahedra --w_mt 1
+
+#--mesh {mesh}{mesh_id}_150k --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}_150k.pth --output {output}{mesh_id}_b32_150k --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 32 --clip --w_mt 1
+#--mesh {mesh}{mesh_id}_150k --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}_150k.pth --output {output}{mesh_id}_b32_150k --w_voroloss 1000 --w_cvt 0.01 --num_centroids 32
+#--mesh {mesh}{mesh_id}_150k --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}_150k.pth --output {output}{mesh_id}_b32_150k --w_chamfer 1000 --num_centroids 32 --clip --marching_tetrahedra --w_mt 1
+
+#--mesh {mesh}{mesh_id}_150k --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}_150k.pth --output {output}{mesh_id}_b64_150k --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 64 --clip --w_mt 1
+#--mesh {mesh}{mesh_id}_150k --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}_150k.pth --output {output}{mesh_id}_b64_150k --w_voroloss 1000 --w_cvt 0.01 --num_centroids 64
+#--mesh {mesh}{mesh_id}_150k --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}_150k.pth --output {output}{mesh_id}_b64_150k --w_chamfer 1000 --num_centroids 64 --clip --marching_tetrahedra --w_mt 1
+
+
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_ups_extraction --w_voroloss 1000 --w_cvt 0.01 --upsampling 10 --ups_extraction
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample_ups_extraction --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --ups_extraction
+
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_100_{mesh_id}_b32_nearsample_ups_extraction_conservative --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --ups_extraction --score conservative
+
+
+
+# You can temporarily override the mesh set for subsequent lines:
+# @mesh_ids: 313444 441708
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id} --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 0 --num_centroids 32 --clip --w_mt 1 --marching_tetrahedra
+
