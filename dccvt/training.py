@@ -63,40 +63,6 @@ def _update_delaunay(
     return d3dsimplices
 
 
-def _compute_chamfer_geometry(
-    sites: torch.Tensor,
-    sites_sdf: torch.Tensor,
-    d3dsimplices: Any,
-):
-    sites_sdf_grads = None
-    W = None
-
-    v_vect, f_or_clipped_v, sites_sdf_grads, W = compute_clipped_mesh(
-        sites,
-        None,
-        d3dsimplices,
-        sites_sdf,
-    )
-
-    return d3dsimplices, v_vect, f_or_clipped_v, sites_sdf_grads, W
-
-
-def _compute_chamfer_loss(
-    manifold_points: torch.Tensor,
-    v_vect: torch.Tensor,
-) -> torch.Tensor:
-    chamfer_loss_mesh, _ = chamfer_distance(manifold_points.detach(), v_vect.unsqueeze(0))
-    return chamfer_loss_mesh
-
-
-def _compute_cvt_loss(
-    sites: torch.Tensor,
-    d3dsimplices: Any,
-    f_or_clipped_v: Any,
-) -> torch.Tensor:
-    return compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, f_or_clipped_v)
-
-
 def _compute_sdfsmooth_loss(
     sites: torch.Tensor,
     sites_sdf: torch.Tensor,
@@ -124,10 +90,6 @@ def _compute_sdfsmooth_loss(
     return sdf_loss, sites_sdf_grads, W, eps_H
 
 
-def _should_upsample(epoch: int, upsampled: float, args: Any) -> bool:
-    return upsampled < args.upsampling and epoch / (args.num_iterations * 0.80) > upsampled / args.upsampling
-
-
 def _maybe_upsample(
     *,
     epoch: int,
@@ -144,7 +106,8 @@ def _maybe_upsample(
     args: Any,
     eps_H: Any,
 ):
-    if not _should_upsample(epoch, upsampled, args):
+    should_upsample = upsampled < args.upsampling and epoch / (args.num_iterations * 0.80) > upsampled / args.upsampling
+    if not should_upsample:
         return False, upsampled, sites, sites_sdf, optimizer, d3dsimplices, sites_sdf_grads, W, eps_H
 
     print("sites length BEFORE UPSAMPLING: ", len(sites))
@@ -257,13 +220,16 @@ def run_dccvt_training(
         )
 
         if use_chamfer:
-            d3dsimplices, v_vect, f_or_clipped_v, sites_sdf_grads, W = _compute_chamfer_geometry(
-                sites, sites_sdf, d3dsimplices
+            v_vect, f_or_clipped_v, sites_sdf_grads, W = compute_clipped_mesh(
+                sites,
+                None,
+                d3dsimplices,
+                sites_sdf,
             )
-            chamfer_loss_mesh = _compute_chamfer_loss(manifold_points, v_vect)
+            chamfer_loss_mesh, _ = chamfer_distance(manifold_points.detach(), v_vect.unsqueeze(0))
 
         if use_cvt:
-            cvt_loss = _compute_cvt_loss(sites, d3dsimplices, f_or_clipped_v)
+            cvt_loss = compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, f_or_clipped_v)
 
         sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh
 
@@ -295,10 +261,11 @@ def run_dccvt_training(
             args=args,
             eps_H=eps_H,
         )
-        if did_continue:
-            continue
 
         if args.video:
             extract_mesh(sites, sites_sdf, manifold_points, 0, args, state=f"{int(epoch)}")
+
+        if did_continue:
+            continue
 
     return sites, sites_sdf

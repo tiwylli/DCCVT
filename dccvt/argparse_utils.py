@@ -30,13 +30,13 @@ DEFAULTS = {
     "trained_HotSpot": f"{ROOT_DIR}/hotspots_model/",
     "num_iterations": 1000,
     "num_centroids": 16,
-    "sample_near": 0,
+    "sample_near": 0, #4096
     "max_amount_sites": 32,
     "video": False, # Keep for usefulness of extracting mesh at every step for visualisation
-    "w_cvt": 0,
-    "w_sdfsmooth": 0,
-    "w_chamfer": 0,  # 1000
-    "upsampling": 0,  # 0
+    "w_cvt": 100,
+    "w_sdfsmooth": 100,
+    "w_chamfer": 1000,
+    "upsampling": 0,  # 5
     "lr_sites": 0.0005,
     "mesh_ids": [
         "252119",
@@ -154,10 +154,6 @@ def parse_args_template_file(
     return arg_lists
 
 
-def _add_bool_arg(parser: argparse.ArgumentParser, flag: str, default: bool, help_text: str) -> None:
-    parser.add_argument(flag, action=argparse.BooleanOptionalAction, default=default, help=help_text)
-
-
 def parse_experiment_args(
     arg_list: Optional[List[str]] = None, defaults: Optional[Dict[str, object]] = None
 ) -> argparse.Namespace:
@@ -177,7 +173,9 @@ def parse_experiment_args(
     parser.add_argument("--num_centroids", type=int, default=defaults["num_centroids"], help="Number of centroids")
     parser.add_argument("--sample_near", type=int, default=defaults["sample_near"], help="Samples drawn near each site")
     parser.add_argument("--max_amount_sites", type=int, default=defaults["max_amount_sites"], help="Target size for sampling")
-    _add_bool_arg(parser, "--video", defaults["video"], "Enable/disable video output")
+    parser.add_argument(
+        "--video", action=argparse.BooleanOptionalAction, default=defaults["video"], help="Enable/disable video output"
+    )
     parser.add_argument("--w_cvt", type=float, default=defaults["w_cvt"], help="Weight for CVT regularization")
     parser.add_argument("--w_sdfsmooth", type=float, default=defaults["w_sdfsmooth"], help="Weight for SDF smoothing")
     parser.add_argument(

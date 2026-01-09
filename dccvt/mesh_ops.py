@@ -3,11 +3,10 @@
 from typing import Any
 
 import torch
-from scipy.spatial import Delaunay
-
 from dccvt.geometry import (
     compute_circumcenters,
     compute_clipped_mesh_faces,
+    compute_delaunay_simplices,
     find_zero_crossing_vertices_3d,
     get_faces,
     interpolate_vertex_sdf_values,
@@ -16,21 +15,6 @@ from dccvt.io_utils import save_npz_bundle, save_obj_mesh, save_point_cloud_ply
 from dccvt.model_utils import resolve_sdf_values
 from dccvt.paths import make_dccvt_obj_path
 from dccvt.device import device
-
-
-def _ensure_d3dsimplices(sites: torch.Tensor, d3dsimplices: Any) -> Any:
-    if d3dsimplices is not None:
-        return d3dsimplices
-    sites_np = sites.detach().cpu().numpy()
-    return Delaunay(sites_np).simplices
-
-
-def _compute_clipped_mesh_outputs(
-    sites: torch.Tensor,
-    sdf_values: torch.Tensor,
-    d3dsimplices: Any,
-):
-    return compute_clipped_mesh_faces(sites, None, d3dsimplices, sdf_values)
 
 
 def extract_cvt_mesh(sites, sites_sdf, d3dsimplices, build_faces: bool = False):
@@ -101,12 +85,11 @@ def extract_mesh(
     elapsed_time: float,
     args: Any,
     state: str = "",
-    d3dsimplices: Any = None,
 ) -> None:
     """Extract mesh artifacts for the current state and persist them to disk."""
     print(f"Extracting mesh at state: {state} with upsampling: {args.upsampling}")
     sdf_values = resolve_sdf_values(model, sites, verbose=True)  # (N,)
-    d3dsimplices = _ensure_d3dsimplices(sites, d3dsimplices)
+    d3dsimplices = compute_delaunay_simplices(sites)
 
     clipped_cache = None
 
@@ -116,7 +99,7 @@ def extract_mesh(
         save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
 
-        clipped_cache = _compute_clipped_mesh_outputs(sites, sdf_values, d3dsimplices)
+        clipped_cache = compute_clipped_mesh_faces(sites, None, d3dsimplices, sdf_values)
         v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = clipped_cache
         output_obj_file = make_dccvt_obj_path(args, state, "projDCCVT")
         save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))

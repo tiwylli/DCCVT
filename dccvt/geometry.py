@@ -58,18 +58,6 @@ def _barycentric_weights(
     return torch.cat([w0, w123], dim=1)
 
 
-def _project_vertices_by_method(
-    *,
-    d3d: torch.Tensor,
-    sites: torch.Tensor,
-    sites_sdf: torch.Tensor,
-    sites_sdf_grad: torch.Tensor,
-    vertices: torch.Tensor,
-    tet_indices,
-):
-    return project_vertices_to_tet_plane(d3d[tet_indices], sites, sites_sdf, sites_sdf_grad, vertices)
-
-
 def _accumulate_centroids(
     indices: torch.Tensor,
     values: torch.Tensor,
@@ -120,16 +108,11 @@ def compute_clipped_mesh(
         sites, None, None, d3dsimplices, sites_sdf
     )
     vertices = compute_circumcenters(sites, vertices_to_compute)
-    bisectors = compute_bisector_midpoints(sites, bisectors_to_compute)
+    bisectors = (sites[bisectors_to_compute[:, 0]] + sites[bisectors_to_compute[:, 1]]) / 2
 
     sites_sdf_grad, _, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)
-    proj_vertices = _project_vertices_by_method(
-        d3d=d3d,
-        sites=sites,
-        sites_sdf=sites_sdf,
-        sites_sdf_grad=sites_sdf_grad,
-        vertices=vertices,
-        tet_indices=used_tet,
+    proj_vertices = project_vertices_to_tet_plane(
+        d3d[used_tet], sites, sites_sdf, sites_sdf_grad, vertices
     )
 
     bisectors_sdf = (sites_sdf[bisectors_to_compute[:, 0]] + sites_sdf[bisectors_to_compute[:, 1]]) / 2
@@ -174,13 +157,8 @@ def compute_clipped_mesh_faces(
     new_faces = [[old2new[i] for i in face] for face in faces]
 
     sites_sdf_grad, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)  # (M,3)
-    proj_vertices = _project_vertices_by_method(
-        d3d=d3d,
-        sites=sites,
-        sites_sdf=sites_sdf,
-        sites_sdf_grad=sites_sdf_grad,
-        vertices=new_vertices,
-        tet_indices=sorted(used),
+    proj_vertices = project_vertices_to_tet_plane(
+        d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
     )
     return proj_vertices, new_faces, sites_sdf_grad, tets_sdf_grads, W
 
@@ -246,27 +224,6 @@ def find_zero_crossing_site_pairs(all_tetrahedra, sdf_values):
     zero_crossing_pairs = neighbors[mask_zero_crossing_sites]
 
     return zero_crossing_pairs
-
-
-def compute_bisector_midpoints(sites, bisectors_to_compute):
-    """
-    Computes the bisector points for given pairs of sites in 3D.
-
-    Args:
-        sites (torch.Tensor): (N, 3) tensor of site positions.
-        bisectors_to_compute (torch.Tensor): (M, 2) tensor of index pairs.
-
-    Returns:
-        torch.Tensor: (M, 3) tensor of computed bisector points.
-    """
-    # Extract all site pairs at once
-    si = sites[bisectors_to_compute[:, 0]]  # Shape: (M, N)
-    sj = sites[bisectors_to_compute[:, 1]]  # Shape: (M, N)
-
-    # Compute bisectors in a single vectorized operation
-    bisectors = (si + sj) / 2  # Shape: (M, N)
-
-    return bisectors
 
 
 def interpolate_vertex_sdf_values(

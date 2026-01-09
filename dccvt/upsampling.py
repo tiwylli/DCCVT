@@ -114,17 +114,6 @@ def _sample_candidate_sites(
     return zc_sites[sampled_indices]
 
 
-def _tetrahedral_dirs(device: torch.device, normalize: bool) -> torch.Tensor:
-    tetr_dirs = torch.as_tensor(
-        [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
-        dtype=torch.float32,
-        device=device,
-    )
-    if normalize:
-        tetr_dirs = torch.nn.functional.normalize(tetr_dirs, dim=1)
-    return tetr_dirs
-
-
 def _tet_frame_offspring(
     sites: torch.Tensor,
     sdf_values: torch.Tensor,
@@ -134,7 +123,12 @@ def _tet_frame_offspring(
     eps: float,
     device: torch.device,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    tetr_dirs = _tetrahedral_dirs(device, normalize=True)
+    tetr_dirs = torch.as_tensor(
+        [[1, 1, 1], [-1, -1, 1], [-1, 1, -1], [1, -1, -1]],
+        dtype=torch.float32,
+        device=device,
+    )
+    tetr_dirs = torch.nn.functional.normalize(tetr_dirs, dim=1)
 
     cent_grad = grad_est[cand]
     unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)
