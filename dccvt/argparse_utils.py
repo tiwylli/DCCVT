@@ -28,66 +28,65 @@ DEFAULTS = {
     "output": f"{ROOT_DIR}/outputs/{timestamp}/",
     "mesh": f"{ROOT_DIR}/mesh/thingi32/",  # "mesh": f"{ROOT_DIR}/mesh/thingi32_150k/",
     "trained_HotSpot": f"{ROOT_DIR}/hotspots_model/",
-    "input_dims": 3,
+    "input_dims": 3,  # Always 3
     "num_iterations": 1000,
     "num_centroids": 16,  # ** input_dims
     "sample_near": 0,  # # ** input_dims
-    "target_size": 32,  # 32 # ** input_dims
-    "clip": False,
-    "grad_interpol": "robust",  # , hybrid, barycentric",  # False
-    "marching_tetrahedra": False,  # True
-    "true_cvt": False,  # True
-    "extract_optim": False,  # True
-    "no_mp": False,  # True
-    "ups_extraction": False,
-    "build_mesh": False,
-    "video": False,
-    "sdf_type": "hotspot",  # "hotspot", "sphere", "complex_alpha"
+    "max_amount_sites": 32,  # 32 # ** input_dims
+    "clip": True, #Always true
+    "grad_interpol": "robust",  # Always robust # others are in experiments branch : hybrid, barycentric
+    "marching_tetrahedra": False,  # Always false, but keep it. 
+    "true_cvt": False,  # Always false 
+    "extract_optim": False,  # Always false
+    "no_mp": False,  # Always false
+    "ups_extraction": False, # Always false
+    "build_mesh": False, # Always false
+    "video": False, # Keep for usefulness of extracting mesh at every step for visualisation
+    "sdf_type": "hotspot",  # Always hotspot # others are in experiments branch : sphere, complex_alpha
     "w_cvt": 0,
     "w_sdfsmooth": 0,
     "w_voroloss": 0,  # 1000
     "w_chamfer": 0,  # 1000
-    "w_vertex_sdf_interpolation": 0,
-    "w_mt": 0,  # 1000
-    "w_mc": 0,  # 1000
-    # "w_bpa": 0,  # 1000
+    "w_mc": 0,
+    "w_mt": 0,
+    "w_vertex_sdf_interpolation": 0, # Remove this loss. does not work 
     "upsampling": 0,  # 0
-    "ups_method": "tet_frame",  # "tet_random", "random" "tet_frame_remove_parent"
-    "score": "conservative",  # "legacy" "density", "cosine", "conservative"
+    "ups_method": "tet_frame",  # Always tet_frame # others are in experiments branch : "tet_random", "random" "tet_frame_remove_parent"
+    "score": "conservative",  # Always conservative # others are in experiments branch : "legacy" "density", "cosine"
     "lr_sites": 0.0005,
-    "mesh_ids": [  # 64764],
-        # "252119",
-        # "313444",  # lucky cat
-        # "316358",
-        # "354371",
-        # # "398259", this mesh destroys our results
-        # "441708",  # bunny
-        # "44234",
-        # "47984",
-        # "527631",
-        # "53159",
-        # "58168",
-        # "64444",
+    "mesh_ids": [
+        "252119",
+        "313444",  # lucky cat
+        "316358",
+        "354371",
+        # "398259", hotspot has problems with this mesh
+        "441708",  # bunny
+        "44234",
+        "47984",
+        "527631",
+        "53159",
+        "58168",
+        "64444",
         "64764",  # gargoyle
-        # "68380",
-        # "68381",
-        # "72870",
-        # "72960",
-        # "73075",
-        # "75496",
-        # "75655",
-        # "75656",
-        # "75662",
-        # "75665",
-        # "76277",
-        # "77245",
-        # "78671",
-        # "79241",
-        # "90889",
-        # "92763",
-        # "92880",
-        # "95444",
-        # "96481",
+        "68380",
+        "68381",
+        "72870",
+        "72960",
+        "73075",
+        "75496",
+        "75655",
+        "75656",
+        "75662",
+        "75665",
+        "76277",
+        "77245",
+        "78671",
+        "79241",
+        "90889",
+        "92763",
+        "92880",
+        "95444",
+        "96481",
     ],
 }
 
@@ -194,7 +193,7 @@ def parse_experiment_args(
     )
     parser.add_argument("--num_centroids", type=int, default=defaults["num_centroids"], help="Number of centroids")
     parser.add_argument("--sample_near", type=int, default=defaults["sample_near"], help="Samples drawn near each site")
-    parser.add_argument("--target_size", type=int, default=defaults["target_size"], help="Target size for sampling")
+    parser.add_argument("--max_amount_sites", type=int, default=defaults["max_amount_sites"], help="Target size for sampling")
     _add_bool_arg(parser, "--clip", defaults["clip"], "Enable/disable clipping")
     parser.add_argument(
         "--grad_interpol",
@@ -249,4 +248,17 @@ def parse_experiment_args(
         default=defaults["score"],
         help="Score computation [legacy, density, sqrt_curvature, cosine]",
     )
-    return parser.parse_args(arg_list)
+    args = parser.parse_args(arg_list)
+    args.input_dims = defaults["input_dims"]
+    args.clip = defaults["clip"]
+    args.grad_interpol = defaults["grad_interpol"]
+    args.true_cvt = defaults["true_cvt"]
+    args.extract_optim = defaults["extract_optim"]
+    args.no_mp = defaults["no_mp"]
+    args.ups_extraction = defaults["ups_extraction"]
+    args.build_mesh = defaults["build_mesh"]
+    args.sdf_type = defaults["sdf_type"]
+    args.w_vertex_sdf_interpolation = defaults["w_vertex_sdf_interpolation"]
+    args.ups_method = defaults["ups_method"]
+    args.score = defaults["score"]
+    return args

@@ -7,12 +7,10 @@ from typing import Any, List
 import torch
 
 from dccvt import argparse_utils as config_utils
-from dccvt.alpha_shape import complex_alpha_sdf
 from dccvt.argparse_utils import parse_experiment_args
 from dccvt.mesh_ops import extract_mesh
 from dccvt.model_utils import init_sdf_from_model, init_sites_from_mnfld_points, load_hotspot_model
 from dccvt.paths import make_dccvt_obj_path, make_voromesh_obj_path
-from dccvt.device import device
 from dccvt.training import run_dccvt_training
 
 
@@ -33,28 +31,17 @@ def run_single_mesh_experiment(arg_list: List[str]) -> None:
     try:
         model, mnfld_points = load_hotspot_model(
             mesh_path=args.mesh,
-            target_size=args.target_size,
+            max_amount_sites=args.max_amount_sites,
             hotspot_weights_path=args.trained_HotSpot,
         )
         sites = init_sites_from_mnfld_points(
             mnfld_points=mnfld_points,
             num_centroids=args.num_centroids,
             sample_near=args.sample_near,
-            input_dims=args.input_dims,
         )
 
         if use_chamfer:
-            if args.sdf_type == "bounding_sphere":
-                # bounding sphere of mnfld points
-                radius = torch.norm(mnfld_points, dim=-1).max().item() + 0.1
-                sdf = torch.norm(sites - torch.zeros(3).to(device), dim=-1) - radius
-                sdf = sdf.detach().squeeze(-1).requires_grad_()
-                print("sdf:", sdf.shape, sdf.dtype, sdf.is_leaf)
-            elif args.sdf_type == "complex_alpha":
-                sdf = complex_alpha_sdf(mnfld_points, sites)
-                print("sdf:", sdf.shape, sdf.dtype, sdf.is_leaf)
-            else:
-                sdf = init_sdf_from_model(model, sites)
+            sdf = init_sdf_from_model(model, sites)
         else:
             sdf = model
 
@@ -79,12 +66,10 @@ def run_single_mesh_experiment(arg_list: List[str]) -> None:
 def expected_output_files(args: Any) -> List[str]:
     state = "final"
     outputs: List[str] = []
-    if args.w_mt > 0:
+    if args.marching_tetrahedra:
         outputs.append(make_dccvt_obj_path(args, state, "MT"))
     if args.w_voroloss > 0:
         outputs.append(make_voromesh_obj_path(args, state))
     if args.w_chamfer > 0:
         outputs.append(make_dccvt_obj_path(args, state, "projDCCVT"))
-    if args.w_mc > 0:
-        print("todo: implement MC loss extraction")
     return outputs

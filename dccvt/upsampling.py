@@ -56,26 +56,16 @@ def _neighbor_counts(neighbors: torch.Tensor, num_sites: int, device: torch.devi
 def _curvature_score(
     neighbors: torch.Tensor,
     grad_est: torch.Tensor,
-    score_mode: str,
     num_sites: int,
     device: torch.device,
     eps: float,
 ) -> torch.Tensor:
     unit_n = grad_est / (grad_est.norm(dim=1, keepdim=True) + eps)
 
-    if score_mode == "density":
-        return torch.ones(num_sites, device=device)
-
     curv_score = torch.zeros(num_sites, device=device)
     counts = _neighbor_counts(neighbors, num_sites, device)
 
-    if score_mode != "cosine":
-        if score_mode != "conservative":
-            dn2 = ((unit_n[neighbors[:, 0]] - unit_n[neighbors[:, 1]]) ** 2).sum(1)
-        else:
-            dn2 = ((unit_n[neighbors[:, 0]] - unit_n[neighbors[:, 1]]) ** 2).sum(1) * 0.8 + 0.2
-    else:
-        dn2 = (1.0 - (unit_n[neighbors[:, 0]] * unit_n[neighbors[:, 1]]).sum(1)) * 0.8 + 0.2
+    dn2 = ((unit_n[neighbors[:, 0]] - unit_n[neighbors[:, 1]]) ** 2).sum(1) * 0.8 + 0.2
 
     curv_score = curv_score.index_add(0, neighbors[:, 0], dn2)
     curv_score = curv_score.index_add(0, neighbors[:, 1], dn2)
@@ -305,8 +295,6 @@ def upsample_sites_adaptive(
     curv_pct: float = 0.75,  # percentile threshold for curvature pass
     growth_cap: float = 0.10,  # ≤ fraction of current sites allowed per iter
     eps: float = 1e-12,
-    ups_method: str = "tet_frame",  # | "tet_random" | "random",
-    score: str = "legacy",  # | "density" | "cosine" | "conservative"
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     # ------------------------------------------------------------------------------
@@ -325,8 +313,7 @@ def upsample_sites_adaptive(
     min_dists = _min_neighbor_distances(sites, neighbors)
 
     grad_est = sites_sdf_grads
-    score_mode = score
-    curv_score = _curvature_score(neighbors, grad_est, score_mode, num_sites, device, eps)
+    curv_score = _curvature_score(neighbors, grad_est, num_sites, device, eps)
 
     zc_sites = _zero_crossing_sites(neighbors, sdf_values)
 
@@ -340,28 +327,7 @@ def upsample_sites_adaptive(
     if cand.numel() == 0:
         return sites, sdf_values
 
-    if ups_method == "tet_frame":
-        new_sites, new_sdf = _tet_frame_offspring(
-            sites, sdf_values, grad_est, cand, min_dists, eps, device
-        )
-        updated_sites = torch.cat([sites, new_sites], dim=0)
-        updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)
-        return updated_sites, updated_sites_sdf
-
-    if ups_method == "tet_frame_remove_parent":
-        new_sites, new_sdf = _tet_frame_offspring(
-            sites, sdf_values, grad_est, cand, min_dists, eps, device
-        )
-        parent_mask = _parent_mask(num_sites, cand, device)
-        updated_sites = torch.cat([sites[parent_mask], new_sites], dim=0)
-        updated_sites_sdf = torch.cat([sdf_values[parent_mask], new_sdf], dim=0)
-        return updated_sites, updated_sites_sdf
-
-    if ups_method == "tet_random":
-        return _upsample_tet_random(sites, sdf_values, grad_est, cand, min_dists, device)
-
-    if ups_method == "random":
-        return _upsample_random_hemisphere(sites, sdf_values, grad_est, cand, min_dists, eps, device)
-
-    raise ValueError(f"Unknown upsampling method: {ups_method}")
-
+    new_sites, new_sdf = _tet_frame_offspring(sites, sdf_values, grad_est, cand, min_dists, eps, device)
+    updated_sites = torch.cat([sites, new_sites], dim=0)
+    updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)
+    return updated_sites, updated_sites_sdf

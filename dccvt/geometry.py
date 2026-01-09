@@ -61,45 +61,17 @@ def _barycentric_weights(
 
 
 def _project_vertices_by_method(
-    grad_interpol: str,
     *,
-    all_vor_vertices: torch.Tensor,
     d3d: torch.Tensor,
     sites: torch.Tensor,
     sites_sdf: torch.Tensor,
     sites_sdf_grad: torch.Tensor,
-    vertices_sdf: torch.Tensor,
     vertices: torch.Tensor,
     tet_indices,
-    quaternion_slerp: bool,
 ):
-    tet_probs = None
-    if grad_interpol == "barycentric":
-        vertices_sdf_grad, bary_w = interpolate_vertex_sdf_gradients(
-            all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
-        )
-        sdf_verts = vertices_sdf[tet_indices]
-        grads = vertices_sdf_grad[tet_indices]
-        proj_vertices = project_vertices_newton(grads, sdf_verts, vertices)
-    elif grad_interpol == "robust":
-        proj_vertices, tet_probs = project_vertices_to_tet_plane(
-            d3d[tet_indices], sites, sites_sdf, sites_sdf_grad, vertices
-        )
-    elif grad_interpol == "hybrid":
-        vertices_sdf_grad, bary_w = interpolate_vertex_sdf_gradients(
-            all_vor_vertices, d3d, sites, sites_sdf_grad, quaternion_slerp=quaternion_slerp
-        )
-        sdf_verts = vertices_sdf[tet_indices]
-        grads = vertices_sdf_grad[tet_indices]
-        proj_vertices = project_vertices_newton(grads, sdf_verts, vertices)
-
-        tpc_proj_v, tet_probs = project_vertices_to_tet_plane(
-            d3d[tet_indices], sites, sites_sdf, sites_sdf_grad, vertices
-        )
-        neg_row_mask = (bary_w[tet_indices] < 0).any(dim=1)
-        proj_vertices[neg_row_mask] = tpc_proj_v[neg_row_mask]
-    else:
-        raise ValueError(f"Unknown grad_interpol: {grad_interpol}")
+    proj_vertices, tet_probs = project_vertices_to_tet_plane(
+        d3d[tet_indices], sites, sites_sdf, sites_sdf_grad, vertices
+    )
     return proj_vertices, tet_probs
 
 
@@ -130,12 +102,7 @@ def compute_clipped_mesh(
     sites: torch.Tensor,
     model: Any,
     d3dsimplices: Any,
-    clip: bool = True,
     sites_sdf: Optional[torch.Tensor] = None,
-    build_mesh: bool = False,
-    quaternion_slerp: bool = False,
-    grad_interpol: str = "robust",
-    no_mp: bool = False,
 ):
     """
     sites:           (N,3) torch tensor (requires_grad)
@@ -155,80 +122,74 @@ def compute_clipped_mesh(
 
     d3d = _as_tet_tensor(d3dsimplices, device)  # (M,4)
 
-    if build_mesh:
-        # print("-> tracing mesh")
-        all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
-        faces = get_faces(d3dsimplices, sites, all_vor_vertices, model, sites_sdf)  # (R0, List of simplices)
-        # Compact the vertex list
-        used = {idx for face in faces for idx in face}
-        old2new = {old: new for new, old in enumerate(sorted(used))}
-        new_vertices = all_vor_vertices[sorted(used)]
-        new_faces = [[old2new[i] for i in face] for face in faces]
-        if not clip:
-            # print("-> not clipping")
-            return new_vertices, new_faces, None, None, None
-        else:
-            # print("-> clipping")
-            vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3d, sites, sites_sdf)
-            sites_sdf_grad, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)  # (M,3)
-            proj_vertices, _ = _project_vertices_by_method(
-                grad_interpol,
-                all_vor_vertices=all_vor_vertices,
-                d3d=d3d,
-                sites=sites,
-                sites_sdf=sites_sdf,
-                sites_sdf_grad=sites_sdf_grad,
-                vertices_sdf=vertices_sdf,
-                vertices=new_vertices,
-                tet_indices=sorted(used),
-                quaternion_slerp=quaternion_slerp,
-            )
-            return proj_vertices, new_faces, sites_sdf_grad, tets_sdf_grads, W
-    else:
-        # print("-> not tracing mesh")
-        all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
-        vertices_to_compute, bisectors_to_compute, used_tet = find_zero_crossing_vertices_3d(
-            sites, None, None, d3dsimplices, sites_sdf
-        )
-        vertices = compute_circumcenters(sites, vertices_to_compute)
-        bisectors = compute_bisector_midpoints(sites, bisectors_to_compute)
-        # points = torch.cat((vertices, bisectors), 0)
-        if not clip:
-            # print("-> not clipping")
-            return vertices, None, None, None, None
-        else:
-            # print("-> clipping")
-            vertices_sdf = interpolate_vertex_sdf_values(all_vor_vertices, d3d, sites, sites_sdf)
-            sites_sdf_grad, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)
-            proj_vertices, tet_probs = _project_vertices_by_method(
-                grad_interpol,
-                all_vor_vertices=all_vor_vertices,
-                d3d=d3d,
-                sites=sites,
-                sites_sdf=sites_sdf,
-                sites_sdf_grad=sites_sdf_grad,
-                vertices_sdf=vertices_sdf,
-                vertices=vertices,
-                tet_indices=used_tet,
-                quaternion_slerp=quaternion_slerp,
-            )
+    all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
+    vertices_to_compute, bisectors_to_compute, used_tet = find_zero_crossing_vertices_3d(
+        sites, None, None, d3dsimplices, sites_sdf
+    )
+    vertices = compute_circumcenters(sites, vertices_to_compute)
+    bisectors = compute_bisector_midpoints(sites, bisectors_to_compute)
 
-            if not no_mp:
-                bisectors_sdf = (sites_sdf[bisectors_to_compute[:, 0]] + sites_sdf[bisectors_to_compute[:, 1]]) / 2
-                bisectors_sdf_grad = (
-                    sites_sdf_grad[bisectors_to_compute[:, 0]] + sites_sdf_grad[bisectors_to_compute[:, 1]]
-                ) / 2
+    sites_sdf_grad, _, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)
+    proj_vertices, tet_probs = _project_vertices_by_method(
+        d3d=d3d,
+        sites=sites,
+        sites_sdf=sites_sdf,
+        sites_sdf_grad=sites_sdf_grad,
+        vertices=vertices,
+        tet_indices=used_tet,
+    )
 
-                proj_bisectors = project_vertices_newton(bisectors_sdf_grad, bisectors_sdf, bisectors)  # (M,3)
+    bisectors_sdf = (sites_sdf[bisectors_to_compute[:, 0]] + sites_sdf[bisectors_to_compute[:, 1]]) / 2
+    bisectors_sdf_grad = (sites_sdf_grad[bisectors_to_compute[:, 0]] + sites_sdf_grad[bisectors_to_compute[:, 1]]) / 2
+    proj_bisectors = project_vertices_newton(bisectors_sdf_grad, bisectors_sdf, bisectors)  # (M,3)
+    proj_points = torch.cat((proj_vertices, proj_bisectors), 0)
 
-                proj_points = torch.cat((proj_vertices, proj_bisectors), 0)
-            else:
-                proj_points = proj_vertices
+    vert_for_clipped_cvt = all_vor_vertices
+    vert_for_clipped_cvt[used_tet] = proj_vertices
+    return proj_points, vert_for_clipped_cvt, sites_sdf_grad, tet_probs, W
 
-            vert_for_clipped_cvt = all_vor_vertices
-            vert_for_clipped_cvt[used_tet] = proj_vertices
-            # proj_points = proj_vertices
-            return proj_points, vert_for_clipped_cvt, sites_sdf_grad, tet_probs, W
+
+def compute_clipped_mesh_faces(
+    sites: torch.Tensor,
+    model: Any,
+    d3dsimplices: Any,
+    sites_sdf: Optional[torch.Tensor] = None,
+):
+    """
+    sites:           (N,3) torch tensor (requires_grad)
+    model:           SDF model: sites -> (N,1) tensor of signed distances
+    d3dsimplices:    torch.LongTensor of shape (M,4) from Delaunay
+    """
+    device = sites.device
+    if d3dsimplices is None:
+        print("Computing Delaunay simplices...")
+        sites_np = sites.detach().cpu().numpy()
+        d3dsimplices, _ = pygdel3d.triangulate(sites_np)
+        print("Number of Delaunay simplices:", len(d3dsimplices))
+        print("Delaunay simplices shape:", d3dsimplices)
+        print("Max vertex index in simplices:", d3dsimplices.max())
+        print("Min vertex index in simplices:", d3dsimplices.min())
+        print("Site index range:", sites_np.shape[0])
+
+    d3d = _as_tet_tensor(d3dsimplices, device)  # (M,4)
+    all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
+    faces = get_faces(d3dsimplices, sites, all_vor_vertices, model, sites_sdf)  # (R0, List of simplices)
+
+    used = {idx for face in faces for idx in face}
+    old2new = {old: new for new, old in enumerate(sorted(used))}
+    new_vertices = all_vor_vertices[sorted(used)]
+    new_faces = [[old2new[i] for i in face] for face in faces]
+
+    sites_sdf_grad, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)  # (M,3)
+    proj_vertices, _ = _project_vertices_by_method(
+        d3d=d3d,
+        sites=sites,
+        sites_sdf=sites_sdf,
+        sites_sdf_grad=sites_sdf_grad,
+        vertices=new_vertices,
+        tet_indices=sorted(used),
+    )
+    return proj_vertices, new_faces, sites_sdf_grad, tets_sdf_grads, W
 
 
 def find_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None, model=None):

@@ -3,7 +3,7 @@
 
 # -------------- Figure 6 -------
 --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32_nearsample --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 20 --clip --sample_near 6000
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 16 --clip --sample_near 4096 --upsampling 5 --score conservative --target_size 27
+--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --num_centroids 16 --clip --sample_near 4096 --upsampling 5 --score conservative --max_amount_sites 27
 --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_100.pth --output {output}unconverged_{mesh_id}_b32 --w_voroloss 1000 --w_cvt 0.01 --num_centroids 32
 
 

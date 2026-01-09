@@ -61,7 +61,7 @@ def resolve_sdf_values_or_fallback(
     return sdf_values
 
 
-def load_hotspot_model(mesh_path: str, target_size: int, hotspot_weights_path: str) -> Tuple[nn.Module, torch.Tensor]:
+def load_hotspot_model(mesh_path: str, max_amount_sites: int, hotspot_weights_path: str) -> Tuple[nn.Module, torch.Tensor]:
     """Load a HotSpot model and return the model and manifold points."""
     _ensure_hotspot_on_path()
     try:
@@ -76,7 +76,7 @@ def load_hotspot_model(mesh_path: str, target_size: int, hotspot_weights_path: s
     loss_weights = [350, 0, 0, 1, 0, 0, 20]
     train_set = shape_3d.ReconDataset(
         file_path=mesh_path + ".ply",
-        n_points=target_size * target_size * 150,  # 15000, #args.n_points,
+        n_points=max_amount_sites * max_amount_sites * 150,  # 15000, #args.n_points,
         n_samples=10001,  # args.n_iterations,
         grid_res=256,  # args.grid_res,
         grid_range=1.1,  # args.grid_range,
@@ -115,24 +115,20 @@ def load_hotspot_model(mesh_path: str, target_size: int, hotspot_weights_path: s
 
 
 def init_sites_from_mnfld_points(
-    mnfld_points: torch.Tensor, num_centroids: int, sample_near: int, input_dims: int
+    mnfld_points: torch.Tensor, num_centroids: int, sample_near: int
 ) -> torch.Tensor:
     """Initialize Voronoi sites for optimization."""
     noise_scale = 0.005
     domain_limit = 1
-    if input_dims == 2:
-        # throw error not yet implemented
-        raise NotImplementedError("2D not yet implemented")
-    elif input_dims == 3:
-        x = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
-        y = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
-        z = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
-        try:
-            meshgrid = torch.meshgrid(x, y, z, indexing="ij")
-        except TypeError:
-            meshgrid = torch.meshgrid(x, y, z)
-        meshgrid = torch.stack(meshgrid, dim=3).view(-1, 3)
-        meshgrid += torch.randn_like(meshgrid) * noise_scale
+    x = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
+    y = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
+    z = torch.linspace(-domain_limit, domain_limit, int(round(num_centroids)))
+    try:
+        meshgrid = torch.meshgrid(x, y, z, indexing="ij")
+    except TypeError:
+        meshgrid = torch.meshgrid(x, y, z)
+    meshgrid = torch.stack(meshgrid, dim=3).view(-1, 3)
+    meshgrid += torch.randn_like(meshgrid) * noise_scale
 
     sites = meshgrid.to(device, dtype=torch.float32).requires_grad_(True)
     # add mnfld points with random noise to sites

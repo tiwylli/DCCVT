@@ -13,10 +13,9 @@ from dccvt.geometry import (
     compute_clipped_mesh,
     compute_cvt_loss_delaunay,
     compute_cvt_loss_from_clipped_vertices,
-    compute_cvt_loss_true,
     compute_delaunay_simplices,
 )
-from dccvt.mesh_ops import extract_cvt_mesh, extract_mesh, sample_mesh_points_heitz
+from dccvt.mesh_ops import extract_mesh
 from dccvt.model_utils import resolve_sdf_values
 from dccvt.device import device
 from dccvt.sdf_gradients import (
@@ -110,28 +109,15 @@ def _compute_chamfer_geometry(
             sites,
             None,
             d3dsimplices.detach().cpu().numpy(),
-            args.clip,
             sites_sdf,
-            args.build_mesh,
-            False,
-            args.grad_interpol,
-            args.no_mp,
         )
     else:
-        if args.extract_optim:
-            v_vect, f_or_clipped_v = extract_cvt_mesh(sites, sites_sdf, d3dsimplices, False)
-        else:
-            v_vect, f_or_clipped_v, sites_sdf_grads, tet_probs, W = compute_clipped_mesh(
-                sites,
-                None,
-                d3dsimplices,
-                args.clip,
-                sites_sdf,
-                args.build_mesh,
-                False,
-                args.grad_interpol,
-                args.no_mp,
-            )
+        v_vect, f_or_clipped_v, sites_sdf_grads, tet_probs, W = compute_clipped_mesh(
+            sites,
+            None,
+            d3dsimplices,
+            sites_sdf,
+        )
 
     return d3dsimplices, v_vect, f_or_clipped_v, sites_sdf_grads, tet_probs, W
 
@@ -139,16 +125,7 @@ def _compute_chamfer_geometry(
 def _compute_chamfer_loss(
     manifold_points: torch.Tensor,
     v_vect: torch.Tensor,
-    f_or_clipped_v: Any,
-    build_mesh: bool,
 ) -> torch.Tensor:
-    if build_mesh:
-        triangle_faces = [[f[0], f[i], f[i + 1]] for f in f_or_clipped_v for i in range(1, len(f) - 1)]
-        triangle_faces = torch.tensor(triangle_faces, device=device)
-        hs_p = sample_mesh_points_heitz(v_vect, triangle_faces, num_samples=manifold_points.shape[0])
-        chamfer_loss_mesh, _ = chamfer_distance(manifold_points.detach(), hs_p.unsqueeze(0))
-        return chamfer_loss_mesh
-
     chamfer_loss_mesh, _ = chamfer_distance(manifold_points.detach(), v_vect.unsqueeze(0))
     return chamfer_loss_mesh
 
@@ -166,8 +143,6 @@ def _compute_cvt_loss(
 ) -> torch.Tensor:
     if use_voroloss:
         return compute_cvt_loss_delaunay(sites, None, d3dsimplices)
-    if args.true_cvt:
-        return compute_cvt_loss_true(sites, d3dsimplices, f_or_clipped_v)
     return compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, f_or_clipped_v)
 
 
@@ -198,15 +173,6 @@ def _compute_sdfsmooth_loss(
     return sdf_loss, sites_sdf_grads, W, eps_H
 
 
-def _apply_vertex_interp_loss(sdf_loss: torch.Tensor, tet_probs: Any, args: Any) -> torch.Tensor:
-    if tet_probs is None:
-        raise ValueError("Vertex SDF interpolation requires grad_interpol='robust' or 'hybrid'.")
-    steps_verts = tet_probs[1]
-    step_len = (steps_verts**2).sum(dim=1).clamp_min(1e-12).sqrt()
-    vertex_sdf_loss = args.w_vertex_sdf_interpolation * (step_len).mean()
-    return sdf_loss + vertex_sdf_loss
-
-
 def _should_upsample(epoch: int, upsampled: float, args: Any) -> bool:
     return upsampled < args.upsampling and epoch / (args.num_iterations * 0.80) > upsampled / args.upsampling
 
@@ -231,12 +197,12 @@ def _maybe_upsample(
         return False, upsampled, sites, sites_sdf, optimizer, d3dsimplices, sites_sdf_grads, W, eps_H
 
     print("sites length BEFORE UPSAMPLING: ", len(sites))
-    if len(sites) * 1.08 > args.target_size**3:
+    if len(sites) * 1.08 > args.max_amount_sites**3:
         print(
             "Skipping upsampling, too many sites, sites length: ",
             len(sites),
             "target size: ",
-            args.target_size**3,
+            args.max_amount_sites**3,
         )
         upsampled = args.upsampling
         sites = sites.detach().requires_grad_(True)
@@ -266,7 +232,10 @@ def _maybe_upsample(
 
     if use_chamfer:
         sites, sites_sdf = upsample_sites_adaptive(
-            sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method, score=args.score
+            sites,
+            d3dsimplices,
+            sites_sdf,
+            sites_sdf_grads,
         )
         sites = sites.detach().requires_grad_(True)
         sites_sdf = sites_sdf.detach().requires_grad_(True)
@@ -287,16 +256,15 @@ def _maybe_upsample(
             sites, sites_sdf, _as_tet_tensor(d3dsimplices, clone=True)
         )
         sites, sites_sdf = upsample_sites_adaptive(
-            sites, d3dsimplices, sites_sdf, sites_sdf_grads, ups_method=args.ups_method, score=args.score
+            sites,
+            d3dsimplices,
+            sites_sdf,
+            sites_sdf_grads,
         )
         sites = sites.detach().requires_grad_(True)
         sites_sdf = hotspot_model(sites)
         sites_sdf = sites_sdf.detach().squeeze(-1).requires_grad_()
         optimizer = torch.optim.Adam([{"params": [sites], "lr": args.lr_sites}])
-
-    if args.ups_extraction:
-        with torch.no_grad():
-            extract_mesh(sites, sites_sdf, manifold_points, 0, args, state=f"{int(upsampled)}ups")
 
     upsampled += 1.0
     print("sites length AFTER: ", len(sites))
@@ -316,7 +284,6 @@ def run_dccvt_training(
     use_cvt = args.w_cvt > 0
     use_voroloss = args.w_voroloss > 0
     use_sdfsmooth = args.w_sdfsmooth > 0
-    use_vertex_interp = args.w_vertex_sdf_interpolation > 0
     manifold_points = mnfld_points
 
     optimizer, sites_sdf = _setup_optimizer(sites, sites_sdf, use_chamfer, args.lr_sites)
@@ -346,7 +313,7 @@ def run_dccvt_training(
             d3dsimplices, v_vect, f_or_clipped_v, sites_sdf_grads, tet_probs, W = _compute_chamfer_geometry(
                 sites, sites_sdf, d3dsimplices, args
             )
-            chamfer_loss_mesh = _compute_chamfer_loss(manifold_points, v_vect, f_or_clipped_v, args.build_mesh)
+            chamfer_loss_mesh = _compute_chamfer_loss(manifold_points, v_vect)
 
         if use_voroloss:
             voroloss_loss = _compute_voroloss(voroloss, manifold_points, sites)
@@ -360,9 +327,6 @@ def run_dccvt_training(
             sdf_loss, sites_sdf_grads, W, eps_H = _compute_sdfsmooth_loss(
                 sites, sites_sdf, d3dsimplices, sites_sdf_grads, W, eps_H, epoch, args
             )
-
-        if use_vertex_interp:
-            sdf_loss = _apply_vertex_interp_loss(sdf_loss, tet_probs, args)
 
         loss = sites_loss + sdf_loss
         # print(f"Epoch {epoch}: loss = {loss.item()}")

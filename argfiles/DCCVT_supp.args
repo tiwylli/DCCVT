@@ -5,8 +5,8 @@
 # done x0 
 # done x100
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 10000 --upsampling 10 --clip --w_mt 1 --sample_near 4096
-#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b64_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 0 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --target_size 64
-#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b64_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --target_size 64
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b64_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 0 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --max_amount_sites 64
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b64_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --max_amount_sites 64
 
 #############
 
@@ -23,7 +23,7 @@
 #--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_U --w_chamfer 1000 --w_cvt 0 --w_sdfsmooth 0 --upsampling 10 --clip --marching_tetrahedra --w_mt 1
 
 # done
-#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b64_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --target_size 40 --video
+#--mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b64_NU --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10 --clip --w_mt 1 --sample_near 4096 --max_amount_sites 40 --video
 
 # todo MT video
 --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32_unconverged_150k/{mesh_id}_500.pth --output {output}unconverged_{mesh_id}_b32_MT_video --w_chamfer 1000 --clip --w_mt 1 --marching_tetrahedra --num_centroids 32 --video
