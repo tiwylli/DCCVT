@@ -7,7 +7,6 @@ import numpy as np
 import pygdel3d
 import torch
 from numba import njit, prange
-from scipy.spatial import Delaunay
 
 from dccvt.device import device
 from dccvt.model_utils import resolve_sdf_values_or_fallback
@@ -85,11 +84,9 @@ def _accumulate_centroids(
     return centroids, counts
 
 
-def compute_delaunay_simplices(sites: torch.Tensor, marching_tetrahedra: bool) -> np.ndarray:
-    """Compute Delaunay simplices for sites (scipy or pygdel3d depending on mode)."""
+def compute_delaunay_simplices(sites: torch.Tensor) -> np.ndarray:
+    """Compute Delaunay simplices for sites using pygdel3d."""
     sites_np = sites.detach().cpu().numpy()
-    if marching_tetrahedra:
-        return Delaunay(sites_np).simplices
     d3dsimplices, _ = pygdel3d.triangulate(sites_np)
     return np.array(d3dsimplices)
 
@@ -564,124 +561,6 @@ def project_vertices_newton(grads, sdf_verts, new_vertices):
     proj_vertices = new_vertices - step
 
     return proj_vertices
-
-
-def compute_cvt_loss_delaunay(sites, delaunay, simplices=None):
-    """Compute CVT loss from Delaunay simplices."""
-    centroids, _ = compute_voronoi_cell_centers(sites, delaunay, simplices)
-    centroids = centroids.to(device)
-    diff = torch.linalg.norm(sites - centroids, dim=1)
-    penalties = torch.where(diff.abs() < 0.1, diff, torch.zeros_like(diff))
-    # cvt_loss = torch.mean(penalties**2)
-    cvt_loss = torch.mean(torch.abs(penalties))
-    return cvt_loss
-
-
-def compute_voronoi_cell_centers(sites, delau, simplices=None):
-    """Compute Voronoi cell centers (circumcenters) for 2D or 3D Delaunay triangulation in PyTorch."""
-    # simplices = torch.tensor(delaunay.simplices, dtype=torch.long)
-    if simplices is None:
-        simplices = delau.simplices
-
-    # points = torch.tensor(delaunay.points, dtype=torch.float32)
-    points = sites.detach().cpu().numpy()
-
-    # Compute all circumcenters at once (supports both 2D & 3D)
-    circumcenters_arr = circumcenter_torch(points, simplices)
-    # Flatten simplices and repeat circumcenters to map them to the points
-    indices = simplices.flatten()  # Flatten simplex indices
-    indices = torch.tensor(indices, dtype=torch.int64, device=sites.device)  # Convert to tensor
-
-    centers = circumcenters_arr.repeat_interleave(simplices.shape[1], dim=0).to(
-        sites.device
-    )  # Repeat for each vertex in simplex
-
-    # Group circumcenters per point
-    M = len(points)
-    # Compute the sum of centers for each index
-    centroids, _ = _accumulate_centroids(indices, centers, M, sites.device)
-
-    distances = torch.norm(centroids[indices] - centers, dim=1)
-    num_sites = centroids.shape[0]
-    max_dist_per_site = torch.full((num_sites,), float("-inf"), device=sites.device)
-    radius = max_dist_per_site.scatter_reduce(0, indices, distances, reduce="amax", include_self=True)
-
-    return centroids, radius
-
-
-def circumcenter_torch(points, simplices):
-    """Compute the circumcenters for 2D triangles or 3D tetrahedra in a vectorized manner using PyTorch."""
-    points = torch.tensor(points, dtype=torch.float32)
-    simplices = torch.tensor(simplices, dtype=torch.long)
-
-    if points.shape[1] == 2:  # **2D Case (Triangles)**
-        p1, p2, p3 = points[simplices[:, 0]], points[simplices[:, 1]], points[simplices[:, 2]]
-
-        # Compute determinant (D)
-        D = 2 * (p1[:, 0] * (p2[:, 1] - p3[:, 1]) + p2[:, 0] * (p3[:, 1] - p1[:, 1]) + p3[:, 0] * (p1[:, 1] - p2[:, 1]))
-
-        # Compute circumcenter coordinates
-        ux = (
-            (p1[:, 0] ** 2 + p1[:, 1] ** 2) * (p2[:, 1] - p3[:, 1])
-            + (p2[:, 0] ** 2 + p2[:, 1] ** 2) * (p3[:, 1] - p1[:, 1])
-            + (p3[:, 0] ** 2 + p3[:, 1] ** 2) * (p1[:, 1] - p2[:, 1])
-        ) / D
-
-        uy = (
-            (p1[:, 0] ** 2 + p1[:, 1] ** 2) * (p3[:, 0] - p2[:, 0])
-            + (p2[:, 0] ** 2 + p2[:, 1] ** 2) * (p1[:, 0] - p3[:, 0])
-            + (p3[:, 0] ** 2 + p3[:, 1] ** 2) * (p2[:, 0] - p1[:, 0])
-        ) / D
-
-        return torch.stack((ux, uy), dim=1)
-
-    elif points.shape[1] == 3:  # **3D Case (Tetrahedra)**
-        """
-        Compute the circumcenters of multiple tetrahedra in a 3D Delaunay triangulation.
-
-        Parameters:
-        points : tensor of shape (N, 3)
-            The 3D coordinates of all input points.
-        simplices : tensor of shape (M, 4)
-            Indices of tetrahedron vertices in `points`.
-
-        Returns:
-        circumcenters : tensor of shape (M, 3)
-            The circumcenters of all tetrahedra.
-        """
-        # Extract tetrahedral vertices using broadcasting
-        A = points[simplices[:, 0]]  # Shape: (M, 3)
-        B = points[simplices[:, 1]]
-        C = points[simplices[:, 2]]
-        D = points[simplices[:, 3]]
-
-        # Compute edge vectors relative to A
-        BA = B - A  # Shape: (M, 3)
-        CA = C - A
-        DA = D - A
-
-        # Compute squared edge lengths
-        len_BA = torch.sum(BA**2, axis=1, keepdims=True)  # Shape: (M, 1)
-        len_CA = torch.sum(CA**2, axis=1, keepdims=True)
-        len_DA = torch.sum(DA**2, axis=1, keepdims=True)
-
-        # Compute cross products
-        cross_CD = torch.linalg.cross(CA, DA)  # Shape: (M, 3)
-        cross_DB = torch.linalg.cross(DA, BA)
-        cross_BC = torch.linalg.cross(BA, CA)
-
-        # Compute denominator (scalar for each tetrahedron)
-        denominator = 0.5 / torch.sum(BA * cross_CD, axis=1, keepdims=True)  # Shape: (M, 1)
-
-        # Compute circumcenter offsets
-        circ_offset = (len_BA * cross_CD + len_CA * cross_DB + len_DA * cross_BC) * denominator  # Shape: (M, 3)
-
-        # Compute circumcenters
-        circumcenters = A + circ_offset  # Shape: (M, 3)
-
-        return circumcenters
-    else:
-        raise ValueError("Only 2D (triangles) and 3D (tetrahedra) are supported.")
 
 
 def compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, all_vor_vertices):

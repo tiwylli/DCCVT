@@ -2,16 +2,12 @@
 
 from typing import Any, Tuple
 
-import kaolin
 import torch
 import tqdm as tqdm
 from pytorch3d.loss import chamfer_distance
-from pytorch3d.ops import knn_points
-from torch import nn
 
 from dccvt.geometry import (
     compute_clipped_mesh,
-    compute_cvt_loss_delaunay,
     compute_cvt_loss_from_clipped_vertices,
     compute_delaunay_simplices,
 )
@@ -25,26 +21,6 @@ from dccvt.sdf_gradients import (
     tet_sdf_motion_mean_curvature_loss,
 )
 from dccvt.upsampling import upsample_sites_adaptive
-
-
-class VoronoiLoss(nn.Module):
-    """Voronoi-based point-to-cell loss."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.knn = 16
-
-    def forward(self, points: torch.Tensor, spoints: torch.Tensor) -> torch.Tensor:
-        """Compute point-to-cell distances for Voronoi regions."""
-        # WARNING: fecthing for knn
-        with torch.no_grad():
-            indices = knn_points(points[None, :], spoints[None, :], K=self.knn).idx[0]
-        point_to_voronoi_center = points - spoints[indices[:, 0]]
-        voronoi_edge = spoints[indices[:, 1:]] - spoints[indices[:, 0, None]]
-        voronoi_edge_l = torch.sqrt(((voronoi_edge**2).sum(-1)))
-        vector_length = (point_to_voronoi_center[:, None, :] * voronoi_edge).sum(-1) / voronoi_edge_l
-        sq_dist = (vector_length - voronoi_edge_l / 2) ** 2
-        return sq_dist.min(1)[0]
 
 
 def _setup_optimizer(
@@ -79,12 +55,11 @@ def _update_delaunay(
     use_cvt: bool,
     use_chamfer: bool,
     use_sdfsmooth: bool,
-    marching_tetrahedra: bool,
 ):
     if use_cvt or use_chamfer:
-        return compute_delaunay_simplices(sites, marching_tetrahedra)
+        return compute_delaunay_simplices(sites)
     if use_sdfsmooth and d3dsimplices is None:
-        return compute_delaunay_simplices(sites, marching_tetrahedra)
+        return compute_delaunay_simplices(sites)
     return d3dsimplices
 
 
@@ -92,31 +67,16 @@ def _compute_chamfer_geometry(
     sites: torch.Tensor,
     sites_sdf: torch.Tensor,
     d3dsimplices: Any,
-    args: Any,
 ):
     sites_sdf_grads = None
     W = None
 
-    if args.marching_tetrahedra:
-        d3dsimplices = _as_tet_tensor(d3dsimplices)
-        marching_tetrehedra_mesh = kaolin.ops.conversions.marching_tetrahedra(
-            sites.unsqueeze(0), d3dsimplices, sites_sdf.unsqueeze(0), return_tet_idx=False
-        )
-        vertices_list, faces_list = marching_tetrehedra_mesh
-        v_vect = vertices_list[0]
-        _, f_or_clipped_v, _, _ = compute_clipped_mesh(
-            sites,
-            None,
-            d3dsimplices.detach().cpu().numpy(),
-            sites_sdf,
-        )
-    else:
-        v_vect, f_or_clipped_v, sites_sdf_grads, W = compute_clipped_mesh(
-            sites,
-            None,
-            d3dsimplices,
-            sites_sdf,
-        )
+    v_vect, f_or_clipped_v, sites_sdf_grads, W = compute_clipped_mesh(
+        sites,
+        None,
+        d3dsimplices,
+        sites_sdf,
+    )
 
     return d3dsimplices, v_vect, f_or_clipped_v, sites_sdf_grads, W
 
@@ -129,19 +89,11 @@ def _compute_chamfer_loss(
     return chamfer_loss_mesh
 
 
-def _compute_voroloss(voroloss: VoronoiLoss, manifold_points: torch.Tensor, sites: torch.Tensor) -> torch.Tensor:
-    return voroloss(manifold_points.squeeze(0), sites).mean()
-
-
 def _compute_cvt_loss(
-    use_voroloss: bool,
-    args: Any,
     sites: torch.Tensor,
     d3dsimplices: Any,
     f_or_clipped_v: Any,
 ) -> torch.Tensor:
-    if use_voroloss:
-        return compute_cvt_loss_delaunay(sites, None, d3dsimplices)
     return compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, f_or_clipped_v)
 
 
@@ -222,7 +174,7 @@ def _maybe_upsample(
         return True, upsampled, sites, sites_sdf, optimizer, d3dsimplices, sites_sdf_grads, W, eps_H
 
     if d3dsimplices is None:
-        d3dsimplices = compute_delaunay_simplices(sites, args.marching_tetrahedra)
+        d3dsimplices = compute_delaunay_simplices(sites)
 
     if sites_sdf_grads is None or sites_sdf_grads.shape[0] != sites_sdf.shape[0]:
         sites_sdf_grads, _, W = compute_sdf_gradients_sites_tets(
@@ -239,7 +191,7 @@ def _maybe_upsample(
         sites = sites.detach().requires_grad_(True)
         sites_sdf = sites_sdf.detach().requires_grad_(True)
 
-        d3dsimplices = compute_delaunay_simplices(sites, args.marching_tetrahedra)
+        d3dsimplices = compute_delaunay_simplices(sites)
 
         optimizer = torch.optim.Adam(
             [
@@ -281,7 +233,6 @@ def run_dccvt_training(
     """Run the DCCVT optimization loop and return updated sites and SDF values."""
     use_chamfer = args.w_chamfer > 0
     use_cvt = args.w_cvt > 0
-    use_voroloss = args.w_voroloss > 0
     use_sdfsmooth = args.w_sdfsmooth > 0
     manifold_points = mnfld_points
 
@@ -291,11 +242,9 @@ def run_dccvt_training(
     upsampled = 0.0
     cvt_loss = 0
     chamfer_loss_mesh = 0
-    voroloss_loss = 0
     sdf_loss = 0
     d3dsimplices = None
     sites_sdf_grads = None
-    voroloss = VoronoiLoss().to(device)
     eps_H = None
     W = None
     f_or_clipped_v = None
@@ -304,22 +253,19 @@ def run_dccvt_training(
         optimizer.zero_grad()
 
         d3dsimplices = _update_delaunay(
-            sites, d3dsimplices, use_cvt, use_chamfer, use_sdfsmooth, args.marching_tetrahedra
+            sites, d3dsimplices, use_cvt, use_chamfer, use_sdfsmooth
         )
 
         if use_chamfer:
             d3dsimplices, v_vect, f_or_clipped_v, sites_sdf_grads, W = _compute_chamfer_geometry(
-                sites, sites_sdf, d3dsimplices, args
+                sites, sites_sdf, d3dsimplices
             )
             chamfer_loss_mesh = _compute_chamfer_loss(manifold_points, v_vect)
 
-        if use_voroloss:
-            voroloss_loss = _compute_voroloss(voroloss, manifold_points, sites)
-
         if use_cvt:
-            cvt_loss = _compute_cvt_loss(use_voroloss, args, sites, d3dsimplices, f_or_clipped_v)
+            cvt_loss = _compute_cvt_loss(sites, d3dsimplices, f_or_clipped_v)
 
-        sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh + args.w_voroloss * voroloss_loss
+        sites_loss = args.w_cvt * cvt_loss + args.w_chamfer * chamfer_loss_mesh
 
         if use_sdfsmooth:
             sdf_loss, sites_sdf_grads, W, eps_H = _compute_sdfsmooth_loss(

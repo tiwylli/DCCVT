@@ -10,7 +10,7 @@ from dccvt import argparse_utils as config_utils
 from dccvt.argparse_utils import parse_experiment_args
 from dccvt.mesh_ops import extract_mesh
 from dccvt.model_utils import init_sdf_from_model, init_sites_from_mnfld_points, load_hotspot_model
-from dccvt.paths import make_dccvt_obj_path, make_voromesh_obj_path
+from dccvt.paths import make_dccvt_obj_path
 from dccvt.training import run_dccvt_training
 
 
@@ -20,7 +20,7 @@ def run_single_mesh_experiment(arg_list: List[str]) -> None:
     args.save_path = f"{args.output}" if args.save_path is None else args.save_path
     os.makedirs(args.save_path, exist_ok=True)
     use_chamfer = args.w_chamfer > 0
-    use_voroloss = args.w_voroloss > 0
+    use_training = use_chamfer or args.w_cvt > 0 or args.w_sdfsmooth > 0
 
     output_files = expected_output_files(args)
     if output_files and all(os.path.exists(path) for path in output_files):
@@ -49,7 +49,7 @@ def run_single_mesh_experiment(arg_list: List[str]) -> None:
         extract_mesh(sites, sdf, mnfld_points, 0, args, state="init")
 
         elapsed = 0.0
-        if use_chamfer or use_voroloss:
+        if use_training:
             t0 = time()
             sites, sdf = run_dccvt_training(sites, sdf, mnfld_points, model, args)
             elapsed = time() - t0
@@ -66,10 +66,6 @@ def run_single_mesh_experiment(arg_list: List[str]) -> None:
 def expected_output_files(args: Any) -> List[str]:
     state = "final"
     outputs: List[str] = []
-    if args.marching_tetrahedra:
-        outputs.append(make_dccvt_obj_path(args, state, "MT"))
-    if args.w_voroloss > 0:
-        outputs.append(make_voromesh_obj_path(args, state))
     if args.w_chamfer > 0:
         outputs.append(make_dccvt_obj_path(args, state, "projDCCVT"))
     return outputs

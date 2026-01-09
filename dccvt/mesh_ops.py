@@ -2,7 +2,6 @@
 
 from typing import Any
 
-import kaolin
 import torch
 from scipy.spatial import Delaunay
 
@@ -15,7 +14,7 @@ from dccvt.geometry import (
 )
 from dccvt.io_utils import save_npz_bundle, save_obj_mesh, save_point_cloud_ply
 from dccvt.model_utils import resolve_sdf_values
-from dccvt.paths import make_dccvt_obj_path, make_voromesh_obj_path
+from dccvt.paths import make_dccvt_obj_path
 from dccvt.device import device
 
 
@@ -123,24 +122,3 @@ def extract_mesh(
         save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
         save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
         save_point_cloud_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
-
-    if args.w_voroloss > 0:
-        if clipped_cache is None:
-            clipped_cache = _compute_clipped_mesh_outputs(sites, sdf_values, d3dsimplices)
-        v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = clipped_cache
-        output_obj_file = make_voromesh_obj_path(args, state)
-        save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
-        save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
-    if args.marching_tetrahedra:
-        d3dsimplices = torch.as_tensor(d3dsimplices, device=device)
-        marching_tetrehedra_mesh = kaolin.ops.conversions.marching_tetrahedra(
-            sites.unsqueeze(0), d3dsimplices, sdf_values.unsqueeze(0), return_tet_idx=False
-        )
-        vertices_list, faces_list = marching_tetrehedra_mesh
-        vertices = vertices_list[0]
-        faces = faces_list[0]
-        vertices_np = vertices.detach().cpu().numpy()  # Shape [N, 3]
-        faces_np = faces.detach().cpu().numpy()  # Shape [M, 3] (triangles)
-        output_obj_file = make_dccvt_obj_path(args, state, "MT")
-        save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
-        save_obj_mesh(output_obj_file, vertices_np, faces_np)

@@ -32,11 +32,9 @@ DEFAULTS = {
     "num_centroids": 16,
     "sample_near": 0,
     "max_amount_sites": 32,
-    "marching_tetrahedra": False,  # Always false, but keep it. 
     "video": False, # Keep for usefulness of extracting mesh at every step for visualisation
     "w_cvt": 0,
     "w_sdfsmooth": 0,
-    "w_voroloss": 0,  # 1000
     "w_chamfer": 0,  # 1000
     "upsampling": 0,  # 0
     "lr_sites": 0.0005,
@@ -179,13 +177,9 @@ def parse_experiment_args(
     parser.add_argument("--num_centroids", type=int, default=defaults["num_centroids"], help="Number of centroids")
     parser.add_argument("--sample_near", type=int, default=defaults["sample_near"], help="Samples drawn near each site")
     parser.add_argument("--max_amount_sites", type=int, default=defaults["max_amount_sites"], help="Target size for sampling")
-    _add_bool_arg(
-        parser, "--marching_tetrahedra", defaults["marching_tetrahedra"], "Enable/disable marching_tetrahedra"
-    )
     _add_bool_arg(parser, "--video", defaults["video"], "Enable/disable video output")
     parser.add_argument("--w_cvt", type=float, default=defaults["w_cvt"], help="Weight for CVT regularization")
     parser.add_argument("--w_sdfsmooth", type=float, default=defaults["w_sdfsmooth"], help="Weight for SDF smoothing")
-    parser.add_argument("--w_voroloss", type=float, default=defaults["w_voroloss"], help="Weight for Voronoi loss")
     parser.add_argument(
         "--w_chamfer", type=float, default=defaults["w_chamfer"], help="Weight for Chamfer distance on points"
     )
