@@ -19,9 +19,6 @@ def run_single_mesh_experiment(arg_list: List[str]) -> None:
     args = parse_experiment_args(arg_list, defaults=config_utils.DEFAULTS)
     args.save_path = f"{args.output}" if args.save_path is None else args.save_path
     os.makedirs(args.save_path, exist_ok=True)
-    use_chamfer = args.w_chamfer > 0
-    use_training = use_chamfer or args.w_cvt > 0 or args.w_sdfsmooth > 0
-
     output_files = expected_output_files(args)
     if output_files and all(os.path.exists(path) for path in output_files):
         print(f"Skipping already processed mesh: {args.mesh}")
@@ -40,19 +37,14 @@ def run_single_mesh_experiment(arg_list: List[str]) -> None:
             sample_near=args.sample_near,
         )
 
-        if use_chamfer:
-            sdf = init_sdf_from_model(model, sites)
-        else:
-            sdf = model
+        sdf = init_sdf_from_model(model, sites)
 
         # Extract the initial mesh
         extract_mesh(sites, sdf, mnfld_points, 0, args, state="init")
 
-        elapsed = 0.0
-        if use_training:
-            t0 = time()
-            sites, sdf = run_dccvt_training(sites, sdf, mnfld_points, model, args)
-            elapsed = time() - t0
+        t0 = time()
+        sites, sdf = run_dccvt_training(sites, sdf, mnfld_points, args)
+        elapsed = time() - t0
 
         # Extract the final mesh
         extract_mesh(sites, sdf, mnfld_points, elapsed, args, state="final")
@@ -66,6 +58,5 @@ def run_single_mesh_experiment(arg_list: List[str]) -> None:
 def expected_output_files(args: Any) -> List[str]:
     state = "final"
     outputs: List[str] = []
-    if args.w_chamfer > 0:
-        outputs.append(make_dccvt_obj_path(args, state, "projDCCVT"))
+    outputs.append(make_dccvt_obj_path(args, state, "projDCCVT"))
     return outputs

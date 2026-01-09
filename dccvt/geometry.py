@@ -81,13 +81,11 @@ def compute_delaunay_simplices(sites: torch.Tensor) -> np.ndarray:
 
 def compute_clipped_mesh(
     sites: torch.Tensor,
-    model: Any,
     d3dsimplices: Any,
     sites_sdf: Optional[torch.Tensor] = None,
 ):
     """
     sites:           (N,3) torch tensor (requires_grad)
-    model:           SDF model: sites -> (N,1) tensor of signed distances
     d3dsimplices:    torch.LongTensor of shape (M,4) from Delaunay
     """
     device = sites.device
@@ -127,13 +125,11 @@ def compute_clipped_mesh(
 
 def compute_clipped_mesh_faces(
     sites: torch.Tensor,
-    model: Any,
     d3dsimplices: Any,
     sites_sdf: Optional[torch.Tensor] = None,
 ):
     """
     sites:           (N,3) torch tensor (requires_grad)
-    model:           SDF model: sites -> (N,1) tensor of signed distances
     d3dsimplices:    torch.LongTensor of shape (M,4) from Delaunay
     """
     device = sites.device
@@ -149,7 +145,7 @@ def compute_clipped_mesh_faces(
 
     d3d = _as_tet_tensor(d3dsimplices, device)  # (M,4)
     all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
-    faces = get_faces(d3dsimplices, sites, all_vor_vertices, model, sites_sdf)  # (R0, List of simplices)
+    faces = get_faces(d3dsimplices, sites, all_vor_vertices, None, sites_sdf)  # (R0, List of simplices)
 
     used = {idx for face in faces for idx in face}
     old2new = {old: new for new, old in enumerate(sorted(used))}

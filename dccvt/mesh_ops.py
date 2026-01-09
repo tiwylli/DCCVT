@@ -91,17 +91,13 @@ def extract_mesh(
     sdf_values = resolve_sdf_values(model, sites, verbose=True)  # (N,)
     d3dsimplices = compute_delaunay_simplices(sites)
 
-    clipped_cache = None
+    v_vect, f_vect = extract_cvt_mesh(sites, sdf_values, d3dsimplices, True)
+    output_obj_file = make_dccvt_obj_path(args, state, "intDCCVT")
+    save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
+    save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
 
-    if args.w_chamfer > 0:
-        v_vect, f_vect = extract_cvt_mesh(sites, sdf_values, d3dsimplices, True)
-        output_obj_file = make_dccvt_obj_path(args, state, "intDCCVT")
-        save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
-        save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
-
-        clipped_cache = compute_clipped_mesh_faces(sites, None, d3dsimplices, sdf_values)
-        v_vect, f_vect, sites_sdf_grads, tets_sdf_grads, W = clipped_cache
-        output_obj_file = make_dccvt_obj_path(args, state, "projDCCVT")
-        save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
-        save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
-        save_point_cloud_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
+    v_vect, f_vect, _, _, _ = compute_clipped_mesh_faces(sites, d3dsimplices, sdf_values)
+    output_obj_file = make_dccvt_obj_path(args, state, "projDCCVT")
+    save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
+    save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
+    save_point_cloud_ply(f"{args.save_path}/target.ply", target_pc.squeeze(0).detach().cpu().numpy())
