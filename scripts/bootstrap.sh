@@ -16,7 +16,7 @@ WITH_PYTORCH3D=1
 WITH_KAOLIN=1
 BUILD_JOBS="${BUILD_JOBS:-}"
 
-TORCH_VARIANT="${TORCH_VARIANT:-auto}" # auto|cpu|cu118|cu124|cu126
+TORCH_VARIANT="${TORCH_VARIANT:-auto}" # auto|cu118|cu124|cu126
 TORCH_VERSION="${TORCH_VERSION:-2.7.1}"
 TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.22.1}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-}"
@@ -67,7 +67,7 @@ Options:
   --skip-open3d-wheel     do not install an Open3D wheel
   --offline               imply `--skip-requirements` and use `pip --no-deps` for local installs
 
-  --torch <variant>       one of: auto, cpu, cu118, cu124, cu126 (default: auto)
+  --torch <variant>       one of: auto, cu118, cu124, cu126 (default: auto)
   --torch-version <ver>   torch version (default: 2.7.1)
   --torchvision-version <ver> torchvision version (default: 0.22.1)
   --open3d-package <pkg>  wheel name (default: open3d-cpu)
@@ -80,7 +80,7 @@ Options:
 
 Environment variables:
   VENV_DIR, PYTHON_BIN    override defaults (same as options)
-  TORCH_VARIANT           override --torch (auto/cpu/cu118/cu124/cu126)
+  TORCH_VARIANT           override --torch (auto/cu118/cu124/cu126)
   TORCH_VERSION           override --torch-version
   TORCHVISION_VERSION     override --torchvision-version
   TORCH_INDEX_URL         override computed index URL (e.g. https://download.pytorch.org/whl/cu126)
@@ -171,6 +171,18 @@ if ! command -v git >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v nvcc >/dev/null 2>&1; then
+  echo "[bootstrap] Missing dependency: nvcc (CUDA toolkit)." >&2
+  echo "DCCVT requires a CUDA-capable GPU and nvcc for gDel3D." >&2
+  exit 1
+fi
+
+if [[ "$TORCH_VARIANT" == "cpu" ]]; then
+  echo "[bootstrap] CPU-only torch installs are not supported." >&2
+  echo "Use --torch cu118|cu124|cu126 or set TORCH_VARIANT accordingly." >&2
+  exit 1
+fi
+
 detect_build_jobs() {
   if command -v nproc >/dev/null 2>&1; then
     nproc
@@ -205,7 +217,6 @@ git -C "$ROOT" submodule update --init --recursive
 torch_index_url_for_variant() {
   local variant="$1"
   case "$variant" in
-    cpu) echo "https://download.pytorch.org/whl/cpu" ;;
     cu118) echo "https://download.pytorch.org/whl/cu118" ;;
     cu124) echo "https://download.pytorch.org/whl/cu124" ;;
     cu126) echo "https://download.pytorch.org/whl/cu126" ;;
@@ -267,7 +278,7 @@ detect_torch_variant() {
       fi
     fi
   fi
-  echo "cpu"
+  return 1
 }
 
 detect_cuda_home() {
@@ -318,7 +329,12 @@ if [[ $INSTALL_TORCH -eq 1 ]]; then
     if [[ -z "$TORCH_INDEX_URL" ]]; then
       torch_variant_resolved="$TORCH_VARIANT"
       if [[ "$torch_variant_resolved" == "auto" ]]; then
-        torch_variant_resolved="$(detect_torch_variant)"
+        torch_variant_resolved="$(detect_torch_variant)" || true
+      fi
+      if [[ -z "$torch_variant_resolved" ]]; then
+        echo "[bootstrap] Could not determine CUDA version for torch." >&2
+        echo "Pass --torch cu118|cu124|cu126 or set TORCH_VARIANT." >&2
+        exit 1
       fi
       TORCH_INDEX_URL="$(torch_index_url_for_variant "$torch_variant_resolved")"
     fi
