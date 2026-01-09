@@ -7,12 +7,11 @@ import numpy as np
 import pygdel3d
 import torch
 from numba import njit, prange
-from pytorch3d.transforms import quaternion_to_matrix
 from scipy.spatial import Delaunay
 
 from dccvt.device import device
 from dccvt.model_utils import resolve_sdf_values_or_fallback
-from dccvt.sdf_gradients import compute_sdf_gradients_sites_tets, volume_tetrahedron
+from dccvt.sdf_gradients import compute_sdf_gradients_sites_tets
 
 
 def _tetra_edges(tetrahedra: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -69,10 +68,7 @@ def _project_vertices_by_method(
     vertices: torch.Tensor,
     tet_indices,
 ):
-    proj_vertices, tet_probs = project_vertices_to_tet_plane(
-        d3d[tet_indices], sites, sites_sdf, sites_sdf_grad, vertices
-    )
-    return proj_vertices, tet_probs
+    return project_vertices_to_tet_plane(d3d[tet_indices], sites, sites_sdf, sites_sdf_grad, vertices)
 
 
 def _accumulate_centroids(
@@ -130,7 +126,7 @@ def compute_clipped_mesh(
     bisectors = compute_bisector_midpoints(sites, bisectors_to_compute)
 
     sites_sdf_grad, _, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)
-    proj_vertices, tet_probs = _project_vertices_by_method(
+    proj_vertices = _project_vertices_by_method(
         d3d=d3d,
         sites=sites,
         sites_sdf=sites_sdf,
@@ -146,7 +142,7 @@ def compute_clipped_mesh(
 
     vert_for_clipped_cvt = all_vor_vertices
     vert_for_clipped_cvt[used_tet] = proj_vertices
-    return proj_points, vert_for_clipped_cvt, sites_sdf_grad, tet_probs, W
+    return proj_points, vert_for_clipped_cvt, sites_sdf_grad, W
 
 
 def compute_clipped_mesh_faces(
@@ -181,7 +177,7 @@ def compute_clipped_mesh_faces(
     new_faces = [[old2new[i] for i in face] for face in faces]
 
     sites_sdf_grad, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)  # (M,3)
-    proj_vertices, _ = _project_vertices_by_method(
+    proj_vertices = _project_vertices_by_method(
         d3d=d3d,
         sites=sites,
         sites_sdf=sites_sdf,
@@ -507,120 +503,6 @@ def compute_circumcenters(sites, vertices_to_compute):
     return circumcenters  # Shape: (M, 3)
 
 
-def interpolate_vertex_sdf_gradients(
-    vertices: torch.Tensor,  # (M, 3) positions of Voronoi vertices
-    tets: torch.LongTensor,  # (M, 4) indices of sites per tetrahedron
-    sites: torch.Tensor,  # (N, 3) coordinates of the sites
-    site_grads: torch.Tensor,  # (N, 3) spatial gradients ∇φ at each site
-    quaternion_slerp: bool = False,  # use quaternion SLERP for interpolation
-) -> torch.Tensor:
-    """
-    Interpolates the SDF gradient at Voronoi vertices using barycentric coordinates,
-    without using torch.linalg.solve.
-
-    Returns
-    -------
-    grad_v : (M, 3) tensor of interpolated SDF gradients at Voronoi vertices
-    """
-
-    v_pos = sites[tets]  # (M, 4, 3)
-    v_grad = site_grads[tets]  # (M, 4, 3)
-
-    W = _barycentric_weights(vertices, v_pos)  # (M, 4)
-
-    if quaternion_slerp:
-        # Use quaternion SLERP for interpolation
-        grad_v = quaternion_slerp_barycentric(v_grad, W)
-    else:
-        # Weighted sum of gradients
-        grad_v = (W.unsqueeze(-1) * v_grad).sum(dim=1)  # (M, 3)
-
-    return grad_v, W
-
-
-def quaternion_slerp_barycentric(
-    v_grad: torch.Tensor,  # (M, 4, 3), SDF gradients at the tet corners
-    weights: torch.Tensor,  # (M, 4), barycentric weights
-) -> torch.Tensor:
-    """
-    Perform quaternion-based interpolation of gradients using SLERP.
-    Args:
-        v_grad: (M, 4, 3) per-tet gradients (assumed unit vectors)
-        weights: (M, 4) barycentric weights (sum to 1)
-    Returns:
-        (M, 3) interpolated unit gradients
-    """
-
-    # Normalize gradients (quaternions must be unit length vectors)
-    v_grad = torch.nn.functional.normalize(v_grad, dim=-1)  # (M, 4, 3)
-
-    # Convert each gradient to quaternion representation using axis-angle [θ * n] → quaternion
-    # We'll assume each 3D unit vector lies on the sphere and can be interpreted as a rotation from a canonical vector
-    # We'll pick [1,0,0] as canonical; rotation from it to each gradient gives the rotation quaternion
-
-    # Canonical vector
-    canonical = torch.tensor([1.0, 0.0, 0.0], device=v_grad.device).expand(v_grad.shape[0], 1, 3)  # (M,1,3)
-    q_rots = []
-
-    for i in range(4):
-        v_i = v_grad[:, i]  # (M, 3)
-        axis = torch.cross(canonical.squeeze(1), v_i, dim=1)  # (M,3)
-        axis = torch.nn.functional.normalize(axis, dim=1)
-        dot = (canonical.squeeze(1) * v_i).sum(dim=1, keepdim=True).clamp(-1, 1)  # (M,1)
-        angle = torch.acos(dot)  # (M,1)
-
-        half_angle = angle / 2
-        q = torch.cat(
-            [
-                torch.cos(half_angle),  # real part
-                axis * torch.sin(half_angle),  # imag part
-            ],
-            dim=1,
-        )  # (M,4)
-        q_rots.append(q)
-
-    # Slerp pairwise and combine
-    q01 = quaternion_slerp(q_rots[0], q_rots[1], weights[:, 1:2] / (weights[:, 0:1] + weights[:, 1:2] + 1e-12))
-    q012 = quaternion_slerp(q01, q_rots[2], weights[:, 2:3] / (weights[:, :3].sum(dim=1, keepdim=True) + 1e-12))
-    q_final = quaternion_slerp(q012, q_rots[3], weights[:, 3:4] / (weights.sum(dim=1, keepdim=True) + 1e-12))
-
-    # Convert quaternion to rotation matrix and rotate canonical vector
-    R = quaternion_to_matrix(q_final)  # (M, 3, 3)
-    grad_interp = torch.matmul(R, canonical.transpose(1, 2)).squeeze(-1)  # (M, 3)
-
-    return grad_interp
-
-
-def quaternion_slerp(q1: torch.Tensor, q2: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    """
-    Spherical linear interpolation between two quaternions.
-    q1, q2: (..., 4) quaternions (w, x, y, z)
-    t: (..., 1) interpolation factor in [0, 1]
-    Returns:
-        (..., 4) interpolated quaternion
-    """
-    # Normalize to ensure unit quaternions
-    q1 = torch.nn.functional.normalize(q1, dim=-1)
-    q2 = torch.nn.functional.normalize(q2, dim=-1)
-
-    dot = (q1 * q2).sum(dim=-1, keepdim=True)  # (..., 1)
-
-    # Ensure shortest path
-    q2 = torch.where(dot < 0, -q2, q2)
-    dot = torch.clamp(dot, -1.0, 1.0)
-
-    theta_0 = torch.acos(dot)  # angle between q1 and q2
-    sin_theta_0 = torch.sin(theta_0)
-
-    # Avoid division by 0
-    small_angle = sin_theta_0 < 1e-6
-
-    s1 = torch.where(small_angle, 1.0 - t, torch.sin((1.0 - t) * theta_0) / (sin_theta_0 + 1e-12))
-    s2 = torch.where(small_angle, t, torch.sin(t * theta_0) / (sin_theta_0 + 1e-12))
-
-    return s1 * q1 + s2 * q2  # (..., 4)
-
-
 def project_vertices_to_tet_plane(
     tets: torch.Tensor,  # (M, 4)
     sites: torch.Tensor,  # (N, 3)
@@ -664,7 +546,7 @@ def project_vertices_to_tet_plane(
     steps_verts = normal_dot * vert_step_dir  # (M, 3)
     projected_verts = voronoi_vertices - steps_verts  # (M, 3)
 
-    return projected_verts, (site_step_dir, steps_verts, tet_sites)
+    return projected_verts
 
 
 def project_vertices_newton(grads, sdf_verts, new_vertices):
@@ -815,55 +697,4 @@ def compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, all_vor_vertices
     # print number of zero in penalties
     # print("Number of zero in penalties: ", torch.sum(penalties == 0.0).item())
     cvt_loss = torch.mean(torch.abs(penalties))
-    return cvt_loss
-
-
-def compute_cvt_loss_true(sites, d3d, vertices=None):
-    if vertices is None:
-        vertices = compute_circumcenters(sites, d3d)
-
-    # Concat sites and vertices to compute the Voronoi diagram
-    points = torch.cat((sites, vertices), dim=0)
-    # Avoid to get coplanar tet which create issue if the current algorithm
-    points += (torch.rand_like(points) - 0.5) * 0.00001  # 0.001 % of the space ish
-    d3dsimplices, _ = pygdel3d.triangulate(points.detach().cpu().numpy())
-    # d3dsimplices = Delaunay(points.detach().cpu().numpy()).simplices
-    d3dsimplices = torch.as_tensor(d3dsimplices, dtype=torch.int64, device=sites.device)
-
-    ############ 2D Case (Triangles) ############
-    # Compute the areas of all simplices (in 2D triangles)
-    # a = points[d3dsimplices[:, 0]]
-    # b = points[d3dsimplices[:, 1]]
-    # c = points[d3dsimplices[:, 2]]
-    # # areas_simplices = torch.linalg.norm(torch.cross(b - a, c - a), dim=1) / 2.0
-    # triangle_areas = torch.linalg.norm(b - a, dim=1) * torch.linalg.norm(c - a, dim=1) / 2.0
-    # triangle_center = (a + b + c) / 3.0
-    # # print(triangle_areas.shape, triangle_center.shape)
-    ############ 3D Case (Tetrahedra) ############
-    a = points[d3dsimplices[:, 0]]
-    b = points[d3dsimplices[:, 1]]
-    c = points[d3dsimplices[:, 2]]
-    d = points[d3dsimplices[:, 3]]
-
-    tetrahedra_volume = volume_tetrahedron(a, b, c, d)
-    tetrahedra_center = (a + b + c + d) / 4.0  # Shape: (M, 3)
-
-    # Create a centroid for each sites
-    centroids = torch.zeros_like(sites)
-    volumes = torch.ones(sites.shape[0], dtype=torch.float32, device=sites.device) * 1e-8  # Avoid division by zero
-    for i in range(4):
-        # Filter simplices that are valid (i.e., not out of bounds)
-        # We assume that the first N points are the sites
-        mask = d3dsimplices[:, i] < sites.shape[0]
-        # Uses index_add for atomic addition
-        centroids.index_add_(0, d3dsimplices[mask, i], tetrahedra_center[mask] * tetrahedra_volume[mask].unsqueeze(1))
-        volumes.index_add_(0, d3dsimplices[mask, i], tetrahedra_volume[mask])
-    centroids /= volumes.unsqueeze(1)
-
-    cvt_loss = torch.mean(torch.norm(sites - centroids, dim=1))
-    # cvt_loss = torch.mean(torch.abs(sites - centroids))
-
-    # print("Centroids shape:", centroids.shape)
-    # print("Sites shape:", sites.shape)
-    # return centroids, vertices
     return cvt_loss

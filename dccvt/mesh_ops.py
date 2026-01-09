@@ -34,63 +34,6 @@ def _compute_clipped_mesh_outputs(
     return compute_clipped_mesh_faces(sites, None, d3dsimplices, sdf_values)
 
 
-def sample_mesh_points_heitz(vertices: torch.Tensor, faces: torch.LongTensor, num_samples: int) -> torch.Tensor:
-    """
-    Uniformly (area weighted) sample points on a triangular mesh
-    using Heitz s low distortion square→triangle mapping.
-
-    Args:
-        vertices:    (V,3) float tensor of vertex positions.
-        faces:       (F,3) long tensor of indices into `vertices`.
-        num_samples: int, number of points to sample.
-
-    Returns:
-        samples: (num_samples, 3) float tensor of sampled points.
-    """
-    # 1) Gather triangle vertices
-    v0 = vertices[faces[:, 0]]  # (F,3)
-    v1 = vertices[faces[:, 1]]  # (F,3)
-    v2 = vertices[faces[:, 2]]  # (F,3)
-
-    # 2) Compute triangle areas for weighting
-    e0 = v1 - v0  # (F,3)
-    e1 = v2 - v0  # (F,3)
-    cross = torch.cross(e0, e1, dim=1)  # (F,3)
-    areas = 0.5 * cross.norm(dim=1)  # (F,)
-
-    # 3) Sample faces proportional to area
-    probs = areas / areas.sum()
-    idx = torch.multinomial(probs, num_samples, replacement=True)  # (num_samples,)
-
-    # 4) Draw uniform samples u,v in [0,1]^2
-    u = torch.rand(num_samples, device=vertices.device)
-    v = torch.rand(num_samples, device=vertices.device)
-
-    # 5) Heitz–Talbot mapping to barycentric (b0,b1,b2):
-    #    b0 = u/2, b1 = v/2, then shift one cell to compress diagonals
-    b0 = 0.5 * u
-    b1 = 0.5 * v
-    offset = b1 - b0
-    mask = offset > 0
-    # if offset>0, push b1 out; else pull b0 back
-    b1 = torch.where(mask, b1 + offset, b1)
-    b0 = torch.where(mask, b0, b0 - offset)
-    b2 = 1.0 - b0 - b1
-
-    # 6) Assemble final sample positions
-    #    pick the triangle vertices for each sample
-    v0s = v0[idx]  # (num_samples,3)
-    v1s = v1[idx]
-    v2s = v2[idx]
-    # reshape barycentric coords for broadcast
-    b0 = b0.unsqueeze(1)  # (num_samples,1)
-    b1 = b1.unsqueeze(1)
-    b2 = b2.unsqueeze(1)
-    samples = b0 * v0s + b1 * v1s + b2 * v2s  # (num_samples,3)
-
-    return samples
-
-
 def extract_cvt_mesh(sites, sites_sdf, d3dsimplices, build_faces: bool = False):
     """
     Extracts a mesh from the given sites and their SDF values.

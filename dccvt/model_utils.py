@@ -134,7 +134,6 @@ def init_sites_from_mnfld_points(
     # add mnfld points with random noise to sites
     N = mnfld_points.squeeze(0).shape[0]
     if sample_near > 0:
-        # num_samples = sample_near**input_dims - num_centroids**input_dims
         num_samples = sample_near
         idx = torch.randint(0, N, (num_samples,))
         sampled = mnfld_points.squeeze(0)[idx]

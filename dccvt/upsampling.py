@@ -1,6 +1,5 @@
 """Adaptive upsampling utilities for site refinement."""
 
-import math
 from typing import Tuple
 
 import torch
@@ -157,112 +156,6 @@ def _tet_frame_offspring(
     delta = new_sites.reshape(-1, 4, 3) - centroids
     new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)
     return new_sites, new_sdf
-
-
-def _parent_mask(num_sites: int, cand: torch.Tensor, device: torch.device) -> torch.Tensor:
-    if cand.dtype == torch.bool:
-        return ~cand
-    parent_mask = torch.ones(num_sites, dtype=torch.bool, device=device)
-    parent_mask[cand] = False
-    return parent_mask
-
-
-def _quat_to_rotmat(q: torch.Tensor) -> torch.Tensor:
-    w, x, y, z = q.unbind(-1)
-    ww, xx, yy, zz = w * w, x * x, y * y, z * z
-    xy, xz, yz = x * y, x * z, y * z
-    wx, wy, wz = w * x, w * y, w * z
-    R = torch.stack(
-        [
-            ww + xx - yy - zz,
-            2 * (xy - wz),
-            2 * (xz + wy),
-            2 * (xy + wz),
-            ww - xx + yy - zz,
-            2 * (yz - wx),
-            2 * (xz - wy),
-            2 * (yz + wx),
-            ww - xx - yy + zz,
-        ],
-        dim=-1,
-    ).reshape(q.shape[:-1] + (3, 3))
-    return R
-
-
-def _upsample_tet_random(
-    sites: torch.Tensor,
-    sdf_values: torch.Tensor,
-    grad_est: torch.Tensor,
-    cand: torch.Tensor,
-    min_dists: torch.Tensor,
-    device: torch.device,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    tetr_dirs = _tetrahedral_dirs(device, normalize=False)
-
-    centroids = sites[cand]
-    scale = (min_dists[cand] / 4).unsqueeze(1)
-
-    K = cand.shape[0]
-    q = torch.randn(K, 4, device=device, dtype=torch.float32)
-    q = q / q.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-    R = _quat_to_rotmat(q)
-
-    rotated_dirs = tetr_dirs.unsqueeze(0) @ R.transpose(-1, -2)
-    new_sites = (centroids.unsqueeze(1) + rotated_dirs * scale.unsqueeze(1)).reshape(-1, 3)
-
-    print("Before tet random upsampling, number of sites:", sites.shape[0], "amount added:", new_sites.shape[0])
-
-    cent_grad = grad_est[cand]
-    delta = new_sites.reshape(-1, 4, 3) - centroids.unsqueeze(1)
-    new_sdf = (sdf_values[cand].unsqueeze(1) + (cent_grad.unsqueeze(1) * delta).sum(2)).reshape(-1)
-
-    updated_sites = torch.cat([sites, new_sites], dim=0)
-    updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)
-    return updated_sites, updated_sites_sdf
-
-
-def _upsample_random_hemisphere(
-    sites: torch.Tensor,
-    sdf_values: torch.Tensor,
-    grad_est: torch.Tensor,
-    cand: torch.Tensor,
-    min_dists: torch.Tensor,
-    eps: float,
-    device: torch.device,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    centroids = sites[cand]
-    cent_grad = grad_est[cand]
-    unit_grad = cent_grad / (cent_grad.norm(dim=1, keepdim=True) + eps)
-
-    axis = unit_grad * torch.sign(sdf_values[cand]).unsqueeze(1)
-
-    helper = torch.tensor([0.0, 0.0, 1.0], device=device).expand_as(axis).clone()
-    near_pole = axis[:, 2].abs() > 0.99
-    helper[near_pole] = torch.tensor([0.0, 1.0, 0.0], device=device)
-
-    v1 = torch.cross(helper, axis, dim=1)
-    v1 = v1 / (v1.norm(dim=1, keepdim=True) + eps)
-    v2 = torch.cross(axis, v1, dim=1)
-    v2 = v2 / (v2.norm(dim=1, keepdim=True) + eps)
-
-    K = centroids.shape[0]
-    u = torch.rand(K, 1, device=device)
-    phi = 2.0 * math.pi * torch.rand(K, 1, device=device)
-
-    sin_theta = torch.sqrt((1.0 - u**2).clamp_min(0.0))
-    dir_hemi = (torch.cos(phi) * sin_theta) * v1 + (torch.sin(phi) * sin_theta) * v2 + u * axis
-
-    step_size = (min_dists[cand] / 4.0).unsqueeze(1)
-    new_sites = centroids + step_size * dir_hemi
-
-    print("Before upsampling, number of sites:", sites.shape[0], "amount added:", new_sites.shape[0])
-
-    delta = new_sites - centroids
-    new_sdf = sdf_values[cand] + (cent_grad * delta).sum(dim=1)
-
-    updated_sites = torch.cat([sites, new_sites], dim=0)
-    updated_sites_sdf = torch.cat([sdf_values, new_sdf], dim=0)
-    return updated_sites, updated_sites_sdf
 
 
 def _build_tangent_frame(normals):  # normals: (B, 3)

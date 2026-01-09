@@ -28,31 +28,17 @@ DEFAULTS = {
     "output": f"{ROOT_DIR}/outputs/{timestamp}/",
     "mesh": f"{ROOT_DIR}/mesh/thingi32/",  # "mesh": f"{ROOT_DIR}/mesh/thingi32_150k/",
     "trained_HotSpot": f"{ROOT_DIR}/hotspots_model/",
-    "input_dims": 3,  # Always 3
     "num_iterations": 1000,
-    "num_centroids": 16,  # ** input_dims
-    "sample_near": 0,  # # ** input_dims
-    "max_amount_sites": 32,  # 32 # ** input_dims
-    "clip": True, #Always true
-    "grad_interpol": "robust",  # Always robust # others are in experiments branch : hybrid, barycentric
+    "num_centroids": 16,
+    "sample_near": 0,
+    "max_amount_sites": 32,
     "marching_tetrahedra": False,  # Always false, but keep it. 
-    "true_cvt": False,  # Always false 
-    "extract_optim": False,  # Always false
-    "no_mp": False,  # Always false
-    "ups_extraction": False, # Always false
-    "build_mesh": False, # Always false
     "video": False, # Keep for usefulness of extracting mesh at every step for visualisation
-    "sdf_type": "hotspot",  # Always hotspot # others are in experiments branch : sphere, complex_alpha
     "w_cvt": 0,
     "w_sdfsmooth": 0,
     "w_voroloss": 0,  # 1000
     "w_chamfer": 0,  # 1000
-    "w_mc": 0,
-    "w_mt": 0,
-    "w_vertex_sdf_interpolation": 0, # Remove this loss. does not work 
     "upsampling": 0,  # 0
-    "ups_method": "tet_frame",  # Always tet_frame # others are in experiments branch : "tet_random", "random" "tet_frame_remove_parent"
-    "score": "conservative",  # Always conservative # others are in experiments branch : "legacy" "density", "cosine"
     "lr_sites": 0.0005,
     "mesh_ids": [
         "252119",
@@ -182,7 +168,6 @@ def parse_experiment_args(
         defaults = DEFAULTS
 
     parser = argparse.ArgumentParser(description="DCCVT experiments")
-    parser.add_argument("--input_dims", type=int, default=defaults["input_dims"], help="Dimensionality of the input")
     parser.add_argument("--output", type=str, default=defaults["output"], help="Output directory")
     parser.add_argument("--mesh", type=str, default=defaults["mesh"], help="Mesh directory")
     parser.add_argument(
@@ -194,71 +179,20 @@ def parse_experiment_args(
     parser.add_argument("--num_centroids", type=int, default=defaults["num_centroids"], help="Number of centroids")
     parser.add_argument("--sample_near", type=int, default=defaults["sample_near"], help="Samples drawn near each site")
     parser.add_argument("--max_amount_sites", type=int, default=defaults["max_amount_sites"], help="Target size for sampling")
-    _add_bool_arg(parser, "--clip", defaults["clip"], "Enable/disable clipping")
-    parser.add_argument(
-        "--grad_interpol",
-        type=str,
-        default=defaults["grad_interpol"],
-        help="Gradient interpolation method: robust, hybrid, barycentric",
-    )
     _add_bool_arg(
         parser, "--marching_tetrahedra", defaults["marching_tetrahedra"], "Enable/disable marching_tetrahedra"
     )
-    _add_bool_arg(parser, "--true_cvt", defaults["true_cvt"], "Enable/disable true CVT loss")
-    _add_bool_arg(parser, "--extract_optim", defaults["extract_optim"], "Enable/disable extraction optimization")
-    parser.add_argument(
-        "--sdf_type",
-        type=str,
-        default=defaults["sdf_type"],
-        help="SDF type: hotspot, sphere, complex_alpha",
-    )
-    _add_bool_arg(parser, "--no_mp", defaults["no_mp"], "Enable/disable multiprocessing")
-    _add_bool_arg(parser, "--ups_extraction", defaults["ups_extraction"], "Enable/disable upsampling extraction")
-    _add_bool_arg(parser, "--build_mesh", defaults["build_mesh"], "Enable/disable build mesh")
     _add_bool_arg(parser, "--video", defaults["video"], "Enable/disable video output")
     parser.add_argument("--w_cvt", type=float, default=defaults["w_cvt"], help="Weight for CVT regularization")
-    parser.add_argument(
-        "--w_vertex_sdf_interpolation",
-        type=float,
-        default=defaults["w_vertex_sdf_interpolation"],
-        help="Weight for vertex SDF interpolation",
-    )
     parser.add_argument("--w_sdfsmooth", type=float, default=defaults["w_sdfsmooth"], help="Weight for SDF smoothing")
     parser.add_argument("--w_voroloss", type=float, default=defaults["w_voroloss"], help="Weight for Voronoi loss")
     parser.add_argument(
         "--w_chamfer", type=float, default=defaults["w_chamfer"], help="Weight for Chamfer distance on points"
     )
     # parser.add_argument("--w_bpa", type=float, default=defaults.get("w_bpa", 0), help="flag to use BPA instead of DCCVT")
-    parser.add_argument("--w_mc", type=float, default=defaults["w_mc"], help="Weight for MC loss")
-    parser.add_argument("--w_mt", type=float, default=defaults["w_mt"], help="Weight for MT loss")
     parser.add_argument("--upsampling", type=int, default=defaults["upsampling"], help="Upsampling factor")
-    parser.add_argument(
-        "--ups_method",
-        type=str,
-        default=defaults["ups_method"],
-        help="Upsampling method: tet_frame, tet_frame_remove_parent, tet_random, or random",
-    )
     parser.add_argument("--lr_sites", type=float, default=defaults["lr_sites"], help="Learning rate for sites")
     parser.add_argument(
         "--save_path", type=str, default=None, help="(optional) full save path; if omitted, computed from other flags"
     )
-    parser.add_argument(
-        "--score",
-        type=str,
-        default=defaults["score"],
-        help="Score computation [legacy, density, sqrt_curvature, cosine]",
-    )
-    args = parser.parse_args(arg_list)
-    args.input_dims = defaults["input_dims"]
-    args.clip = defaults["clip"]
-    args.grad_interpol = defaults["grad_interpol"]
-    args.true_cvt = defaults["true_cvt"]
-    args.extract_optim = defaults["extract_optim"]
-    args.no_mp = defaults["no_mp"]
-    args.ups_extraction = defaults["ups_extraction"]
-    args.build_mesh = defaults["build_mesh"]
-    args.sdf_type = defaults["sdf_type"]
-    args.w_vertex_sdf_interpolation = defaults["w_vertex_sdf_interpolation"]
-    args.ups_method = defaults["ups_method"]
-    args.score = defaults["score"]
-    return args
+    return parser.parse_args(arg_list)

@@ -95,7 +95,6 @@ def _compute_chamfer_geometry(
     args: Any,
 ):
     sites_sdf_grads = None
-    tet_probs = None
     W = None
 
     if args.marching_tetrahedra:
@@ -105,21 +104,21 @@ def _compute_chamfer_geometry(
         )
         vertices_list, faces_list = marching_tetrehedra_mesh
         v_vect = vertices_list[0]
-        _, f_or_clipped_v, _, _, _ = compute_clipped_mesh(
+        _, f_or_clipped_v, _, _ = compute_clipped_mesh(
             sites,
             None,
             d3dsimplices.detach().cpu().numpy(),
             sites_sdf,
         )
     else:
-        v_vect, f_or_clipped_v, sites_sdf_grads, tet_probs, W = compute_clipped_mesh(
+        v_vect, f_or_clipped_v, sites_sdf_grads, W = compute_clipped_mesh(
             sites,
             None,
             d3dsimplices,
             sites_sdf,
         )
 
-    return d3dsimplices, v_vect, f_or_clipped_v, sites_sdf_grads, tet_probs, W
+    return d3dsimplices, v_vect, f_or_clipped_v, sites_sdf_grads, W
 
 
 def _compute_chamfer_loss(
@@ -298,7 +297,6 @@ def run_dccvt_training(
     sites_sdf_grads = None
     voroloss = VoronoiLoss().to(device)
     eps_H = None
-    tet_probs = None
     W = None
     f_or_clipped_v = None
 
@@ -310,7 +308,7 @@ def run_dccvt_training(
         )
 
         if use_chamfer:
-            d3dsimplices, v_vect, f_or_clipped_v, sites_sdf_grads, tet_probs, W = _compute_chamfer_geometry(
+            d3dsimplices, v_vect, f_or_clipped_v, sites_sdf_grads, W = _compute_chamfer_geometry(
                 sites, sites_sdf, d3dsimplices, args
             )
             chamfer_loss_mesh = _compute_chamfer_loss(manifold_points, v_vect)
