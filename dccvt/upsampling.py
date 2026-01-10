@@ -5,18 +5,6 @@ from typing import Tuple
 import torch
 
 
-def _get_sdf_values(sites: torch.Tensor, model, device: torch.device) -> torch.Tensor:
-    if model is None:
-        raise ValueError("`model` must be an SDFGrid, nn.Module or a Tensor")
-    if model.__class__.__name__ == "SDFGrid":
-        sdf_values = model.sdf(sites)
-    elif isinstance(model, torch.Tensor):
-        sdf_values = model.to(device)
-    else:  # nn.Module / callable
-        sdf_values = model(sites).detach()
-    return sdf_values.squeeze()
-
-
 def _build_neighbors_from_simplices(simplices, device: torch.device) -> torch.Tensor:
     all_tets = torch.as_tensor(simplices, device=device).long()
     edges = torch.cat(
@@ -174,12 +162,8 @@ def _build_tangent_frame(normals):  # normals: (B, 3)
 def upsample_sites_adaptive(
     sites: torch.Tensor,  # (N,3)
     simplices=None,  # np.ndarray (M,4) if tri is None
-    model=None,  # SDFGrid | nn.Module | Tensor (N,)
+    sites_sdf: torch.Tensor = None,  # (N,)
     sites_sdf_grads=None,  # (N,3) spatial gradients ∇φ at each site
-    spacing_target: float = None,  # desired final spacing  (same units as sites)
-    alpha_high: float = 1.5,  # regime switches   (α_high > α_low ≥ 1)
-    alpha_low: float = 1.1,
-    curv_pct: float = 0.75,  # percentile threshold for curvature pass
     growth_cap: float = 0.10,  # ≤ fraction of current sites allowed per iter
     eps: float = 1e-12,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -194,7 +178,9 @@ def upsample_sites_adaptive(
     device = sites.device
     num_sites = sites.shape[0]
 
-    sdf_values = _get_sdf_values(sites, model, device)
+    if sites_sdf is None:
+        raise ValueError("`sites_sdf` is required for adaptive upsampling.")
+    sdf_values = sites_sdf.squeeze()
 
     neighbors = _build_neighbors_from_simplices(simplices, device)
     min_dists = _min_neighbor_distances(sites, neighbors)
@@ -203,10 +189,6 @@ def upsample_sites_adaptive(
     curv_score = _curvature_score(neighbors, grad_est, num_sites, device, eps)
 
     zc_sites = _zero_crossing_sites(neighbors, sdf_values)
-
-    median_min_dists = torch.median(min_dists)
-    if spacing_target is None:
-        spacing_target = median_min_dists * 0.8
 
     score_values = _candidate_scores(min_dists, curv_score, zc_sites, eps)
     cand = _sample_candidate_sites(zc_sites, score_values, growth_cap, num_sites, device, eps)

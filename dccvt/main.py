@@ -5,10 +5,7 @@ import re
 import sys
 from typing import Optional
 
-from dccvt import argparse_utils as config_utils
-from dccvt.io_utils import copy_experiment_script
-from dccvt.runner import run_single_mesh_experiment
-import dccvt.device  # initialize device + seeds
+from dccvt.api import run_from_args_file
 
 
 def main(script_path: Optional[str] = None) -> None:
@@ -30,29 +27,20 @@ def main(script_path: Optional[str] = None) -> None:
         mesh_ids_override = [s for s in re.split(r"[,\s]+", root_args.mesh_ids.strip()) if s]
         print(f"Using mesh IDs override: {mesh_ids_override}")
 
-    if root_args.timestamp:
-        config_utils.update_timestamp(root_args.timestamp)
-
-    if root_args.args_file:
-        # Provide DEFAULTS + timestamp to formatting
-        merged_defaults = config_utils.DEFAULTS | {
-            "timestamp": config_utils.timestamp,
-            "ROOT_DIR": config_utils.ROOT_DIR,
-        }
-        arg_lists = config_utils.parse_args_template_file(
-            root_args.args_file, defaults=merged_defaults, mesh_ids=mesh_ids_override
-        )
-        if root_args.dry_run:
-            for i, a in enumerate(arg_lists):
-                print(f"[{i}] {a}")
-            sys.exit(0)
-    else:
+    if not root_args.args_file:
         raise ValueError("Please provide an --args-file with experiment templates.")
 
     if script_path is None:
         script_path = __file__
 
-    copy_experiment_script(arg_lists, script_path, config_utils.DEFAULTS["output"])
-
-    for arg_list in arg_lists:
-        run_single_mesh_experiment(arg_list)
+    arg_lists = run_from_args_file(
+        root_args.args_file,
+        mesh_ids=mesh_ids_override,
+        timestamp=root_args.timestamp,
+        dry_run=root_args.dry_run,
+        script_path=script_path,
+    )
+    if root_args.dry_run:
+        for i, a in enumerate(arg_lists or []):
+            print(f"[{i}] {a}")
+        sys.exit(0)
