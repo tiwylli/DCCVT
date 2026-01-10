@@ -25,7 +25,7 @@ def extract_cvt_mesh(sites, sites_sdf, d3dsimplices, build_faces: bool = False):
     all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
 
     vertices_to_compute, _, used_tet = find_zero_crossing_vertices_3d(
-        sites, None, None, d3dsimplices, sites_sdf
+        sites, d3dsimplices, sites_sdf
     )
     vertices = compute_circumcenters(sites, vertices_to_compute)
 
@@ -65,7 +65,7 @@ def extract_cvt_mesh(sites, sites_sdf, d3dsimplices, build_faces: bool = False):
     projected = (p_i * valid_mask).sum(dim=1) / num_valid  # (M, 3)
     # ------------
     if build_faces:
-        faces = get_faces(d3dsimplices, sites, all_vor_vertices, None, sites_sdf)  # (R0, List of simplices)
+        faces = get_faces(d3dsimplices, sites, all_vor_vertices, sites_sdf)  # (R0, List of simplices)
         # Compact the vertex list
         used = {idx for face in faces for idx in face}
         old2new = {old: new for new, old in enumerate(sorted(used))}
@@ -96,7 +96,7 @@ def extract_mesh(
     save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
     save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)
 
-    v_vect, f_vect, _, _, _ = compute_clipped_mesh_faces(sites, d3dsimplices, sdf_values)
+    v_vect, f_vect = compute_clipped_mesh_faces(sites, d3dsimplices, sdf_values)
     output_obj_file = make_dccvt_obj_path(args, state, "projDCCVT")
     save_npz_bundle(sites, sdf_values, elapsed_time, args, output_obj_file.replace(".obj", ".npz"))
     save_obj_mesh(output_obj_file, v_vect.detach().cpu().numpy(), f_vect)

@@ -9,7 +9,6 @@ import torch
 from numba import njit, prange
 
 from dccvt.device import device
-from dccvt.model_utils import resolve_sdf_values_or_fallback
 from dccvt.sdf_gradients import compute_sdf_gradients_sites_tets
 
 
@@ -103,7 +102,7 @@ def compute_clipped_mesh(
 
     all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
     vertices_to_compute, bisectors_to_compute, used_tet = find_zero_crossing_vertices_3d(
-        sites, None, None, d3dsimplices, sites_sdf
+        sites, d3dsimplices, sites_sdf
     )
     vertices = compute_circumcenters(sites, vertices_to_compute)
     bisectors = (sites[bisectors_to_compute[:, 0]] + sites[bisectors_to_compute[:, 1]]) / 2
@@ -145,43 +144,35 @@ def compute_clipped_mesh_faces(
 
     d3d = _as_tet_tensor(d3dsimplices, device)  # (M,4)
     all_vor_vertices = compute_circumcenters(sites, d3d)  # (M,3)
-    faces = get_faces(d3dsimplices, sites, all_vor_vertices, None, sites_sdf)  # (R0, List of simplices)
+    faces = get_faces(d3dsimplices, sites, all_vor_vertices, sites_sdf)  # (R0, List of simplices)
 
     used = {idx for face in faces for idx in face}
     old2new = {old: new for new, old in enumerate(sorted(used))}
     new_vertices = all_vor_vertices[sorted(used)]
     new_faces = [[old2new[i] for i in face] for face in faces]
 
-    sites_sdf_grad, tets_sdf_grads, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)  # (M,3)
+    sites_sdf_grad, _, _ = compute_sdf_gradients_sites_tets(sites, sites_sdf, d3d)  # (M,3)
     proj_vertices = project_vertices_to_tet_plane(
         d3d[sorted(used)], sites, sites_sdf, sites_sdf_grad, new_vertices
     )
-    return proj_vertices, new_faces, sites_sdf_grad, tets_sdf_grads, W
+    return proj_vertices, new_faces
 
 
-def find_zero_crossing_vertices_3d(sites, vor=None, tri=None, simplices=None, model=None):
+def find_zero_crossing_vertices_3d(sites, simplices, sites_sdf):
     """
     Computes the indices of the sites composing vertices where neighboring sites have opposite or zero SDF values.
 
     Args:
         sites (torch.Tensor): (N, D) tensor of site positions.
-        model (callable): Function or neural network that computes SDF values.
+        sites_sdf (torch.Tensor): (N,) signed distance values.
 
     Returns:
         zero_crossing_vertices_index (list of triplets): List of sites indices (si, sj, sk) where atleast 2 sites have opposing SDF signs.
     """
-    sdf_values = resolve_sdf_values_or_fallback(sites, model)
+    sdf_values = sites_sdf
 
-    if tri is not None:
-        all_tetrahedra = torch.as_tensor(np.array(tri.simplices), device=device)
-    else:
-        all_tetrahedra = torch.as_tensor(np.array(simplices), device=device)
-
-    if vor is not None:
-        neighbors = torch.as_tensor(np.array(vor.ridge_points), device=device)
-        zero_crossing_pairs = neighbors
-    else:
-        zero_crossing_pairs = find_zero_crossing_site_pairs(all_tetrahedra, sdf_values)
+    all_tetrahedra = torch.as_tensor(np.array(simplices), device=device)
+    zero_crossing_pairs = find_zero_crossing_site_pairs(all_tetrahedra, sdf_values)
 
     # Check if vertices has a pair of zero crossing sites
     sdf_0 = sdf_values[all_tetrahedra[:, 0]]  # First site in each pair
@@ -248,7 +239,7 @@ def interpolate_vertex_sdf_values(
     return phi_v
 
 
-def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
+def get_faces(d3dsimplices, sites, vor_vertices, sites_sdf):
     with torch.no_grad():
         d3d = _as_tet_tensor(d3dsimplices, device)  # (M,4)
         # Generate all edges of each simplex
@@ -268,7 +259,7 @@ def get_faces(d3dsimplices, sites, vor_vertices, model=None, sites_sdf=None):
         torch.cuda.empty_cache()
 
         # Evaluate SDF at each site
-        sdf = resolve_sdf_values_or_fallback(sites, model, fallback=sites_sdf, flatten=True)  # (N,)
+        sdf = sites_sdf.view(-1)  # (N,)
 
         sdf_i = sdf[ridges[:, 0]]
         sdf_j = sdf[ridges[:, 1]]

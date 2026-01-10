@@ -187,4 +187,15 @@ def parse_experiment_args(
     parser.add_argument(
         "--save_path", type=str, default=None, help="(optional) full save path; if omitted, computed from other flags"
     )
-    return parser.parse_args(arg_list)
+    args = parser.parse_args(arg_list)
+    args.mesh = _normalize_mesh_arg(args.mesh, defaults)
+    return args
+
+
+def _normalize_mesh_arg(mesh: str, defaults: Dict[str, object]) -> str:
+    mesh_path = Path(mesh)
+    if mesh_path.suffix in {".ply", ".obj"}:
+        mesh_path = mesh_path.with_suffix("")
+    if mesh_path.is_absolute() or "/" in mesh or "\\" in mesh:
+        return str(mesh_path)
+    return str(Path(defaults["mesh"]) / mesh_path)

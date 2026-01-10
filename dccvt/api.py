@@ -2,22 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, List, Optional
+from typing import Iterable, List, Optional
 
 from dccvt import argparse_utils as config_utils
 from dccvt.argparse_utils import DEFAULTS, parse_experiment_args
-from dccvt.device import initialize_runtime
 from dccvt.io_utils import copy_experiment_script
 from dccvt.runner import run_mesh
-
-
-def build_args(**overrides: Any):
-    """Build an args namespace from DEFAULTS with explicit overrides."""
-    defaults = DEFAULTS.copy()
-    for key, value in overrides.items():
-        if value is not None:
-            defaults[key] = value
-    return parse_experiment_args([], defaults=defaults)
 
 
 def run_mesh_from_params(
@@ -36,27 +26,29 @@ def run_mesh_from_params(
     upsampling: int = DEFAULTS["upsampling"],
     lr_sites: float = DEFAULTS["lr_sites"],
     save_path: Optional[str] = None,
-    seed: int = 69,
     skip_existing: bool = True,
 ) -> dict:
     """Run DCCVT on a single mesh with explicit parameters."""
-    initialize_runtime(seed)
-    args = build_args(
-        mesh=mesh,
-        trained_HotSpot=trained_HotSpot,
-        output=output,
-        num_iterations=num_iterations,
-        num_centroids=num_centroids,
-        sample_near=sample_near,
-        max_amount_sites=max_amount_sites,
-        video=video,
-        w_cvt=w_cvt,
-        w_sdfsmooth=w_sdfsmooth,
-        w_chamfer=w_chamfer,
-        upsampling=upsampling,
-        lr_sites=lr_sites,
-        save_path=save_path,
+    defaults = DEFAULTS.copy()
+    defaults.update(
+        {
+            "mesh": mesh,
+            "trained_HotSpot": trained_HotSpot,
+            "output": output,
+            "num_iterations": num_iterations,
+            "num_centroids": num_centroids,
+            "sample_near": sample_near,
+            "max_amount_sites": max_amount_sites,
+            "video": video,
+            "w_cvt": w_cvt,
+            "w_sdfsmooth": w_sdfsmooth,
+            "w_chamfer": w_chamfer,
+            "upsampling": upsampling,
+            "lr_sites": lr_sites,
+            "save_path": save_path,
+        }
     )
+    args = parse_experiment_args([], defaults=defaults)
     return run_mesh(args, skip_existing=skip_existing)
 
 
@@ -67,11 +59,8 @@ def run_from_args_file(
     timestamp: Optional[str] = None,
     dry_run: bool = False,
     script_path: Optional[str] = None,
-    seed: int = 69,
 ) -> Optional[List[List[str]]]:
     """Run a list of experiments from an args template file."""
-    initialize_runtime(seed)
-
     if timestamp:
         config_utils.update_timestamp(timestamp)
 

@@ -2,12 +2,10 @@
 
 import os
 from time import time
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import torch
 
-from dccvt import argparse_utils as config_utils
-from dccvt.argparse_utils import parse_experiment_args
 from dccvt.device import initialize_runtime
 from dccvt.mesh_ops import extract_mesh
 from dccvt.model_utils import init_sdf_from_model, init_sites_from_mnfld_points, load_hotspot_model
@@ -17,10 +15,12 @@ from dccvt.training import run_dccvt_training
 
 def run_mesh(args: Any, *, skip_existing: bool = True) -> Dict[str, Any]:
     """Run a single mesh experiment from a populated args namespace."""
+    initialize_runtime()
     args.save_path = f"{args.output}" if args.save_path is None else args.save_path
     os.makedirs(args.save_path, exist_ok=True)
-    output_files = expected_output_files(args)
-    if skip_existing and output_files and all(os.path.exists(path) for path in output_files):
+    output_file = make_dccvt_obj_path(args, "final", "projDCCVT")
+    output_files = [output_file]
+    if skip_existing and os.path.exists(output_file):
         print(f"Skipping already processed mesh: {args.mesh}")
         return {
             "skipped": True,
@@ -65,20 +65,3 @@ def run_mesh(args: Any, *, skip_existing: bool = True) -> Dict[str, Any]:
         "output_dir": args.save_path,
         "elapsed": elapsed,
     }
-
-
-def run_single_mesh_experiment(arg_list: List[str]) -> None:
-    """Run a single mesh experiment from a parsed argv list."""
-    initialize_runtime()
-    args = parse_experiment_args(arg_list, defaults=config_utils.DEFAULTS)
-    try:
-        run_mesh(args, skip_existing=True)
-    except Exception as e:
-        print(f"Error processing mesh {args.mesh}: {e}")
-
-
-def expected_output_files(args: Any) -> List[str]:
-    state = "final"
-    outputs: List[str] = []
-    outputs.append(make_dccvt_obj_path(args, state, "projDCCVT"))
-    return outputs

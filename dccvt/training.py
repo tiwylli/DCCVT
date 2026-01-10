@@ -80,22 +80,6 @@ def _too_many_sites(sites: torch.Tensor, args: Any) -> bool:
     return len(sites) * 1.08 > args.max_amount_sites**3
 
 
-def _rebuild_optimizer(
-    sites: torch.Tensor,
-    sites_sdf: torch.Tensor,
-    *,
-    lr_sites: float,
-) -> Tuple[torch.optim.Optimizer, torch.Tensor]:
-    sites_sdf = sites_sdf.detach().requires_grad_(True)
-    optimizer = torch.optim.Adam(
-        [
-            {"params": [sites], "lr": lr_sites},
-            {"params": [sites_sdf], "lr": lr_sites},
-        ]
-    )
-    return optimizer, sites_sdf
-
-
 def _prepare_upsample_inputs(
     *,
     sites: torch.Tensor,
@@ -140,7 +124,7 @@ def _maybe_upsample(
         )
         upsampled = args.upsampling
         sites = sites.detach().requires_grad_(True)
-        optimizer, sites_sdf = _rebuild_optimizer(sites, sites_sdf, lr_sites=args.lr_sites)
+        optimizer, sites_sdf = _setup_optimizer(sites, sites_sdf, args.lr_sites)
         if d3dsimplices is None:
             d3dsimplices = compute_delaunay_simplices(sites)
         eps_H = estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 3).detach()
@@ -163,7 +147,7 @@ def _maybe_upsample(
     sites = sites.detach().requires_grad_(True)
 
     d3dsimplices = compute_delaunay_simplices(sites)
-    optimizer, sites_sdf = _rebuild_optimizer(sites, sites_sdf, lr_sites=args.lr_sites)
+    optimizer, sites_sdf = _setup_optimizer(sites, sites_sdf, args.lr_sites)
     eps_H = estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 5).detach()
     print("Estimated eps_H: ", eps_H)
     sites_sdf_grads = None

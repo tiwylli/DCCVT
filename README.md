@@ -6,7 +6,7 @@ GPU requirement: DCCVT relies on `pygdel3d` (gDel3D) for Delaunay tetrahedraliza
 
 ## Repository layout
 
-- `DCCVT.py`: main CLI entrypoint; requires `--args-file`.
+- `DCCVT.py`: main CLI entrypoint; supports argfile templates or direct per-mesh args.
 - `dccvt/`: core experiment logic (arg parsing, training, mesh extraction).
 - `argfiles/`: experiment templates; each line expands into a full CLI invocation.
 - `mesh/`: mesh datasets (`.obj` + `.ply`). `--mesh` expects a path without extension; the runner loads `<mesh>.ply`.
@@ -35,6 +35,20 @@ python DCCVT.py --args-file argfiles/DCCVT_figs_teaser.args --mesh-ids 313444 --
 ```
 
 ## Running experiments
+
+### CLI (direct args)
+
+```bash
+python DCCVT.py --mesh 313444 \
+  --trained_HotSpot hotspots_model/thingi32/313444.pth \
+  --output outputs/dev/313444 \
+  --num_iterations 50 --num_centroids 16 --sample_near 0 \
+  --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100
+```
+
+`--mesh` accepts either a mesh id (resolved relative to the default mesh root) or a full mesh path prefix.
+
+### CLI (args file)
 
 The entrypoint requires an args template file:
 
@@ -65,6 +79,23 @@ Notes:
 - Known placeholders (`{mesh}`, `{trained_HotSpot}`, `{output}`, etc.) resolve via defaults.
 - Unknown placeholders are left intact for manual post-processing.
 - Trailing `\` continues a line.
+- Values specified in the argfile override defaults.
+- When `--args-file` is used, per-mesh CLI flags are ignored in favor of the argfile line values.
+
+### Programmatic usage
+
+```python
+from dccvt import run_mesh_from_params
+
+run_mesh_from_params(
+    mesh="mesh/thingi32/313444",
+    trained_HotSpot="hotspots_model/thingi32/313444.pth",
+    output="outputs/dev/313444",
+    num_iterations=50,
+    num_centroids=16,
+    sample_near=0,
+)
+```
 
 ### Outputs and artifacts
 
@@ -72,8 +103,8 @@ By default, outputs go under `outputs/<timestamp>/`. The runner copies `DCCVT.py
 
 For each experiment line, `--output` (often `{output}{mesh_id}`) becomes the per-run folder. Output files include:
 
+- `DCCVT_<upsampling>_<state>_intDCCVT_cvt*_sdfsmooth*.obj` + `.npz`
 - `DCCVT_<upsampling>_<state>_projDCCVT_cvt*_sdfsmooth*.obj` + `.npz`
-- `voromesh_<num_centroids>_<state>_DCCVT_cvt*_sdfsmooth*.obj` + `.npz`
 - `target.ply` (sampled points)
 
 If all expected final outputs already exist, the runner skips that mesh. To force a re-run, delete the output folder or change `--timestamp`.
