@@ -12,12 +12,25 @@ from torch import nn
 from dccvt.device import device
 
 _HOTSPOT_PATH = Path(__file__).resolve().parents[1] / "3rdparty" / "HotSpot"
+_HOTSPOT_SAMPLES_SCALE = 150
 
 
 def _ensure_hotspot_on_path() -> None:
+    if not _HOTSPOT_PATH.exists():
+        raise FileNotFoundError(f"HotSpot dependency not found at {_HOTSPOT_PATH}")
     hotspot_path = str(_HOTSPOT_PATH)
     if hotspot_path not in sys.path:
         sys.path.append(hotspot_path)
+
+
+def _resolve_hotspot_inputs(mesh_path: str, hotspot_weights_path: str) -> Tuple[Path, Path]:
+    mesh_ply = Path(mesh_path).with_suffix(".ply")
+    weights_path = Path(hotspot_weights_path)
+    if not mesh_ply.exists():
+        raise FileNotFoundError(f"Mesh file not found: {mesh_ply}")
+    if not weights_path.exists():
+        raise FileNotFoundError(f"HotSpot weights not found: {weights_path}")
+    return mesh_ply, weights_path
 
 
 def _resolve_sdf_values_impl(model: Any, sites: torch.Tensor, *, verbose: bool = False) -> torch.Tensor:
@@ -44,6 +57,7 @@ def resolve_sdf_values(model: Any, sites: torch.Tensor, *, verbose: bool = False
 def load_hotspot_model(mesh_path: str, max_amount_sites: int, hotspot_weights_path: str) -> Tuple[nn.Module, torch.Tensor]:
     """Load a HotSpot model and return the model and manifold points."""
     _ensure_hotspot_on_path()
+    mesh_ply, weights_path = _resolve_hotspot_inputs(mesh_path, hotspot_weights_path)
     try:
         from dataset import shape_3d
         import models.Net as Net
@@ -52,20 +66,18 @@ def load_hotspot_model(mesh_path: str, max_amount_sites: int, hotspot_weights_pa
             f"HotSpot dependencies not found at {_HOTSPOT_PATH}. "
             "Ensure the 3rdparty/HotSpot subtree is available."
         ) from exc
-    loss_type = "igr_w_heat"
-    loss_weights = [350, 0, 0, 1, 0, 0, 20]
     train_set = shape_3d.ReconDataset(
-        file_path=mesh_path + ".ply",
-        n_points=max_amount_sites * max_amount_sites * 150,  # 15000, #args.n_points,
-        n_samples=10001,  # args.n_iterations,
-        grid_res=256,  # args.grid_res,
-        grid_range=1.1,  # args.grid_range,
-        sample_type="uniform_central_gaussian",  # args.nonmnfld_sample_type,
-        sampling_std=0.5,  # args.nonmnfld_sample_std,
-        n_random_samples=7500,  # args.n_random_samples,
+        file_path=str(mesh_ply),
+        n_points=max_amount_sites * max_amount_sites * _HOTSPOT_SAMPLES_SCALE,
+        n_samples=10001,
+        grid_res=256,
+        grid_range=1.1,
+        sample_type="uniform_central_gaussian",
+        sampling_std=0.5,
+        n_random_samples=7500,
         resample=True,
-        compute_sal_dist_gt=(True if "sal" in loss_type and loss_weights[5] > 0 else False),
-        scale_method="mean",  # "mean" #args.pcd_scale_method,
+        compute_sal_dist_gt=False,
+        scale_method="mean",
     )
     model = Net.Network(
         latent_size=0,  # args.latent_size,
@@ -86,11 +98,7 @@ def load_hotspot_model(mesh_path: str, max_amount_sites: int, hotspot_weights_pa
     test_data = next(iter(test_dataloader))
     mnfld_points = test_data["mnfld_points"].to(device)
     mnfld_points.requires_grad_()
-    if torch.cuda.is_available():
-        map_location = torch.device("cuda")
-    else:
-        map_location = torch.device("cpu")
-    model.load_state_dict(torch.load(hotspot_weights_path, weights_only=True, map_location=map_location))
+    model.load_state_dict(torch.load(weights_path, weights_only=True, map_location=device))
     return model, mnfld_points
 
 

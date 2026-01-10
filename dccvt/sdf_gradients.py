@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Tuple
 
-import numpy as np
 import torch
 
 
@@ -94,7 +93,7 @@ def smoothed_heaviside(phi: torch.Tensor, eps_H: torch.Tensor) -> torch.Tensor:
     phi_clip = phi[mask3]
     H[mask1] = 0
     H[mask2] = 1
-    H[mask3] = 0.5 + phi_clip / (2 * eps_H) + (1 / (2 * np.pi)) * torch.sin(np.pi * phi_clip / eps_H)
+    H[mask3] = 0.5 + phi_clip / (2 * eps_H) + (1 / (2 * torch.pi)) * torch.sin(torch.pi * phi_clip / eps_H)
     return H
 
 
@@ -115,20 +114,15 @@ def tet_sdf_motion_mean_curvature_loss(
     sdf_H_diff = sdf_H_stack - sdf_H_center  # (M, 4)
 
     grad_H_tet = torch.einsum("mi,mij->mj", sdf_H_diff, W)  # (M, 3)
-    grad_norm = grad_H_tet.norm(dim=1)  # (M, 1)
+    grad_norm = grad_H_tet.norm(dim=1)  # (M,)
 
     a = sites[tets[:, 0]]
     b = sites[tets[:, 1]]
     c = sites[tets[:, 2]]
     d = sites[tets[:, 3]]
     volume = volume_tetrahedron(a, b, c, d)  # (M,)
-    # trim 5% biggest volumes
-    volume = torch.where(volume > torch.quantile(volume, 0.95), torch.tensor(0.0, device=sites.device), volume)
-    penalties = torch.mean(volume * grad_norm)
-    # penalties = torch.mean(grad_norm)
-
-    # return torch.mean(volume * grad_norm)
-    return penalties
+    volume = _zero_top_quantile(volume, 0.95)
+    return torch.mean(volume * grad_norm)
 
 
 def discrete_tet_volume_eikonal_loss(
@@ -175,10 +169,12 @@ def estimate_eps_H(sites: torch.Tensor, tets: torch.Tensor, multiplier: float = 
     v1 = sites[edges[:, 1]]
     edge_lengths = torch.norm(v0 - v1, dim=1)
 
-    # remove top 5% longest edges
-    edge_lengths = torch.where(
-        edge_lengths > torch.quantile(edge_lengths, 0.95), torch.tensor(0.0, device=sites.device), edge_lengths
-    )
-
+    edge_lengths = _zero_top_quantile(edge_lengths, 0.95)
     avg_len = edge_lengths.mean()
     return multiplier * avg_len
+
+
+def _zero_top_quantile(values: torch.Tensor, q: float) -> torch.Tensor:
+    """Zero out values above the quantile threshold to reduce outlier influence."""
+    threshold = torch.quantile(values, q)
+    return torch.where(values > threshold, torch.zeros((), device=values.device), values)
