@@ -27,18 +27,6 @@ ERROR_SCALE = 1e5
 GT_DIR = DEFAULTS["mesh"]
 
 
-def rescale_hotspot(mesh_path):
-    # Function to rescale exactly how we optimize
-    mesh = trimesh.load(mesh_path)
-
-    points_gt, _ = trimesh.sample.sample_surface(mesh, 9600) # previous: (32**2)*150)
-    # center and scale point cloud
-    cp = points_gt.mean(axis=0)
-    points = points_gt - cp[None, :]
-    scale = np.percentile(np.linalg.norm(points, axis=-1), 70) / 0.45
-    scale = max(scale, np.abs(points).max())
-    return scale, points_gt / scale
-
 import re
 DIGIT_RUN = re.compile(r"(\d+)")
 def extract_key_from_dir(dirname: str) -> str:
@@ -73,10 +61,13 @@ if __name__ == "__main__":
         print(f"[WARN] GT mesh not found for key {key}, skipping {obj_path}")
         sys.exit(1)
 
+    scale, _ = su.rescale_hotspot(gt_obj)
 
     ps.init()
     print(f"Generate points... {key}")
     gt_pts, gt_normals, gt_mesh = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
+    gt_pts /= scale
+    gt_mesh.vertices /= scale
     obj_pts, obj_normals, obj_mesh = su.sample_points_on_mesh(obj_path, n_points=N_POINTS, GT=False)
     
     print("Compute scenes ... ")

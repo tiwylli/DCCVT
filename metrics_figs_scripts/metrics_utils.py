@@ -156,3 +156,15 @@ def chamfer_accuracy_completeness_f1_accel(
         cp_obj,
         cp_pts,
     )
+
+def rescale_hotspot(mesh_path):
+    # Function to rescale exactly how we optimize
+    mesh = trimesh.load(mesh_path)
+
+    points_gt, _ = trimesh.sample.sample_surface(mesh, 9600) # previous: (32**2)*150)
+    # center and scale point cloud
+    cp = points_gt.mean(axis=0)
+    points = points_gt - cp[None, :]
+    scale = np.percentile(np.linalg.norm(points, axis=-1), 70) / 0.45
+    scale = max(scale, np.abs(points).max())
+    return scale, points_gt / scale

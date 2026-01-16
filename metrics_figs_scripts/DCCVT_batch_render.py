@@ -49,19 +49,6 @@ def load_obj_vertices_faces(path):
     return vertices, faces
 
 
-def rescale_hotspot(mesh_path):
-    # Function to rescale exactly how we optimize
-    mesh = trimesh.load(mesh_path)
-
-    points_gt, _ = trimesh.sample.sample_surface(mesh, 9600)  # previous: (32**2)*150)
-    # center and scale point cloud
-    cp = points_gt.mean(axis=0)
-    points = points_gt - cp[None, :]
-    scale = np.percentile(np.linalg.norm(points, axis=-1), 70) / 0.45
-    scale = max(scale, np.abs(points).max())
-    return scale, points_gt / scale
-
-
 def obj2image(
     path,
     cam_position=np.array([1, -2, 0]),
@@ -77,7 +64,7 @@ def obj2image(
     # Trimesh without triangulate
     vertices, faces = load_obj_vertices_faces(path)
     if rescale:
-        scale, pc_target = rescale_hotspot(path)
+        scale, pc_target = su.rescale_hotspot(path)
         vertices /= scale
     else:
         pc_target = None
