@@ -1,7 +1,0 @@
-@mesh_ids : 64764
---mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth --output {output}{mesh_id}_b32_ups --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100 --upsampling 10
-
-
-#Ours with projected vertex interpolated sdf value should be 0 reg
-
-#Mtet with and without CVT

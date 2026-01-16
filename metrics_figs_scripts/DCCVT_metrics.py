@@ -156,6 +156,7 @@ def main():
                 gt_pts, gt_normals, gt_mesh = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
                 scale, _ = su.rescale_hotspot(gt_obj)
                 gt_pts /= scale
+                gt_mesh.vertices /= scale
                 gt_cache[key] = (gt_pts, gt_normals, gt_mesh)
             except Exception as e:
                 print(f"[ERROR] sampling GT for {gt_obj}: {e}")
