@@ -121,7 +121,6 @@ def list_obj_files(folder: str, include_final: bool = True, include_init: bool =
             out.append(os.path.join(folder, f))
     return out
 
-
 # ---------------------------
 # Main
 # ---------------------------
@@ -189,12 +188,14 @@ def main():
                         0.45,
                     )
                 )
+                hausdorff = su.hausdorff_distance(obj_pts, gt_cache[key][0])
                 cd2 = cd2 * ERROR_SCALE  # Scale the Chamfer distance
                 cd1 = cd1 * ERROR_SCALE  # Scale the Chamfer distance
                 completeness1 = completeness1 * ERROR_SCALE  # Scale the completeness
                 completeness2 = completeness2 * ERROR_SCALE  # Scale the completeness
                 accuracy1 = accuracy1 * ERROR_SCALE  # Scale the accuracy
                 accuracy2 = accuracy2 * ERROR_SCALE  # Scale the accuracy
+                hausdorff = hausdorff * ERROR_SCALE
 
                 fname = os.path.basename(obj_path)
                 label = f"{dname}_{os.path.splitext(fname)[0]}"
@@ -214,6 +215,7 @@ def main():
                         "completeness_2": float(completeness2),
                         "accuracy_1": float(accuracy1),
                         "accuracy_2": float(accuracy2),
+                        "hausdorff_distance": float(hausdorff),
                     }
                 )
             except Exception as e:
