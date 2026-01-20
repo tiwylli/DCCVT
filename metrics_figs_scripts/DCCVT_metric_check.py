@@ -63,7 +63,6 @@ if __name__ == "__main__":
 
     scale, _ = su.rescale_hotspot(gt_obj)
 
-    ps.init()
     print(f"Generate points... {key}")
     gt_pts, gt_normals, gt_mesh = su.sample_points_on_mesh(gt_obj, n_points=N_POINTS, GT=True)
     gt_pts /= scale
@@ -95,13 +94,17 @@ if __name__ == "__main__":
     cd1, cd2, f1, nc, recall, precision, completeness1, completeness2, accuracy1, accuracy2, cp_obj, cp_pts = (
         su.chamfer_accuracy_completeness_f1_accel(obj_pts, obj_normals, gt_pts, gt_normals, scenes=(gt_scene, scene_obj))
     )
+    hausdorff = su.hausdorff_distance(obj_pts, gt_pts, scenes=(gt_scene, scene_obj))
+    hausdorff = hausdorff * ERROR_SCALE
+    
     cd2 = cd2 * ERROR_SCALE  # Scale the Chamfer distance
     cd1 = cd1 * ERROR_SCALE  # Scale the Chamfer distance   
     completeness1 = completeness1 * ERROR_SCALE  # Scale the completeness
     completeness2 = completeness2 * ERROR_SCALE  # Scale the completeness
     accuracy1 = accuracy1 * ERROR_SCALE  # Scale the accuracy
     accuracy2 = accuracy2 * ERROR_SCALE  # Scale the accuracy
-    print(f"  CD: {cd2:.4f},\t F1: {f1:.4f},\t NC: {nc:.4f},\t Recall: {recall:.4f},\t Precision: {precision:.4f},\t Completeness2: {completeness2:.4f},\t Accuracy2: {accuracy2:.4f}")
+    
+    print(f"  CD: {cd2:.4f},\t F1: {f1:.4f},\t NC: {nc:.4f},\t Recall: {recall:.4f},\t Precision: {precision:.4f},\t Completeness2: {completeness2:.4f},\t Accuracy2: {accuracy2:.4f},\t Hausdorf: {hausdorff:.4f}")
 
     ps.init()
     ps.register_surface_mesh("GT Mesh", gt_mesh.vertices, gt_mesh.faces, enabled=True)

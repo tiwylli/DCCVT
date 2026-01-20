@@ -18,6 +18,7 @@ import polyscope as ps
 import torch
 import tqdm
 
+import fcpw
 import metrics_figs_scripts.metrics_utils as su
 import voronoiaccel
 from dccvt.argparse_utils import ROOT_DIR as DCCVT_ROOT
@@ -121,6 +122,17 @@ def list_obj_files(folder: str, include_final: bool = True, include_init: bool =
             out.append(os.path.join(folder, f))
     return out
 
+
+def build_fcpw_scene(mesh):
+    scene = fcpw.scene_3D()
+    scene.set_object_count(1)
+    scene.set_object_vertices(np.array(mesh.vertices), 0)
+    scene.set_object_triangles(np.array(mesh.faces), 0)
+    aggregate_type = fcpw.aggregate_type.bvh_surface_area
+    build_vectorized_bvh = True
+    scene.build(aggregate_type, build_vectorized_bvh)
+    return scene
+
 # ---------------------------
 # Main
 # ---------------------------
@@ -134,6 +146,7 @@ def main():
     OUT_CSV = os.path.join(EXPERIMENTS_DIR, "metrics.csv")  # keep filename as-is
 
     gt_cache = {}
+    gt_scene_cache = {}
     records = []
 
     subdirs = [d for d in os.listdir(EXPERIMENTS_DIR) if os.path.isdir(os.path.join(EXPERIMENTS_DIR, d))]
@@ -161,6 +174,8 @@ def main():
             except Exception as e:
                 print(f"[ERROR] sampling GT for {gt_obj}: {e}")
                 continue
+        if key not in gt_scene_cache:
+            gt_scene_cache[key] = build_fcpw_scene(gt_cache[key][2])
 
         final_or_init_objs = list_obj_files(
             folder_path, include_final=args.include_final, include_init=args.include_init
@@ -191,7 +206,10 @@ def main():
                         0.45,
                     )
                 )
-                hausdorff = su.hausdorff_distance(obj_pts, gt_cache[key][0])
+                obj_scene = build_fcpw_scene(obj_mesh)
+                hausdorff = su.hausdorff_distance(
+                    obj_pts, gt_cache[key][0], scenes=(gt_scene_cache[key], obj_scene)
+                )
                 cd2 = cd2 * ERROR_SCALE  # Scale the Chamfer distance
                 cd1 = cd1 * ERROR_SCALE  # Scale the Chamfer distance
                 completeness1 = completeness1 * ERROR_SCALE  # Scale the completeness
@@ -218,7 +236,7 @@ def main():
                         "completeness_2": float(completeness2),
                         "accuracy_1": float(accuracy1),
                         "accuracy_2": float(accuracy2),
-                        "hausdorff_distance": float(hausdorff),
+                        "hausdorff_distance_2": float(hausdorff),
                     }
                 )
             except Exception as e:

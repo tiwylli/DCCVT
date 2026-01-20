@@ -83,14 +83,24 @@ def chamfer_accuracy_completeness_f1(
     )
 
 
-def hausdorff_distance(obj_pts, gt_pts):
+def hausdorff_distance(obj_pts, gt_pts, *, scenes=None, max_radius: float | None = 0.45):
     obj_pts = np.asarray(obj_pts)
     gt_pts = np.asarray(gt_pts)
+    if scenes is not None:
+        gt_scene, obj_scene = scenes
+        cp_obj, _ = _closest_points_fcpw(gt_scene, obj_pts, max_radius)
+        cp_gt, _ = _closest_points_fcpw(obj_scene, gt_pts, max_radius)
+        dist2_obj = ((cp_obj - obj_pts) ** 2).sum(axis=1)
+        dist2_gt = ((cp_gt - gt_pts) ** 2).sum(axis=1)
+        return max(dist2_obj.max(), dist2_gt.max())
+
     gt_tree = cKDTree(gt_pts)
     obj_tree = cKDTree(obj_pts)
     dist_obj, _ = gt_tree.query(obj_pts)
     dist_gt, _ = obj_tree.query(gt_pts)
-    return max(dist_obj.max(), dist_gt.max())
+    dist2_obj = dist_obj**2
+    dist2_gt = dist_gt**2
+    return max(dist2_obj.max(), dist2_gt.max())
 
 
 def _closest_points_fcpw(scene, query_points, max_radius: float | None):
