@@ -1,8 +1,26 @@
-# DCCVT: Differentiable Clipped Centroidal Voronoi Tessellation
+<div align="center">
+<h1>DCCVT: Differentiable Clipped Centroidal Voronoi Tessellation</h1>
+
+[**Wylliam Cantin Charawi**](https://wylliamcantincharawi.dev)<sup>1</sup> &middot;
+[**Adrien Gruson**](https://profs.etsmtl.ca/agruson/)<sup>1</sup> &middot;
+[**Jane Wu**](https://janehwu.github.io/)<sup>2</sup> &middot;
+[**Christian Desrosiers**](https://www.etsmtl.ca/etudier-a-lets/corps-enseignant/cdesrosiers)<sup>1</sup> &middot;
+[**Diego Thomas**](https://diegothomas.github.io/DigitalHumans-lab/index.html)<sup>3</sup>
+
+<sup>1</sup>&Eacute;cole de Technologie Sup&eacute;rieure&emsp;&emsp;&emsp;<sup>2</sup>UC Berkeley&emsp;&emsp;&emsp;<sup>3</sup>Kyushu University
+<br>
+3DV 2026
+
+<a href="https://openreview.net/pdf?id=FZJuem8RSi"><img src="https://img.shields.io/badge/Paper-OpenReview-red" alt="Paper PDF"></a>
+<a href="https://arxiv.org/abs/2601.13603"><img src="https://img.shields.io/badge/arXiv-2601.13603-b31b1b" alt="arXiv"></a>
+<a href="https://github.com/tiwylli/DCCVT"><img src="https://img.shields.io/badge/Code-GitHub-black" alt="Code"></a>
+</div>
 
 This repo contains the DCCVT pipeline plus CUDA/native dependencies vendored as submodules. The notes below focus on the first-party code (everything outside `3rdparty/`).
 
 GPU requirement: DCCVT uses `pygdel3d` (gDel3D) for Delaunay tetrahedralization. gDel3D requires CUDA + `nvcc`, so CPU-only runs are not supported.
+
+![DCCVT banner](figures/DCCVT_banner.png)
 
 ## Repository layout
 
@@ -247,4 +265,24 @@ Offline / restricted-network variant for PyTorch3D:
 
 ```bash
 pip install -e 3rdparty/pytorch3d --no-build-isolation --no-deps
+```
+
+## Acknowledgements
+
+This work was supported by JSPS/KAKENHI JP23H03439 and AMED JP24wm0625404 at Kyushu University, and by the NSERC Discovery Grant RGPIN-2022-03182. J. W. was supported by NSF and UC President's Postdoctoral Fellowships.
+
+## Citation
+
+If you find this project useful, please consider citing:
+
+```bibtex
+@inproceedings{charawi20263dv,
+  author    = {Charawi, Wylliam Cantin and Gruson, Adrien and Wu, Jane and Desrosiers, Christian and Thomas, Diego},
+  title     = {DCCVT: Differentiable Clipped Centroidal Voronoi
+               Tessellation},
+  booktitle = {Proceedings of the 15th International Conference on 3D Vision (3DV)},
+  year      = {2026},
+  month     = {March},
+  address   = {Vancouver, BC, Canada}
+}
 ```
