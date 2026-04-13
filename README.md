@@ -20,7 +20,9 @@ This repo contains the DCCVT pipeline plus CUDA/native dependencies vendored as 
 
 GPU requirement: DCCVT uses `pygdel3d` (gDel3D) for Delaunay tetrahedralization. gDel3D requires CUDA + `nvcc`, so CPU-only runs are not supported.
 
-![DCCVT banner](figures/DCCVT_banner.png)
+<p align="center">
+  <img src="figures/DCCVT_banner.png" alt="DCCVT banner">
+</p>
 
 ## Repository layout
 
