@@ -1,0 +1,19 @@
+diff --git a/python_bindings/setup.py b/python_bindings/setup.py
+index d3bd3be..c796b8e 100644
+--- a/python_bindings/setup.py
++++ b/python_bindings/setup.py
+@@ -1,5 +1,6 @@
+ from pybind11.setup_helpers import build_ext
+ from setuptools import setup, Extension
++import pybind11
+ import subprocess
+ import shutil
+ import sys
+@@ -20,6 +21,7 @@ class CMakeBuildExt(build_ext):
+             str(Path.cwd()),  # Source directory
+             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={str(Path(self.build_lib).resolve())}",
+             f"-DPYTHON_EXECUTABLE={sys.executable}",
++            f"-Dpybind11_DIR={pybind11.get_cmake_dir()}",
+             "-DCMAKE_BUILD_TYPE=Release",
+         ]
+ 

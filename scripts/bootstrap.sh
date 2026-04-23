@@ -5,6 +5,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 VENV_DIR="${VENV_DIR:-$ROOT/.venv}"
 PYTHON_BIN="${PYTHON_BIN:-python3.12}"
+UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT/.uv-cache}"
+BOOTSTRAP_USER="${USER:-$(id -u 2>/dev/null || printf user)}"
+DCCVT_CACHE_DIR="${DCCVT_CACHE_DIR:-${TMPDIR:-/tmp}/dccvt-bootstrap-$BOOTSTRAP_USER}"
+PIP_CACHE_DIR="${PIP_CACHE_DIR:-$DCCVT_CACHE_DIR/pip}"
+DCCVT_TMPDIR="${DCCVT_TMPDIR:-$DCCVT_CACHE_DIR/tmp}"
+DCCVT_MIN_VENV_FREE_GB="${DCCVT_MIN_VENV_FREE_GB:-10}"
+DCCVT_MIN_CACHE_FREE_GB="${DCCVT_MIN_CACHE_FREE_GB:-20}"
 INSTALL_REQUIREMENTS=1
 INSTALL_TORCH=1
 INSTALL_OPEN3D_WHEEL=1
@@ -17,24 +24,30 @@ WITH_KAOLIN=1
 BUILD_JOBS="${BUILD_JOBS:-}"
 
 TORCH_VARIANT="${TORCH_VARIANT:-auto}" # auto|cu118|cu124|cu126
-TORCH_VERSION="${TORCH_VERSION:-2.7.1}"
-TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.22.1}"
+TORCH_VERSION="${TORCH_VERSION:-}"
+TORCHVISION_VERSION="${TORCHVISION_VERSION:-}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-}"
 OPEN3D_PACKAGE="${OPEN3D_PACKAGE:-open3d-cpu}"
 
 require_python_headers() {
   local py_bin="$1"
   local include_dir
+  local py_series
   include_dir="$("$py_bin" - <<'PY'
 import sysconfig
 print(sysconfig.get_config_var("INCLUDEPY") or sysconfig.get_path("include"))
+PY
+)"
+  py_series="$("$py_bin" - <<'PY'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
 PY
 )"
   if [[ -z "$include_dir" || ! -f "$include_dir/Python.h" ]]; then
     cat <<EOF >&2
 [bootstrap] Missing Python headers (Python.h).
 Install your system Python dev package, e.g.:
-  sudo apt-get install python3.12-dev
+  sudo apt-get install python${py_series}-dev
 Then re-run: pip install -e accel
 EOF
     exit 1
@@ -53,6 +66,165 @@ require_cmd() {
   fi
 }
 
+venv_python_path() {
+  printf '%s\n' "$VENV_DIR/bin/python"
+}
+
+venv_has_pip() {
+  local venv_py
+  venv_py="$(venv_python_path)"
+  [[ -x "$venv_py" ]] && "$venv_py" -m pip --version >/dev/null 2>&1
+}
+
+uv_available() {
+  command -v uv >/dev/null 2>&1
+}
+
+run_uv() {
+  uv --cache-dir "$UV_CACHE_DIR" "$@"
+}
+
+available_kb_for_path() {
+  local path="$1"
+  local probe="$path"
+  if [[ ! -e "$probe" ]]; then
+    probe="$(dirname "$probe")"
+  fi
+  while [[ ! -e "$probe" && "$probe" != "/" ]]; do
+    probe="$(dirname "$probe")"
+  done
+  df -Pk "$probe" | awk 'NR == 2 { print $4 }'
+}
+
+warn_free_space() {
+  local label="$1"
+  local path="$2"
+  local min_gb="$3"
+  local avail_kb
+  local avail_gb
+
+  if ! [[ "$min_gb" =~ ^[0-9]+$ ]] || (( min_gb <= 0 )); then
+    return 0
+  fi
+
+  avail_kb="$(available_kb_for_path "$path" 2>/dev/null || true)"
+  if [[ -z "$avail_kb" ]]; then
+    return 0
+  fi
+
+  avail_gb=$((avail_kb / 1024 / 1024))
+  if (( avail_kb < min_gb * 1024 * 1024 )); then
+    echo "[bootstrap] Warning: $label has about ${avail_gb}G free; CUDA wheel installs may need ${min_gb}G+." >&2
+    echo "[bootstrap] To use another filesystem, set VENV_DIR, DCCVT_CACHE_DIR, PIP_CACHE_DIR, or DCCVT_TMPDIR." >&2
+  fi
+}
+
+configure_pip_storage() {
+  mkdir -p "$PIP_CACHE_DIR" "$DCCVT_TMPDIR"
+  export PIP_CACHE_DIR
+  export TMPDIR="$DCCVT_TMPDIR"
+  echo "[bootstrap] Using pip cache: $PIP_CACHE_DIR"
+  echo "[bootstrap] Using temp dir: $TMPDIR"
+}
+
+torch_version_pair_for_variant() {
+  local variant="$1"
+  case "$variant" in
+    cu118|cu126)
+      printf '%s %s\n' "2.7.1" "0.22.1"
+      ;;
+    cu124)
+      printf '%s %s\n' "2.6.0" "0.21.0"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+uv_python_request() {
+  case "$PYTHON_BIN" in
+    python[0-9]*)
+      printf '%s\n' "${PYTHON_BIN#python}"
+      ;;
+    *)
+      printf '%s\n' "$PYTHON_BIN"
+      ;;
+  esac
+}
+
+ensure_pip_tool() {
+  local cmd="$1"
+  local package="${2:-$1}"
+
+  if command -v "$cmd" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ $OFFLINE -eq 1 ]]; then
+    echo "[bootstrap] Missing dependency: $cmd" >&2
+    echo "[bootstrap] Offline mode is enabled, so $package cannot be installed automatically." >&2
+    exit 1
+  fi
+
+  echo "[bootstrap] Installing build tool into the venv: $package"
+  $PIP install -U "$package"
+
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "[bootstrap] Failed to provision $cmd via pip package $package." >&2
+    exit 1
+  fi
+}
+
+create_venv() {
+  local stderr_log
+  stderr_log="$(mktemp)"
+
+  echo "[bootstrap] Creating venv at: $VENV_DIR"
+  echo "[bootstrap] Preferred Python: $PYTHON_BIN"
+
+  if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+    if "$PYTHON_BIN" -m venv "$VENV_DIR" 2>"$stderr_log"; then
+      rm -f "$stderr_log"
+      return 0
+    fi
+  else
+    printf 'Python executable not found on PATH: %s\n' "$PYTHON_BIN" >"$stderr_log"
+  fi
+
+  local system_error
+  system_error="$(cat "$stderr_log")"
+  rm -f "$stderr_log"
+
+  if uv_available; then
+    local uv_python
+    local -a uv_args
+    uv_python="$(uv_python_request)"
+    uv_args=(venv --seed --python "$uv_python" "$VENV_DIR")
+    mkdir -p "$UV_CACHE_DIR"
+    echo "[bootstrap] Falling back to uv-managed Python/venv creation."
+    echo "[bootstrap] Using uv cache: $UV_CACHE_DIR"
+    rm -rf "$VENV_DIR"
+    if [[ $OFFLINE -eq 1 ]]; then
+      uv_args=(venv --seed --offline --no-python-downloads --python "$uv_python" "$VENV_DIR")
+    fi
+    if run_uv "${uv_args[@]}"; then
+      return 0
+    fi
+    echo "[bootstrap] uv fallback failed." >&2
+  fi
+
+  printf '%s\n' "$system_error" >&2
+  cat <<EOF >&2
+[bootstrap] Could not create a Python 3.12 virtual environment automatically.
+Either install a working Python 3.12 with venv support, or install uv so bootstrap can provision one.
+Examples:
+  sudo apt-get install python3.12 python3.12-venv python3.12-dev
+  pipx install uv
+EOF
+  exit 1
+}
+
 usage() {
   cat <<'EOF'
 Usage: bash scripts/bootstrap.sh [options]
@@ -61,15 +233,15 @@ Creates/uses a venv, installs base deps (including PyTorch), updates git submodu
 
 Options:
   --venv <dir>            venv directory (default: .venv)
-  --python <exe>          python executable to create venv (default: python3.12)
+  --python <exe|request>  preferred Python for the venv (default: python3.12)
   --skip-torch            do not install torch/torchvision
   --skip-requirements     do not run `pip install -r requirements.txt`
   --skip-open3d-wheel     do not install an Open3D wheel
   --offline               imply `--skip-requirements` and use `pip --no-deps` for local installs
 
   --torch <variant>       one of: auto, cu118, cu124, cu126 (default: auto)
-  --torch-version <ver>   torch version (default: 2.7.1)
-  --torchvision-version <ver> torchvision version (default: 0.22.1)
+  --torch-version <ver>   torch version override (default depends on CUDA variant)
+  --torchvision-version <ver> torchvision version override (default depends on CUDA variant)
   --open3d-package <pkg>  wheel name (default: open3d-cpu)
 
   --with-gdel3d           install `pygdel3d` (requires nvcc / CUDA toolchain)
@@ -80,9 +252,15 @@ Options:
 
 Environment variables:
   VENV_DIR, PYTHON_BIN    override defaults (same as options)
+  UV_CACHE_DIR            cache dir for uv fallback (default: .uv-cache)
+  DCCVT_CACHE_DIR         base dir for bootstrap scratch/cache (default: /tmp/dccvt-bootstrap-$USER)
+  PIP_CACHE_DIR           pip wheel/http cache dir (default: $DCCVT_CACHE_DIR/pip)
+  DCCVT_TMPDIR            pip temp/unpack dir (default: $DCCVT_CACHE_DIR/tmp)
+  DCCVT_MIN_VENV_FREE_GB  warning threshold for the venv filesystem (default: 10)
+  DCCVT_MIN_CACHE_FREE_GB warning threshold for pip cache/temp filesystem (default: 20)
   TORCH_VARIANT           override --torch (auto/cu118/cu124/cu126)
-  TORCH_VERSION           override --torch-version
-  TORCHVISION_VERSION     override --torchvision-version
+  TORCH_VERSION           override auto-selected torch version
+  TORCHVISION_VERSION     override auto-selected torchvision version
   TORCH_INDEX_URL         override computed index URL (e.g. https://download.pytorch.org/whl/cu126)
   OPEN3D_PACKAGE          override --open3d-package
   BUILD_JOBS              override --jobs
@@ -211,6 +389,8 @@ if [[ -n "$BUILD_JOBS" ]]; then
   fi
 fi
 
+configure_pip_storage
+
 echo "[bootstrap] Updating submodules..."
 git -C "$ROOT" submodule update --init --recursive
 
@@ -305,14 +485,28 @@ ensure_cuda_env() {
   fi
 }
 
-if [[ ! -d "$VENV_DIR" ]]; then
-  if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-    echo "Python executable not found: $PYTHON_BIN" >&2
-    echo "Set PYTHON_BIN or pass --python (e.g. --python python3.12)" >&2
-    exit 1
+repair_torch_python_deps() {
+  if [[ $INSTALL_TORCH -ne 1 || $OFFLINE -eq 1 ]]; then
+    return 0
   fi
-  echo "[bootstrap] Creating venv at: $VENV_DIR"
-  "$PYTHON_BIN" -m venv "$VENV_DIR"
+  if ! "$VENV_PY" -c "import torch" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  case "$TORCH_VERSION" in
+    2.6.0*)
+      echo "[bootstrap] Restoring torch 2.6 dependency pin: sympy==1.13.1"
+      $PIP install "sympy==1.13.1"
+      ;;
+  esac
+}
+
+if ! venv_has_pip; then
+  if [[ -e "$VENV_DIR" ]]; then
+    echo "[bootstrap] Removing incomplete virtual environment at: $VENV_DIR"
+    rm -rf "$VENV_DIR"
+  fi
+  create_venv
 fi
 
 VENV_PY="$VENV_DIR/bin/python"
@@ -326,11 +520,11 @@ if [[ $INSTALL_TORCH -eq 1 ]]; then
   if [[ $OFFLINE -eq 1 ]]; then
     echo "[bootstrap] Skipping torch install (offline mode)."
   else
+    torch_variant_resolved="$TORCH_VARIANT"
+    if [[ "$torch_variant_resolved" == "auto" ]]; then
+      torch_variant_resolved="$(detect_torch_variant)" || true
+    fi
     if [[ -z "$TORCH_INDEX_URL" ]]; then
-      torch_variant_resolved="$TORCH_VARIANT"
-      if [[ "$torch_variant_resolved" == "auto" ]]; then
-        torch_variant_resolved="$(detect_torch_variant)" || true
-      fi
       if [[ -z "$torch_variant_resolved" ]]; then
         echo "[bootstrap] Could not determine CUDA version for torch." >&2
         echo "Pass --torch cu118|cu124|cu126 or set TORCH_VARIANT." >&2
@@ -338,7 +532,24 @@ if [[ $INSTALL_TORCH -eq 1 ]]; then
       fi
       TORCH_INDEX_URL="$(torch_index_url_for_variant "$torch_variant_resolved")"
     fi
+    if [[ -z "$TORCH_VERSION" || -z "$TORCHVISION_VERSION" ]]; then
+      if [[ -z "$torch_variant_resolved" ]]; then
+        echo "[bootstrap] Could not infer default torch versions from TORCH_INDEX_URL alone." >&2
+        echo "Set TORCH_VARIANT, TORCH_VERSION, and TORCHVISION_VERSION explicitly." >&2
+        exit 1
+      fi
+      read -r torch_version_default torchvision_version_default < <(torch_version_pair_for_variant "$torch_variant_resolved")
+      if [[ -z "$TORCH_VERSION" ]]; then
+        TORCH_VERSION="$torch_version_default"
+      fi
+      if [[ -z "$TORCHVISION_VERSION" ]]; then
+        TORCHVISION_VERSION="$torchvision_version_default"
+      fi
+    fi
+    echo "[bootstrap] Resolved torch variant: $torch_variant_resolved"
     echo "[bootstrap] Installing torch==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION} from: $TORCH_INDEX_URL"
+    warn_free_space "venv filesystem ($VENV_DIR)" "$VENV_DIR" "$DCCVT_MIN_VENV_FREE_GB"
+    warn_free_space "pip cache/temp filesystem ($TMPDIR)" "$TMPDIR" "$DCCVT_MIN_CACHE_FREE_GB"
     $PIP install --index-url "$TORCH_INDEX_URL" "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}"
   fi
 else
@@ -348,6 +559,7 @@ fi
 if [[ $INSTALL_REQUIREMENTS -eq 1 ]]; then
   echo "[bootstrap] Installing requirements.txt..."
   $PIP install -r "$ROOT/requirements.txt"
+  repair_torch_python_deps
 else
   echo "[bootstrap] Skipping requirements.txt install."
 fi
@@ -374,6 +586,7 @@ fi
 if [[ $WITH_ACCEL -eq 1 ]]; then
   echo "[bootstrap] Installing accel (voronoiaccel)..."
   require_python_headers "$VENV_PY"
+  ensure_pip_tool cmake
   $PIP install -e "$ROOT/accel" "${PIP_LOCAL_FLAGS[@]}"
 fi
 
@@ -381,7 +594,7 @@ if [[ $WITH_GDEL3D -eq 1 ]]; then
   if ! command -v nvcc >/dev/null 2>&1; then
     echo "[bootstrap] Skipping gDel3D: nvcc not found in PATH."
   else
-    require_cmd cmake "Install cmake (e.g. sudo apt-get install cmake) or ensure it's in PATH."
+    ensure_pip_tool cmake
     echo "[bootstrap] Installing gDel3D python bindings (pygdel3d)..."
     # gDel3D's pyproject.toml does not declare cmake; avoid build isolation.
     $PIP install -e "$ROOT/3rdparty/gDel3D/python_bindings" --no-build-isolation "${PIP_LOCAL_FLAGS[@]}"
@@ -406,7 +619,7 @@ if [[ $WITH_KAOLIN -eq 1 ]]; then
     echo "[bootstrap] Installing kaolin..."
     ensure_cuda_env
     # kaolin's setup.py imports torch during build.
-    $PIP install -e "$ROOT/3rdparty/kaolin" --no-build-isolation "${PIP_LOCAL_FLAGS[@]}"
+    $PIP install -e "$ROOT/3rdparty/kaolin" --no-build-isolation --no-deps "${PIP_LOCAL_FLAGS[@]}"
   fi
 fi
 

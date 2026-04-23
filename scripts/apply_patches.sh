@@ -29,6 +29,8 @@ apply_patch() {
 git -C "$ROOT" submodule update --init --recursive
 
 apply_patch "$ROOT/3rdparty/gDel3D" "$ROOT/3rdparty/gDel3D_cuda13_clockrate.patch"
+apply_patch "$ROOT/3rdparty/gDel3D" "$ROOT/3rdparty/gDel3D_pybind11_cmake.patch"
 apply_patch "$ROOT/3rdparty/pytorch3d" "$ROOT/3rdparty/pytorch3d.patch"
 apply_patch "$ROOT/3rdparty/kaolin" "$ROOT/3rdparty/kaolin.patch"
+apply_patch "$ROOT/3rdparty/kaolin" "$ROOT/3rdparty/kaolin_pkg_resources.patch"
 apply_patch "$ROOT/3rdparty/open3d" "$ROOT/3rdparty/open3d.patch"

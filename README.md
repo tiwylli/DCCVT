@@ -47,6 +47,13 @@ python DCCVT.py --args-file argfiles/DCCVT_figs_teaser.args --mesh-ids 313444
 ```
 
 CPU-only installs are not supported because `pygdel3d` requires CUDA.
+Bootstrap targets Python 3.12 by default and will use either a system `python3.12` or a `uv`-managed Python 3.12 when available.
+Bootstrap also auto-selects a compatible PyTorch pair for the chosen CUDA wheel index; for example, `cu124` resolves to PyTorch `2.6.0` / torchvision `0.21.0`, while `cu126` resolves to `2.7.1` / `0.22.1`.
+Large CUDA wheels are unpacked through pip's cache/temp directories. Bootstrap defaults those to `/tmp/dccvt-bootstrap-$USER`; if your home quota is tight, also move the venv to scratch space:
+
+```bash
+VENV_DIR=/tmp/dccvt-venv bash scripts/bootstrap.sh --torch cu124
+```
 
 Dry-run the arg expansion without running experiments:
 
@@ -199,6 +206,9 @@ Notes:
 
 - `DCCVT_ROOT`: override the root used for default paths (`mesh/`, `outputs/`, `hotspots_model/`).
 - `DCCVT_DEVICE`: force device selection (`cpu`, `cuda:0`, etc.).
+- `DCCVT_CACHE_DIR`: bootstrap scratch/cache base directory (default: `/tmp/dccvt-bootstrap-$USER`).
+- `PIP_CACHE_DIR`: pip wheel/http cache directory (default: `$DCCVT_CACHE_DIR/pip`).
+- `DCCVT_TMPDIR`: pip temporary unpack/build directory (default: `$DCCVT_CACHE_DIR/tmp`).
 
 `scripts/bootstrap.sh --help` lists additional knobs (torch variant, Open3D package, build jobs).
 
@@ -207,7 +217,7 @@ Notes:
 ### 0) Prerequisites
 
 - Linux
-- Python `3.12.x`
+- Python `3.12.x` or `uv` (bootstrap can provision a Python 3.12 venv through `uv`)
 - Build tools for native extensions: `git`, a C/C++ compiler, `cmake`, `ninja`
 - Python headers
 - NVIDIA GPU with a working CUDA toolkit + driver (including `nvcc`)
@@ -233,12 +243,25 @@ source .venv/bin/activate
 python -m pip install -U pip setuptools wheel
 ```
 
+If you prefer `uv`:
+
+```bash
+uv venv --python 3.12 --seed .venv
+source .venv/bin/activate
+```
+
 ### 3) Install PyTorch first
 
 CUDA 12.6 example:
 
 ```bash
 pip install --index-url https://download.pytorch.org/whl/cu126 torch==2.7.1 torchvision==0.22.1
+```
+
+CUDA 12.4 example:
+
+```bash
+pip install --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0 torchvision==0.21.0
 ```
 
 ### 4) Install Python dependencies

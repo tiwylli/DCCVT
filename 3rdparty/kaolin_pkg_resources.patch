@@ -1,0 +1,22 @@
+diff --git a/setup.py b/setup.py
+index d871ed8..0453efe 100644
+--- a/setup.py
++++ b/setup.py
+@@ -9,7 +9,7 @@
+ import os
+ from setuptools import setup, find_packages
+ import importlib
+-from pkg_resources import parse_version
++from packaging.version import parse as parse_version
+ import warnings
+ import logging
+ import glob
+@@ -48,7 +48,7 @@ else:
+             )
+ 
+ # Check for Cython
+-cython_spec = importlib.util.find_spec("cython")
++cython_spec = importlib.util.find_spec("Cython")
+ if cython_spec is None:
+     raise ImportError(
+         f"Kaolin requires Cython >= {CYTHON_MIN_VER}. Please install it before proceeding."
