@@ -50,3 +50,4 @@ accel/build/
 accel/voronoiaccel.egg-info/
 .DS_Store
 build/
+*.pyc

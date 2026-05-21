@@ -28,7 +28,9 @@ GPU requirement: DCCVT uses `pygdel3d` (gDel3D) for Delaunay tetrahedralization.
 
 - `DCCVT.py`: main CLI entrypoint.
 - `dccvt/`: core library (arg parsing, training, mesh extraction).
+- `dccvt/neural/`: first neural prototype for predicting DCCVT sites and site SDF values from point clouds.
 - `argfiles/`: experiment templates (argfile format).
+- `docs/`: design notes and extended workflow documentation.
 - `mesh/`: mesh datasets (`.ply` + `.obj`), loaded via mesh path prefix.
 - `hotspots_model/`: pretrained HotSpot weights referenced by `--trained_HotSpot`.
 - `outputs/`: default output root for generated meshes.
@@ -69,7 +71,7 @@ python DCCVT.py --args-file argfiles/DCCVT_figs_teaser.args --mesh-ids 313444 --
 python DCCVT.py --mesh 313444 \
   --trained_HotSpot hotspots_model/thingi32/313444.pth \
   --output outputs/dev/313444 \
-  --num_iterations 50 --num_centroids 16 --sample_near 0 \
+  --num_iterations 50 --num_centroids 32 --sample_near 0 \
   --w_chamfer 1000 --w_cvt 100 --w_sdfsmooth 100
 ```
 
@@ -119,7 +121,7 @@ run_mesh_from_params(
     trained_HotSpot="hotspots_model/thingi32/313444.pth",
     output="outputs/dev/313444",
     num_iterations=50,
-    num_centroids=16,
+    num_centroids=32,
     sample_near=0,
 )
 ```
@@ -136,7 +138,7 @@ args = parse_experiment_args(
         "--trained_HotSpot", "hotspots_model/thingi32/313444.pth",
         "--output", "outputs/dev/313444",
         "--num_iterations", "50",
-        "--num_centroids", "16",
+        "--num_centroids", "32",
     ]
 )
 run_mesh(args)
@@ -157,7 +159,7 @@ Each non-comment line is a CLI template; placeholders are filled using defaults 
 ```text
 @mesh_ids : 313444 441708
 --mesh {mesh}{mesh_id} --trained_HotSpot {trained_HotSpot}thingi32/{mesh_id}.pth \
-  --output {output}{mesh_id} --w_chamfer 1000 --w_cvt 100 --num_centroids 16
+  --output {output}{mesh_id} --w_chamfer 1000 --w_cvt 100 --num_centroids 32
 ```
 
 Notes:
@@ -178,6 +180,25 @@ Generated files include:
 - `target.ply` (sampled points)
 
 If the final `projDCCVT` mesh already exists, the runner skips that mesh.
+
+## Neural prototype
+
+This repository includes an experimental point-cloud neural baseline that predicts fixed-size DCCVT generators:
+
+```text
+point cloud -> neural model -> sites + sites_sdf -> DCCVT mesh extraction
+```
+
+The prototype is documented in [docs/neural_prototype.md](docs/neural_prototype.md). The main scripts are:
+
+```bash
+python scripts/generate_neural_labels.py --mesh-ids 313444,441708,64764 --num-centroids 32
+python scripts/train_dccvt_neural.py --label-root outputs/neural_labels/n32 --epochs 50
+python scripts/infer_dccvt_neural.py \
+  --checkpoint outputs/neural_runs/pointnet_n32/best.pt \
+  --point-cloud mesh/thingi32/313444.ply \
+  --output-dir outputs/neural_pred/313444
+```
 
 ## Metrics and renders
 
@@ -311,3 +332,6 @@ If you find this project useful, please consider citing:
   address   = {Vancouver, BC, Canada}
 }
 ```
+
+# On livia server, venv is saved at :
+source /tmp/dccvt-venv/bin/activate
