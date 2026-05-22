@@ -64,6 +64,17 @@ def _sdf_summary(sdf: np.ndarray) -> str:
     return f"min={sdf.min():.6f} max={sdf.max():.6f} neg={neg} zero={zero} pos={pos}"
 
 
+def _symmetric_sdf_range(sdf: np.ndarray) -> tuple[float, float]:
+    finite = sdf[np.isfinite(sdf)]
+    if finite.size == 0:
+        return -1.0, 1.0
+
+    scale = float(np.max(np.abs(finite)))
+    if scale <= 0.0 or not np.isfinite(scale):
+        return -1.0, 1.0
+    return -scale, scale
+
+
 def _print_discovered(root: Path, npz_files: Iterable[Path], obj_files: Iterable[Path]) -> None:
     print(f"folder: {root}")
     for path in npz_files:
@@ -100,7 +111,13 @@ def _show_polyscope(
             print(f"[npz:skip] {path}: {exc}")
             continue
         cloud = ps.register_point_cloud(f"{name}::sites", sites, radius=point_radius, enabled=points_enabled)
-        cloud.add_scalar_quantity("sites_sdf", sites_sdf, enabled=True)
+        cloud.add_scalar_quantity(
+            "sites_sdf",
+            sites_sdf,
+            enabled=True,
+            cmap="coolwarm",
+            vminmax=_symmetric_sdf_range(sites_sdf),
+        )
         print(f"[npz] {name} sites={sites.shape} {_sdf_summary(sites_sdf)}")
 
     for path in obj_files:
