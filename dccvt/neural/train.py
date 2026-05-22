@@ -30,6 +30,7 @@ class TrainConfig:
     val_fraction: float = 0.2
     offset_reg_weight: float = 1e-4
     sign_loss_weight: float = 0.1
+    target: str = "sites_sdf"
     seed: int = 0
     device: str = "auto"
     num_workers: int = 0
@@ -71,6 +72,7 @@ def _run_epoch(
     optimizer: Optional[torch.optim.Optimizer],
     offset_reg_weight: float,
     sign_loss_weight: float,
+    target: str,
 ) -> dict:
     is_train = optimizer is not None
     model.train(is_train)
@@ -89,14 +91,19 @@ def _run_epoch(
         for batch in loader:
             points = batch["points"].to(device=device, dtype=torch.float32)
             target_sites = batch["target_sites"].to(device=device, dtype=torch.float32)
-            target_sdf = batch["target_sdf"].to(device=device, dtype=torch.float32)
 
             pred = model(points)
             site_loss = criterion(pred["sites"], target_sites)
-            sdf_loss = criterion(pred["sites_sdf"], target_sdf)
-            sign_loss = _balanced_sign_loss(pred["sites_sdf"], target_sdf)
             offset_reg = pred["offsets"].pow(2).mean()
-            loss = site_loss + sdf_loss + sign_loss_weight * sign_loss + offset_reg_weight * offset_reg
+            if target == "sites":
+                sdf_loss = pred["sites_sdf"].new_zeros(())
+                sign_loss = pred["sites_sdf"].new_zeros(())
+                loss = site_loss + offset_reg_weight * offset_reg
+            else:
+                target_sdf = batch["target_sdf"].to(device=device, dtype=torch.float32)
+                sdf_loss = criterion(pred["sites_sdf"], target_sdf)
+                sign_loss = _balanced_sign_loss(pred["sites_sdf"], target_sdf)
+                loss = site_loss + sdf_loss + sign_loss_weight * sign_loss + offset_reg_weight * offset_reg
 
             if is_train:
                 optimizer.zero_grad(set_to_none=True)
@@ -104,10 +111,14 @@ def _run_epoch(
                 optimizer.step()
 
             with torch.no_grad():
-                pred_inside = pred["sites_sdf"] < 0
-                target_inside = target_sdf < 0
-                sign_acc = (pred_inside == target_inside).float().mean()
-                pred_neg_frac = pred_inside.float().mean()
+                if target == "sites":
+                    sign_acc = pred["sites_sdf"].new_zeros(())
+                    pred_neg_frac = pred["sites_sdf"].new_zeros(())
+                else:
+                    pred_inside = pred["sites_sdf"] < 0
+                    target_inside = target_sdf < 0
+                    sign_acc = (pred_inside == target_inside).float().mean()
+                    pred_neg_frac = pred_inside.float().mean()
 
             batch_size = points.shape[0]
             totals["loss"] += loss.item() * batch_size
@@ -168,6 +179,8 @@ def save_checkpoint(
 def train_model(config: TrainConfig) -> Path:
     torch.manual_seed(config.seed)
     device = _resolve_device(config.device)
+    if config.target not in {"sites", "sites_sdf"}:
+        raise ValueError(f"Unsupported training target: {config.target!r}")
 
     mesh_ids = config.mesh_ids
     if mesh_ids is None:
@@ -206,6 +219,7 @@ def train_model(config: TrainConfig) -> Path:
             optimizer=optimizer,
             offset_reg_weight=config.offset_reg_weight,
             sign_loss_weight=config.sign_loss_weight,
+            target=config.target,
         )
         val_metrics = None
         score = train_metrics["loss"]
@@ -218,18 +232,28 @@ def train_model(config: TrainConfig) -> Path:
                 optimizer=None,
                 offset_reg_weight=config.offset_reg_weight,
                 sign_loss_weight=config.sign_loss_weight,
+                target=config.target,
             )
             score = val_metrics["loss"]
 
-        print(
-            f"epoch {epoch:04d} "
-            f"train_loss={train_metrics['loss']:.6f} "
-            f"train_sites={train_metrics['site_loss']:.6f} "
-            f"train_sdf={train_metrics['sdf_loss']:.6f} "
-            f"train_sign={train_metrics['sign_loss']:.6f} "
-            f"train_neg={train_metrics['pred_neg_frac']:.4f}"
-            + (f" val_loss={val_metrics['loss']:.6f}" if val_metrics else "")
-        )
+        if config.target == "sites":
+            print(
+                f"epoch {epoch:04d} "
+                f"train_loss={train_metrics['loss']:.6f} "
+                f"train_sites={train_metrics['site_loss']:.6f} "
+                f"train_offset={train_metrics['offset_reg']:.6f}"
+                + (f" val_loss={val_metrics['loss']:.6f}" if val_metrics else "")
+            )
+        else:
+            print(
+                f"epoch {epoch:04d} "
+                f"train_loss={train_metrics['loss']:.6f} "
+                f"train_sites={train_metrics['site_loss']:.6f} "
+                f"train_sdf={train_metrics['sdf_loss']:.6f} "
+                f"train_sign={train_metrics['sign_loss']:.6f} "
+                f"train_neg={train_metrics['pred_neg_frac']:.4f}"
+                + (f" val_loss={val_metrics['loss']:.6f}" if val_metrics else "")
+            )
 
         save_checkpoint(
             latest_path,
@@ -278,6 +302,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-fraction", type=float, default=TrainConfig.val_fraction)
     parser.add_argument("--offset-reg-weight", type=float, default=TrainConfig.offset_reg_weight)
     parser.add_argument("--sign-loss-weight", type=float, default=TrainConfig.sign_loss_weight)
+    parser.add_argument(
+        "--target",
+        choices=("sites", "sites_sdf"),
+        default=TrainConfig.target,
+        help="Training target. Use `sites` to skip SDF regression/sign losses.",
+    )
     parser.add_argument("--seed", type=int, default=TrainConfig.seed)
     parser.add_argument("--device", default=TrainConfig.device)
     parser.add_argument("--num-workers", type=int, default=TrainConfig.num_workers)
@@ -300,6 +330,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         val_fraction=args.val_fraction,
         offset_reg_weight=args.offset_reg_weight,
         sign_loss_weight=args.sign_loss_weight,
+        target=args.target,
         seed=args.seed,
         device=args.device,
         num_workers=args.num_workers,

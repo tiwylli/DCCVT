@@ -78,6 +78,21 @@ outputs/neural_runs/pointnet_n32/
 
 The checkpoint stores the model weights, optimizer state, model config, training config, and mesh ids used for training.
 
+For a controlled site-prediction experiment, train only the site head:
+
+```bash
+python scripts/train_dccvt_neural.py \
+  --label-root outputs/neural_labels/n32 \
+  --mesh-ids 72960 \
+  --output-dir outputs/neural_runs/overfit_72960_sites \
+  --epochs 500 \
+  --batch-size 1 \
+  --lr 3e-4 \
+  --target sites
+```
+
+`--target sites` keeps the same model output shape, but the loss only optimizes predicted site positions and the offset regularizer. It intentionally skips SDF regression and sign loss.
+
 ### 3. Infer and Extract
 
 Run prediction and DCCVT extraction:
@@ -98,6 +113,20 @@ DCCVT_0_pred_projDCCVT_cvt0_sdfsmooth0.obj
 DCCVT_0_pred_projDCCVT_cvt0_sdfsmooth0.npz
 target.ply
 ```
+
+For sites-only checkpoints, use HotSpot to evaluate SDF values at the predicted sites:
+
+```bash
+python scripts/infer_dccvt_neural.py \
+  --checkpoint outputs/neural_runs/overfit_72960_sites/best.pt \
+  --point-cloud outputs/neural_labels/n32/72960/target.ply \
+  --output-dir outputs/neural_pred/overfit_72960_sites_hotspot \
+  --sdf-source hotspot \
+  --mesh mesh/thingi32/72960.ply \
+  --hotspot hotspots_model/thingi32/72960.pth
+```
+
+In this mode, the neural model supplies only the site positions used for extraction. The SDF values come from the same HotSpot model family used by the original DCCVT pipeline.
 
 ## Architecture
 
@@ -131,7 +160,7 @@ This keeps site ordering stable and makes direct regression to DCCVT `.npz` labe
 
 ## Training Loss
 
-The v0 training loss is:
+The default v0 training target is `sites_sdf`, with loss:
 
 ```text
 SmoothL1(pred_sites, target_sites)
@@ -145,6 +174,15 @@ SmoothL1(pred_sites, target_sites)
 The balanced sign loss is important because only a small fraction of sites are inside the surface. Without it, the model can minimize SDF regression while predicting all-positive SDF values, which leaves DCCVT with no zero crossing and therefore no mesh.
 
 The offset regularizer discourages large early displacements from the template grid.
+
+The alternate `--target sites` mode uses:
+
+```text
+SmoothL1(pred_sites, target_sites)
++ offset_reg_weight * mean(offsets^2)
+```
+
+This mode is meant to isolate site prediction quality from SDF prediction quality. If predicted sites plus HotSpot SDF still produce a smooth or low-detail surface, the site predictor is the bottleneck. If predicted sites plus HotSpot SDF extract a good mesh, direct SDF regression was the main bottleneck in the earlier prototype. If target DCCVT sites plus HotSpot SDF produce detail but predicted sites do not, the architecture or site loss needs more local geometric supervision.
 
 ## Technical Decisions
 
