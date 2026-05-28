@@ -54,7 +54,13 @@ def resolve_sdf_values(model: Any, sites: torch.Tensor, *, verbose: bool = False
     return _resolve_sdf_values_impl(model, sites, verbose=verbose).squeeze()
 
 
-def load_hotspot_model(mesh_path: str, max_amount_sites: int, hotspot_weights_path: str) -> Tuple[nn.Module, torch.Tensor]:
+def load_hotspot_model(
+    mesh_path: str,
+    max_amount_sites: int,
+    hotspot_weights_path: str,
+    *,
+    n_points: int | None = None,
+) -> Tuple[nn.Module, torch.Tensor]:
     """Load a HotSpot model and return the model and manifold points."""
     _ensure_hotspot_on_path()
     mesh_ply, weights_path = _resolve_hotspot_inputs(mesh_path, hotspot_weights_path)
@@ -68,7 +74,7 @@ def load_hotspot_model(mesh_path: str, max_amount_sites: int, hotspot_weights_pa
         ) from exc
     train_set = shape_3d.ReconDataset(
         file_path=str(mesh_ply),
-        n_points=max_amount_sites * max_amount_sites * _HOTSPOT_SAMPLES_SCALE,
+        n_points=n_points or max_amount_sites * max_amount_sites * _HOTSPOT_SAMPLES_SCALE,
         n_samples=10001,
         grid_res=256,
         grid_range=1.1,

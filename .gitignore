@@ -51,3 +51,6 @@ accel/voronoiaccel.egg-info/
 .DS_Store
 build/
 *.pyc
+*.pdf
+VoroMesh-main
+PoNQ-main

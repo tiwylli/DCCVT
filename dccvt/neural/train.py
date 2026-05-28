@@ -1,311 +1,214 @@
-"""Training utilities for the DCCVT neural prototype."""
+"""Train the PoNQ-style site-only neural DCCVT model."""
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import torch
-from torch import nn
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 
-from dccvt.neural.dataset import DCCVTGeneratorDataset, discover_mesh_ids
-from dccvt.neural.models import PointNetDCCVT
-
-
-@dataclass
-class TrainConfig:
-    label_root: str = "outputs/neural_labels/n32"
-    mesh_root: str = "mesh/thingi32"
-    output_dir: str = "outputs/neural_runs/pointnet_n32"
-    mesh_ids: Optional[List[str]] = None
-    num_points: int = 9600
-    num_centroids: int = 32
-    batch_size: int = 1
-    epochs: int = 50
-    lr: float = 1e-4
-    weight_decay: float = 1e-4
-    val_fraction: float = 0.2
-    offset_reg_weight: float = 1e-4
-    sign_loss_weight: float = 0.1
-    seed: int = 0
-    device: str = "auto"
-    num_workers: int = 0
+from dccvt.neural.dataset import HotspotSDFDataset, resolve_cache_files
+from dccvt.neural.losses import dccvt_finetune_loss, stage1_site_loss
+from dccvt.neural.models import DCCVTPoNQNet
 
 
-def _resolve_device(device: str) -> torch.device:
-    if device != "auto":
-        return torch.device(device)
-    return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-
-def _split_indices(num_items: int, val_fraction: float, seed: int) -> tuple[list[int], list[int]]:
-    generator = torch.Generator().manual_seed(seed)
-    indices = torch.randperm(num_items, generator=generator).tolist()
-    if num_items <= 1:
-        return indices, []
-    val_count = max(1, int(round(num_items * val_fraction)))
-    val_count = min(val_count, num_items - 1)
-    return indices[val_count:], indices[:val_count]
-
-
-def _make_loader(dataset, indices: list[int], config: TrainConfig, shuffle: bool) -> DataLoader:
-    subset = Subset(dataset, indices)
-    return DataLoader(
-        subset,
-        batch_size=config.batch_size,
-        shuffle=shuffle,
-        num_workers=config.num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
-
-
-def _run_epoch(
-    *,
-    model: PointNetDCCVT,
-    loader: DataLoader,
-    criterion: nn.Module,
-    device: torch.device,
-    optimizer: Optional[torch.optim.Optimizer],
-    offset_reg_weight: float,
-    sign_loss_weight: float,
-) -> dict:
-    is_train = optimizer is not None
-    model.train(is_train)
-
-    totals = {
-        "loss": 0.0,
-        "site_loss": 0.0,
-        "sdf_loss": 0.0,
-        "sign_loss": 0.0,
-        "offset_reg": 0.0,
-        "sign_acc": 0.0,
-        "pred_neg_frac": 0.0,
-    }
-    count = 0
-    with torch.set_grad_enabled(is_train):
-        for batch in loader:
-            points = batch["points"].to(device=device, dtype=torch.float32)
-            target_sites = batch["target_sites"].to(device=device, dtype=torch.float32)
-            target_sdf = batch["target_sdf"].to(device=device, dtype=torch.float32)
-
-            pred = model(points)
-            site_loss = criterion(pred["sites"], target_sites)
-            sdf_loss = criterion(pred["sites_sdf"], target_sdf)
-            sign_loss = _balanced_sign_loss(pred["sites_sdf"], target_sdf)
-            offset_reg = pred["offsets"].pow(2).mean()
-            loss = site_loss + sdf_loss + sign_loss_weight * sign_loss + offset_reg_weight * offset_reg
-
-            if is_train:
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
-
-            with torch.no_grad():
-                pred_inside = pred["sites_sdf"] < 0
-                target_inside = target_sdf < 0
-                sign_acc = (pred_inside == target_inside).float().mean()
-                pred_neg_frac = pred_inside.float().mean()
-
-            batch_size = points.shape[0]
-            totals["loss"] += loss.item() * batch_size
-            totals["site_loss"] += site_loss.item() * batch_size
-            totals["sdf_loss"] += sdf_loss.item() * batch_size
-            totals["sign_loss"] += sign_loss.item() * batch_size
-            totals["offset_reg"] += offset_reg.item() * batch_size
-            totals["sign_acc"] += sign_acc.item() * batch_size
-            totals["pred_neg_frac"] += pred_neg_frac.item() * batch_size
-            count += batch_size
-
-    return {key: value / max(count, 1) for key, value in totals.items()}
-
-
-def _balanced_sign_loss(pred_sdf: torch.Tensor, target_sdf: torch.Tensor) -> torch.Tensor:
-    """Balanced BCE on SDF sign, using `-sdf` as the inside logit."""
-    target_inside = (target_sdf < 0).to(dtype=pred_sdf.dtype)
-    inside_count = target_inside.sum()
-    outside_count = target_inside.numel() - inside_count
-    if inside_count.item() > 0:
-        pos_weight = outside_count / inside_count.clamp(min=1)
-    else:
-        pos_weight = pred_sdf.new_tensor(1.0)
-    return nn.functional.binary_cross_entropy_with_logits(
-        -pred_sdf,
-        target_inside,
-        pos_weight=pos_weight,
-    )
-
-
-def save_checkpoint(
-    path: str | Path,
-    *,
-    model: PointNetDCCVT,
-    optimizer: torch.optim.Optimizer,
-    config: TrainConfig,
-    epoch: int,
-    train_metrics: dict,
-    val_metrics: Optional[dict],
-    mesh_ids: list[str],
-) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "model_state": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "model_config": model.config(),
-            "train_config": asdict(config),
-            "epoch": epoch,
-            "train_metrics": train_metrics,
-            "val_metrics": val_metrics,
-            "mesh_ids": mesh_ids,
-        },
-        path,
-    )
-
-
-def train_model(config: TrainConfig) -> Path:
-    torch.manual_seed(config.seed)
-    device = _resolve_device(config.device)
-
-    mesh_ids = config.mesh_ids
-    if mesh_ids is None:
-        mesh_ids = discover_mesh_ids(config.label_root)
-    if not mesh_ids:
-        raise ValueError(f"No training labels found under {config.label_root}")
-
-    dataset = DCCVTGeneratorDataset(
-        label_root=config.label_root,
-        mesh_root=config.mesh_root,
-        mesh_ids=mesh_ids,
-        num_points=config.num_points,
-        num_centroids=config.num_centroids,
-        seed=config.seed,
-    )
-    train_indices, val_indices = _split_indices(len(dataset), config.val_fraction, config.seed)
-    train_loader = _make_loader(dataset, train_indices, config, shuffle=True)
-    val_loader = _make_loader(dataset, val_indices, config, shuffle=False) if val_indices else None
-
-    model = PointNetDCCVT(num_centroids=config.num_centroids).to(device)
-    criterion = nn.SmoothL1Loss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-
-    output_dir = Path(config.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    best_path = output_dir / "best.pt"
-    latest_path = output_dir / "latest.pt"
-    best_val = float("inf")
-
-    for epoch in range(1, config.epochs + 1):
-        train_metrics = _run_epoch(
-            model=model,
-            loader=train_loader,
-            criterion=criterion,
-            device=device,
-            optimizer=optimizer,
-            offset_reg_weight=config.offset_reg_weight,
-            sign_loss_weight=config.sign_loss_weight,
-        )
-        val_metrics = None
-        score = train_metrics["loss"]
-        if val_loader is not None:
-            val_metrics = _run_epoch(
-                model=model,
-                loader=val_loader,
-                criterion=criterion,
-                device=device,
-                optimizer=None,
-                offset_reg_weight=config.offset_reg_weight,
-                sign_loss_weight=config.sign_loss_weight,
-            )
-            score = val_metrics["loss"]
-
-        print(
-            f"epoch {epoch:04d} "
-            f"train_loss={train_metrics['loss']:.6f} "
-            f"train_sites={train_metrics['site_loss']:.6f} "
-            f"train_sdf={train_metrics['sdf_loss']:.6f} "
-            f"train_sign={train_metrics['sign_loss']:.6f} "
-            f"train_neg={train_metrics['pred_neg_frac']:.4f}"
-            + (f" val_loss={val_metrics['loss']:.6f}" if val_metrics else "")
-        )
-
-        save_checkpoint(
-            latest_path,
-            model=model,
-            optimizer=optimizer,
-            config=config,
-            epoch=epoch,
-            train_metrics=train_metrics,
-            val_metrics=val_metrics,
-            mesh_ids=mesh_ids,
-        )
-        if score <= best_val:
-            best_val = score
-            save_checkpoint(
-                best_path,
-                model=model,
-                optimizer=optimizer,
-                config=config,
-                epoch=epoch,
-                train_metrics=train_metrics,
-                val_metrics=val_metrics,
-                mesh_ids=mesh_ids,
-            )
-
-    return best_path
-
-
-def _parse_mesh_ids(value: Optional[str]) -> Optional[List[str]]:
+def _parse_mesh_ids(value: Optional[str]) -> Optional[list[str]]:
     if not value:
         return None
     return [part for part in value.replace(",", " ").split() if part]
 
 
+def _device(value: str) -> torch.device:
+    if value == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(value)
+
+
+def save_checkpoint(
+    path: Path,
+    *,
+    model: DCCVTPoNQNet,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    args: argparse.Namespace,
+    stats: dict,
+) -> None:
+    payload = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "model_config": model.config(),
+        "args": vars(args),
+        "stats": stats,
+    }
+    torch.save(payload, path)
+
+
+def build_model_from_args(args: argparse.Namespace) -> DCCVTPoNQNet:
+    return DCCVTPoNQNet(
+        grid_n=args.grid_n,
+        k=args.k,
+        feature_dim=args.feature_dim,
+        encoder_layers=args.encoder_layers,
+        decoder_layers=args.decoder_layers,
+    )
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train the DCCVT neural generator prototype.")
-    parser.add_argument("--label-root", default=TrainConfig.label_root)
-    parser.add_argument("--mesh-root", default=TrainConfig.mesh_root)
-    parser.add_argument("--output-dir", default=TrainConfig.output_dir)
-    parser.add_argument("--mesh-ids", default=None, help="Comma or space separated mesh ids. Defaults to label discovery.")
-    parser.add_argument("--num-points", type=int, default=TrainConfig.num_points)
-    parser.add_argument("--num-centroids", type=int, default=TrainConfig.num_centroids)
-    parser.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
-    parser.add_argument("--epochs", type=int, default=TrainConfig.epochs)
-    parser.add_argument("--lr", type=float, default=TrainConfig.lr)
-    parser.add_argument("--weight-decay", type=float, default=TrainConfig.weight_decay)
-    parser.add_argument("--val-fraction", type=float, default=TrainConfig.val_fraction)
-    parser.add_argument("--offset-reg-weight", type=float, default=TrainConfig.offset_reg_weight)
-    parser.add_argument("--sign-loss-weight", type=float, default=TrainConfig.sign_loss_weight)
-    parser.add_argument("--seed", type=int, default=TrainConfig.seed)
-    parser.add_argument("--device", default=TrainConfig.device)
-    parser.add_argument("--num-workers", type=int, default=TrainConfig.num_workers)
+    parser = argparse.ArgumentParser(description="Train a PoNQ-style neural DCCVT site predictor.")
+    parser.add_argument("--cache-root", required=True, help="Directory of precomputed HotSpot SDF .npz caches.")
+    parser.add_argument("--mesh-ids", default=None, help="Optional comma or space separated cache stems.")
+    parser.add_argument("--split-file", default=None, help="Optional text file of cache stems.")
+    parser.add_argument("--checkpoint-dir", default="outputs/neural_dccvt/checkpoints")
+    parser.add_argument("--resume", default=None)
+    parser.add_argument("--resume-optimizer", action="store_true", help="Also restore optimizer state from --resume.")
+    parser.add_argument("--stage", choices=("1", "2"), default="1")
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--target-subsample", type=int, default=20_000)
+    parser.add_argument("--lr", type=float, default=6.4e-5)
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--num-workers", type=int, default=0)
+
+    parser.add_argument("--grid-n", type=int, default=33)
+    parser.add_argument("--k", type=int, default=4)
+    parser.add_argument("--feature-dim", type=int, default=128)
+    parser.add_argument("--encoder-layers", type=int, default=5)
+    parser.add_argument("--decoder-layers", type=int, default=3)
+
+    parser.add_argument("--w-chamfer", type=float, default=100.0)
+    parser.add_argument("--w-occupancy", type=float, default=1.0)
+    parser.add_argument("--w-offset", type=float, default=0.1)
+    parser.add_argument("--w-domain", type=float, default=1.0)
+    parser.add_argument("--w-dccvt-chamfer", type=float, default=1000.0)
+    parser.add_argument("--w-dccvt-cvt", type=float, default=100.0)
+    parser.add_argument("--w-dccvt", type=float, default=1.0)
+    parser.add_argument("--max-dccvt-sites", type=int, default=4096)
+    parser.add_argument(
+        "--stage2-train-encoder",
+        action="store_true",
+        help="Allow Stage 2 to update the encoder/activity features. By default Stage 2 updates only the site head.",
+    )
+    parser.add_argument("--save-every", type=int, default=10)
     return parser
 
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = build_arg_parser().parse_args(argv)
-    config = TrainConfig(
-        label_root=args.label_root,
-        mesh_root=args.mesh_root,
-        output_dir=args.output_dir,
+    if args.stage == "2" and args.device == "auto":
+        from dccvt.device import device as dccvt_device
+        from dccvt.device import initialize_runtime
+
+        initialize_runtime()
+        device = dccvt_device
+    else:
+        device = _device(args.device)
+
+    cache_files = resolve_cache_files(
+        args.cache_root,
         mesh_ids=_parse_mesh_ids(args.mesh_ids),
-        num_points=args.num_points,
-        num_centroids=args.num_centroids,
-        batch_size=args.batch_size,
-        epochs=args.epochs,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        val_fraction=args.val_fraction,
-        offset_reg_weight=args.offset_reg_weight,
-        sign_loss_weight=args.sign_loss_weight,
-        seed=args.seed,
-        device=args.device,
-        num_workers=args.num_workers,
+        split_file=args.split_file,
     )
-    best_path = train_model(config)
-    print(f"best checkpoint: {best_path}")
+    dataset = HotspotSDFDataset(cache_files, target_subsample=args.target_subsample)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=(device.type == "cuda"),
+    )
+
+    checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    resume_checkpoint = torch.load(args.resume, map_location=device) if args.resume else None
+    if resume_checkpoint is not None and resume_checkpoint.get("model_config"):
+        model = DCCVTPoNQNet(**resume_checkpoint["model_config"]).to(device)
+    else:
+        model = build_model_from_args(args).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    start_epoch = 0
+
+    if resume_checkpoint is not None:
+        model.load_state_dict(resume_checkpoint["model_state_dict"])
+        if args.resume_optimizer and "optimizer_state_dict" in resume_checkpoint:
+            optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
+        start_epoch = int(resume_checkpoint.get("epoch", -1)) + 1
+        print(f"Resumed {args.resume} at epoch {start_epoch}")
+
+    if args.stage == "2" and not args.stage2_train_encoder:
+        for param in model.encoder.parameters():
+            param.requires_grad_(False)
+        for param in model.activity_head.parameters():
+            param.requires_grad_(False)
+        optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=args.lr)
+        print("Stage 2 default: frozen encoder/activity head; training site head only.")
+
+    stop_epoch = start_epoch + args.epochs
+    for epoch in range(start_epoch, stop_epoch):
+        local_epoch = epoch - start_epoch + 1
+        model.train()
+        epoch_loss = 0.0
+        epoch_stats: dict[str, float] = {}
+        for batch in dataloader:
+            sdf_grid = batch["sdf_grid"].to(device, non_blocking=True)
+            target_points = batch["target_points"].to(device, non_blocking=True)
+            near_surface_mask = batch["near_surface_mask"].to(device, non_blocking=True)
+            gt_activity_mask = batch["gt_activity_mask"].to(device, non_blocking=True)
+
+            optimizer.zero_grad(set_to_none=True)
+            outputs = model(sdf_grid)
+            occupancy_weight = 0.0 if args.stage == "2" and not args.stage2_train_encoder else args.w_occupancy
+            loss, stats = stage1_site_loss(
+                outputs,
+                target_points,
+                gt_activity_mask,
+                near_surface_mask,
+                chamfer_weight=args.w_chamfer,
+                occupancy_weight=occupancy_weight,
+                offset_weight=args.w_offset,
+                domain_weight=args.w_domain,
+            )
+            if args.stage == "2":
+                active_mask = gt_activity_mask.bool() | near_surface_mask.bool()
+                dccvt_loss, dccvt_stats = dccvt_finetune_loss(
+                    outputs,
+                    sdf_grid,
+                    target_points,
+                    active_mask,
+                    chamfer_weight=args.w_dccvt_chamfer,
+                    cvt_weight=args.w_dccvt_cvt,
+                    max_sites_per_shape=args.max_dccvt_sites,
+                )
+                loss = loss + args.w_dccvt * dccvt_loss
+                stats.update(dccvt_stats)
+
+            loss.backward()
+            optimizer.step()
+
+            batch_loss = float(loss.detach().cpu())
+            epoch_loss += batch_loss
+            for key, value in stats.items():
+                epoch_stats[key] = epoch_stats.get(key, 0.0) + float(value)
+
+        num_batches = max(len(dataloader), 1)
+        epoch_loss /= num_batches
+        epoch_stats = {key: value / num_batches for key, value in epoch_stats.items()}
+        print(f"epoch={epoch} local_epoch={local_epoch}/{args.epochs} loss={epoch_loss:.6g} stats={epoch_stats}")
+
+        latest = checkpoint_dir / "latest.pt"
+        save_checkpoint(latest, model=model, optimizer=optimizer, epoch=epoch, args=args, stats=epoch_stats)
+        if args.save_every > 0 and (local_epoch % args.save_every == 0 or local_epoch == args.epochs):
+            save_checkpoint(
+                checkpoint_dir / f"epoch_{epoch:04d}.pt",
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                args=args,
+                stats=epoch_stats,
+            )
 
 
 if __name__ == "__main__":
