@@ -1,0 +1,21 @@
+data:
+  names: 'src/utils/abc_watertight_train.txt'
+  hdf5: '/tmp/ponq_abc/gt_Quadrics/'
+  grid_n: 33
+  mask_close: True
+training:
+  input: 'model_multiple_quadrics_split_phase1_bs16_epoch002.pt'
+  model_name: 'model_multiple_quadrics_split.pt'
+  batch_size: 32
+  lr: 0.000064
+  wd: 0.01
+  beta1: 0.9
+  beta2: 0.999
+  amsgrad: True
+  epochs: 193
+  sample_fac: 500000
+  K: 4
+  losses_weights: [100, 100, .1, .1, .1, 1]
+  supervised: False
+  multiple: True
+  me: False

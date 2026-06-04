@@ -28,7 +28,7 @@ GPU requirement: DCCVT uses `pygdel3d` (gDel3D) for Delaunay tetrahedralization.
 
 - `DCCVT.py`: main CLI entrypoint.
 - `dccvt/`: core library (arg parsing, training, mesh extraction).
-- `dccvt/neural/`: first neural prototype for predicting DCCVT sites and site SDF values from point clouds.
+- `dccvt/neural/`: experimental PoNQ-style dense SDF-grid model for predicting DCCVT sites and activity.
 - `argfiles/`: experiment templates (argfile format).
 - `docs/`: design notes and extended workflow documentation.
 - `mesh/`: mesh datasets (`.ply` + `.obj`), loaded via mesh path prefix.
@@ -183,20 +183,26 @@ If the final `projDCCVT` mesh already exists, the runner skips that mesh.
 
 ## Neural prototype
 
-This repository includes an experimental point-cloud neural baseline that predicts fixed-size DCCVT generators:
+This repository includes an experimental PoNQ-style neural baseline that predicts DCCVT generator sites from dense HotSpot SDF grids:
 
 ```text
-point cloud -> neural model -> sites + sites_sdf -> DCCVT mesh extraction
+mesh + HotSpot weights -> dense SDF cache -> neural model -> sites + sampled sites_sdf -> DCCVT mesh extraction
 ```
 
-The prototype is documented in [docs/neural_prototype.md](docs/neural_prototype.md). The main scripts are:
+The implementation is documented in [docs/neural_guide.md](docs/neural_guide.md). The main scripts are:
 
 ```bash
-python scripts/generate_neural_labels.py --mesh-ids 313444,441708,64764 --num-centroids 32
-python scripts/train_dccvt_neural.py --label-root outputs/neural_labels/n32 --epochs 50
+python scripts/precompute_hotspot_sdf.py \
+  --mesh-ids 313444 --mesh-root mesh/thingi32 \
+  --hotspot-root hotspots_model/thingi32 \
+  --output-root outputs/neural_hotspot_sdf/g33
+python scripts/train_dccvt_neural.py \
+  --cache-root outputs/neural_hotspot_sdf/g33 \
+  --checkpoint-dir outputs/neural_dccvt/ponq_stage1 \
+  --epochs 50
 python scripts/infer_dccvt_neural.py \
-  --checkpoint outputs/neural_runs/pointnet_n32/best.pt \
-  --point-cloud mesh/thingi32/313444.ply \
+  --checkpoint outputs/neural_dccvt/ponq_stage1/latest.pt \
+  --cache outputs/neural_hotspot_sdf/g33/313444.npz \
   --output-dir outputs/neural_pred/313444
 ```
 

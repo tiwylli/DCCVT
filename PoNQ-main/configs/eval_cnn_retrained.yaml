@@ -1,0 +1,22 @@
+path:
+  out_dir: 'out_retrained/'
+  datasets_path: '/tmp/ponq_abc/'
+data:
+  names: 'src/utils/abc_watertight_train.txt'
+  grid_n: 33
+  mask_close: True
+training:
+  model_name: 'data/pretrained_PoNQ_ABC_retrained.pt'
+  batch_size: 16
+  lr: 0.000032
+  wd: 0.01
+  beta1: 0.9
+  beta2: 0.999
+  amsgrad: True
+  epochs: 137
+  sample_fac: 700000
+  K: 4
+  losses_weights: [100, 100, .1, .1, .1, 1]
+  supervised: False
+  multiple: True
+  me: False

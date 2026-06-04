@@ -1,0 +1,4 @@
+mode,count,cd_x1e5,f1,nc,ecd,ef1,npy_path
+ponq_thingi,31,307.9019667573918,0.04187576956396443,0.7291448066359576,0.3774677447008358,0.028963128789924755,src/eval/results/results_HotSpot_pretrained_PoNQ_ABC_retrained_32_ponq_thingi.npy
+raw,31,1232.1882397564934,0.015494103545123082,0.7286497464670469,1.5097987425316757,0.008338012310172317,src/eval/results/results_HotSpot_pretrained_PoNQ_ABC_retrained_32_raw.npy
+bbox_aligned,31,14.023565837386563,0.26111249866669134,0.8959942166951292,0.24037039234582452,0.07876222262130718,src/eval/results/results_HotSpot_pretrained_PoNQ_ABC_retrained_32_bbox_aligned.npy

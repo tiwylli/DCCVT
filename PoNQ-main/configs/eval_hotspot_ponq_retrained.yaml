@@ -1,0 +1,10 @@
+path:
+  out_dir: 'out_hotspot_retrained/'
+  cache_root: '/export/livia/home/vision/Wcharawi/dev/DCCVT/outputs/neural_hotspot_sdf/thingi32_g33'
+  gt_mesh_root: '/export/livia/home/vision/Wcharawi/dev/DCCVT/mesh/thingi32'
+data:
+  names: 'src/eval/hotspot_thingi32_g33_ids.txt'
+  grid_n: 33
+  use_cache_mask: true
+training:
+  model_name: 'data/pretrained_PoNQ_ABC_retrained.pt'
