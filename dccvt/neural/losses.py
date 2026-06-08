@@ -190,3 +190,119 @@ def dccvt_finetune_loss(
         "dccvt_skipped_shapes": float(skipped_shapes),
     }
     return total, stats
+
+
+def hybrid_direct_supervised_loss(
+    outputs: Dict[str, torch.Tensor],
+    label_sites: torch.Tensor,
+    label_sites_sdf: torch.Tensor,
+    *,
+    site_weight: float = 1.0,
+    sdf_weight: float = 1.0,
+    sign_weight: float = 0.1,
+    residual_weight: float = 0.01,
+    sdf_near_weight: float = 4.0,
+    sdf_near_tau: float = 0.1,
+    sign_temperature: float = 0.05,
+) -> tuple[torch.Tensor, Dict[str, float]]:
+    """Supervise full-field hybrid direct predictions against DCCVT labels."""
+    pred_sites = outputs["sites"]
+    pred_sdf = outputs["sites_sdf"]
+    label_sites_sdf = label_sites_sdf.to(dtype=pred_sdf.dtype)
+    label_sites = label_sites.to(dtype=pred_sites.dtype)
+
+    site_loss = F.smooth_l1_loss(pred_sites, label_sites, reduction="mean")
+
+    sdf_per_site = F.smooth_l1_loss(pred_sdf, label_sites_sdf, reduction="none")
+    near_weight = 1.0 + float(sdf_near_weight) * torch.exp(-label_sites_sdf.abs() / float(sdf_near_tau))
+    sdf_loss = (sdf_per_site * near_weight).mean()
+
+    inside_target = (label_sites_sdf < 0).to(dtype=pred_sdf.dtype)
+    positive_count = inside_target.sum().clamp(min=1.0)
+    negative_count = (1.0 - inside_target).sum().clamp(min=1.0)
+    pos_weight = negative_count / positive_count
+    sign_logits = -pred_sdf / float(sign_temperature)
+    sign_loss = F.binary_cross_entropy_with_logits(sign_logits, inside_target, pos_weight=pos_weight.detach())
+
+    residual_loss = outputs["sdf_residual"].pow(2).mean()
+    total = (
+        float(site_weight) * site_loss
+        + float(sdf_weight) * sdf_loss
+        + float(sign_weight) * sign_loss
+        + float(residual_weight) * residual_loss
+    )
+    sign_accuracy = ((pred_sdf < 0) == (label_sites_sdf < 0)).to(torch.float32).mean()
+    stats = {
+        "loss": float(total.detach().cpu()),
+        "site": float(site_loss.detach().cpu()),
+        "sdf": float(sdf_loss.detach().cpu()),
+        "sign": float(sign_loss.detach().cpu()),
+        "residual": float(residual_loss.detach().cpu()),
+        "sign_accuracy": float(sign_accuracy.detach().cpu()),
+        "negative_fraction": float((label_sites_sdf < 0).to(torch.float32).mean().detach().cpu()),
+    }
+    return total, stats
+
+
+def hybrid_direct_mesh_loss(
+    outputs: Dict[str, torch.Tensor],
+    target_points: torch.Tensor,
+    *,
+    chamfer_weight: float = 1000.0,
+    cvt_weight: float = 100.0,
+    sdfsmooth_weight: float = 100.0,
+) -> tuple[torch.Tensor, Dict[str, float]]:
+    """Fine-tune direct predictions through DCCVT clipped-mesh losses."""
+    from dccvt.geometry import compute_clipped_mesh, compute_cvt_loss_from_clipped_vertices, compute_delaunay_simplices
+    from dccvt.sdf_gradients import discrete_tet_volume_eikonal_loss, estimate_eps_H, tet_sdf_motion_mean_curvature_loss
+
+    total = outputs["sites"].sum() * 0.0
+    used_shapes = 0
+    skipped_shapes = 0
+    chamfer_value = 0.0
+    cvt_value = 0.0
+    smooth_value = 0.0
+
+    for b in range(outputs["sites"].shape[0]):
+        sites = outputs["sites"][b]
+        sites_sdf = outputs["sites_sdf"][b]
+        if sites.shape[0] < 5 or not ((sites_sdf.min() < 0) and (sites_sdf.max() > 0)):
+            skipped_shapes += 1
+            continue
+        try:
+            d3d = compute_delaunay_simplices(sites)
+            projected_points, clipped_vertices, sites_sdf_grads, W = compute_clipped_mesh(sites, d3d, sites_sdf)
+            if projected_points.numel() == 0:
+                skipped_shapes += 1
+                continue
+            chamfer = chamfer_distance_points(projected_points, target_points[b])
+            cvt = compute_cvt_loss_from_clipped_vertices(sites, d3d, clipped_vertices)
+            d3d_tensor = torch.as_tensor(d3d, device=sites.device).detach()
+            eps_H = estimate_eps_H(sites, d3d, multiplier=1.5 * 2).detach()
+            eikonal = discrete_tet_volume_eikonal_loss(sites, sites_sdf_grads, d3d_tensor)
+            curvature = tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3d, eps_H)
+            smooth = eikonal / 10.0 + curvature
+        except Exception:
+            skipped_shapes += 1
+            continue
+
+        total = total + float(chamfer_weight) * chamfer + float(cvt_weight) * cvt + float(sdfsmooth_weight) * smooth
+        used_shapes += 1
+        chamfer_value += float(chamfer.detach().cpu())
+        cvt_value += float(cvt.detach().cpu())
+        smooth_value += float(smooth.detach().cpu())
+
+    if used_shapes > 0:
+        total = total / used_shapes
+        chamfer_value /= used_shapes
+        cvt_value /= used_shapes
+        smooth_value /= used_shapes
+    stats = {
+        "mesh_loss": float(total.detach().cpu()),
+        "mesh_chamfer": chamfer_value,
+        "mesh_cvt": cvt_value,
+        "mesh_sdfsmooth": smooth_value,
+        "mesh_used_shapes": float(used_shapes),
+        "mesh_skipped_shapes": float(skipped_shapes),
+    }
+    return total, stats

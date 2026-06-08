@@ -1,14 +1,80 @@
-"""PoNQ-style dense SDF CNN for predicting DCCVT Voronoi sites."""
+"""PoNQ-style dense SDF CNNs for DCCVT Voronoi prediction."""
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass, field
+import json
+from pathlib import Path
 from typing import Dict
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from dccvt.neural.grid import cell_size_from_grid, make_cell_lower_corners, validate_grid_n
+from dccvt.neural.grid import (
+    cell_size_from_grid,
+    make_canonical_sites,
+    make_cell_lower_corners,
+    trilinear_interpolate_sdf,
+    validate_grid_n,
+)
+
+
+HYBRID_DIRECT_CHANNELS = ("hotspot_sdf", "abs_hotspot_sdf", "point_udf", "point_confidence")
+
+
+@dataclass
+class HybridDirectConfig:
+    """Typed configuration for the hybrid direct DCCVT extractor."""
+
+    grid_n: int = 33
+    input_channels: int = 4
+    feature_dim: int = 128
+    encoder_layers: int = 5
+    decoder_layers: int = 3
+    site_delta_scale: float = 0.30
+    sdf_residual_scale: float = 0.50
+    point_udf_clip: float = 4.0
+    point_confidence_sigma_scale: float = 1.5
+    channel_names: tuple[str, ...] = field(default_factory=lambda: HYBRID_DIRECT_CHANNELS)
+
+    def __post_init__(self) -> None:
+        self.grid_n = validate_grid_n(self.grid_n)
+        self.input_channels = int(self.input_channels)
+        self.feature_dim = int(self.feature_dim)
+        self.encoder_layers = int(self.encoder_layers)
+        self.decoder_layers = int(self.decoder_layers)
+        self.site_delta_scale = float(self.site_delta_scale)
+        self.sdf_residual_scale = float(self.sdf_residual_scale)
+        self.point_udf_clip = float(self.point_udf_clip)
+        self.point_confidence_sigma_scale = float(self.point_confidence_sigma_scale)
+        self.channel_names = tuple(self.channel_names)
+        if self.input_channels != len(self.channel_names):
+            raise ValueError(
+                f"input_channels={self.input_channels} does not match "
+                f"{len(self.channel_names)} channel names"
+            )
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "HybridDirectConfig":
+        values = dict(data)
+        if "channel_names" in values:
+            values["channel_names"] = tuple(values["channel_names"])
+        return cls(**values)
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["channel_names"] = list(self.channel_names)
+        return data
+
+
+def load_hybrid_direct_config(path: str | Path | None = None) -> HybridDirectConfig:
+    """Load a hybrid direct config JSON file, or return defaults."""
+    if path is None:
+        return HybridDirectConfig()
+    with Path(path).open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    return HybridDirectConfig.from_dict(data)
 
 
 class ResNetBlock(nn.Module):
@@ -149,4 +215,106 @@ class DCCVTPoNQNet(nn.Module):
             "activity_logits": activity_logits,
             "activity": activity,
             "cell_lower_corners": corners,
+        }
+
+
+class DCCVTHybridDirectNet(nn.Module):
+    """Hybrid PoNQ-style direct predictor for full DCCVT site and SDF fields."""
+
+    def __init__(self, config: HybridDirectConfig | dict | None = None, **overrides) -> None:
+        super().__init__()
+        if config is None:
+            config_obj = HybridDirectConfig(**overrides)
+        elif isinstance(config, dict):
+            config_obj = HybridDirectConfig.from_dict({**config, **overrides})
+        else:
+            config_obj = HybridDirectConfig.from_dict({**config.to_dict(), **overrides})
+        self.config_obj = config_obj
+
+        encoder: list[nn.Module] = [
+            nn.Conv3d(config_obj.input_channels, config_obj.feature_dim, kernel_size=2, stride=1, bias=True),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+        ]
+        for _ in range(config_obj.encoder_layers):
+            encoder.extend(
+                [
+                    nn.Conv3d(config_obj.feature_dim, config_obj.feature_dim, kernel_size=3, padding=1, bias=True),
+                    nn.LeakyReLU(negative_slope=0.01, inplace=True),
+                ]
+            )
+        self.encoder = nn.Sequential(*encoder)
+        self.site_delta_head = CellDecoder(
+            3,
+            k=1,
+            feature_dim=config_obj.feature_dim,
+            decoder_layers=config_obj.decoder_layers,
+        )
+        self.sdf_residual_head = CellDecoder(
+            1,
+            k=1,
+            feature_dim=config_obj.feature_dim,
+            decoder_layers=config_obj.decoder_layers,
+        )
+        self.register_buffer("canonical_sites", make_canonical_sites(config_obj.grid_n), persistent=False)
+
+    @property
+    def grid_n(self) -> int:
+        return self.config_obj.grid_n
+
+    def config(self) -> dict:
+        return self.config_obj.to_dict()
+
+    def _canonical_sites_for_features(self, features: torch.Tensor) -> torch.Tensor:
+        cell_res = int(features.shape[-1])
+        grid_n = cell_res + 1
+        expected_sites = cell_res**3
+        if (
+            grid_n == self.grid_n
+            and self.canonical_sites.device == features.device
+            and self.canonical_sites.dtype == features.dtype
+            and self.canonical_sites.shape[0] == expected_sites
+        ):
+            return self.canonical_sites
+        return make_canonical_sites(grid_n, device=features.device, dtype=features.dtype)
+
+    def forward(self, input_grid: torch.Tensor, hotspot_sdf_grid: torch.Tensor | None = None) -> Dict[str, torch.Tensor]:
+        if input_grid.dim() == 4:
+            input_grid = input_grid.unsqueeze(0)
+        if input_grid.dim() != 5:
+            raise ValueError(f"Expected input shape (B,C,G,G,G) or (C,G,G,G), got {input_grid.shape}")
+        if input_grid.shape[1] != self.config_obj.input_channels:
+            raise ValueError(
+                f"Expected {self.config_obj.input_channels} channels, got input shape {input_grid.shape}"
+            )
+        if len(set(input_grid.shape[-3:])) != 1:
+            raise ValueError(f"Expected cubic input grid, got {input_grid.shape}")
+
+        if hotspot_sdf_grid is None:
+            hotspot_sdf_grid = input_grid[:, 0]
+        if hotspot_sdf_grid.dim() == 5:
+            hotspot_sdf_grid = hotspot_sdf_grid[:, 0]
+        if hotspot_sdf_grid.dim() != 4:
+            raise ValueError(f"Expected HotSpot SDF shape (B,G,G,G) or (B,1,G,G,G), got {hotspot_sdf_grid.shape}")
+
+        features = self.encoder(input_grid)
+        canonical_sites = self._canonical_sites_for_features(features)
+
+        raw_site_delta = self.site_delta_head(features).squeeze(2)
+        site_delta = torch.tanh(raw_site_delta) * self.config_obj.site_delta_scale
+        sites = canonical_sites[None, :, :] + site_delta
+
+        raw_sdf_residual = self.sdf_residual_head(features).squeeze(2).squeeze(-1)
+        sdf_residual = torch.tanh(raw_sdf_residual) * self.config_obj.sdf_residual_scale
+        hotspot_sdf_at_sites = trilinear_interpolate_sdf(hotspot_sdf_grid, sites)
+        sites_sdf = hotspot_sdf_at_sites + sdf_residual
+
+        return {
+            "sites": sites,
+            "sites_sdf": sites_sdf,
+            "raw_site_delta": raw_site_delta,
+            "site_delta": site_delta,
+            "raw_sdf_residual": raw_sdf_residual,
+            "sdf_residual": sdf_residual,
+            "hotspot_sdf_at_sites": hotspot_sdf_at_sites,
+            "canonical_sites": canonical_sites,
         }

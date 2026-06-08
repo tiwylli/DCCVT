@@ -1,5 +1,69 @@
 # Experiments
 
+## Hybrid PoNQ-DCCVT Direct Extractor v1
+
+- Guide: [docs/hybrid_ponq_dccvt_guide.md](/export/livia/home/vision/Wcharawi/dev/DCCVT/docs/hybrid_ponq_dccvt_guide.md)
+- Config: `configs/neural_hybrid_direct_v1.json`
+- Training script: `scripts/train_dccvt_hybrid_direct.py`
+- Inference script: `scripts/infer_dccvt_hybrid_direct.py`
+- Input caches: `outputs/neural_hotspot_sdf/thingi32_g33/*.npz`
+- Supervised labels: `outputs/neural_labels/n32/<mesh_id>/DCCVT_0_final_projDCCVT_cvt100_sdfsmooth100.npz`
+- Purpose: predict the full `32^3` DCCVT Voronoi site field and corresponding SDF values directly from HotSpot SDF plus voxelized point-cloud zero-level evidence.
+- Architecture: PoNQ-style dense `Conv3d` encoder from four channels (`hotspot_sdf`, `abs_hotspot_sdf`, `point_udf`, `point_confidence`) to `32^3` features; heads predict bounded canonical-site offsets and bounded residual SDF corrections.
+- Output convention: checkpoints and resolved configs are saved under `outputs/neural_dccvt/hybrid_direct_v1/checkpoints/`; inference predictions and optional meshes should be written under `outputs/neural_dccvt/hybrid_direct_v1/infer_<mesh_id>/`.
+- Seed behavior: training and inference expose `--seed` and save it in checkpoints, resolved configs, and prediction `.npz` files. Dataset point subsampling uses NumPy after this seed is set.
+- Smoke train command:
+
+```bash
+python scripts/train_dccvt_hybrid_direct.py \
+  --config configs/neural_hybrid_direct_v1.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --label-root outputs/neural_labels/n32 \
+  --mesh-ids 313444 \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_direct_v1/checkpoints_smoke_313444 \
+  --epochs 1 \
+  --batch-size 1 \
+  --seed 69
+```
+
+- Inference smoke command:
+
+```bash
+python scripts/infer_dccvt_hybrid_direct.py \
+  --checkpoint outputs/neural_dccvt/hybrid_direct_v1/checkpoints_smoke_313444/latest.pt \
+  --cache outputs/neural_hotspot_sdf/thingi32_g33/313444.npz \
+  --output-dir outputs/neural_dccvt/hybrid_direct_v1/infer_313444_smoke \
+  --no-extract \
+  --seed 69
+```
+
+- Optional mesh fine-tuning: pass `--stage mesh --batch-size 1`; this reuses DCCVT clipped-mesh Chamfer, CVT, and SDF smoothness losses and requires the CUDA/gDel3D runtime.
+- Assumptions: inputs and labels use the existing normalized `[-1, 1]^3` convention; label site ordering matches the canonical DCCVT `torch.linspace(-1, 1, 32)` grid; KNN point features are reserved for a later ablation if voxel UDF/density underfits.
+- Full supervised checkpoint: `outputs/neural_dccvt/hybrid_direct_v1/full_supervised/latest.pt`
+- Default full extraction output: `outputs/neural_dccvt/hybrid_direct_v1/extract_full/<mesh_id>/DCCVT_0_hybrid_direct_intDCCVT_cvt100_sdfsmooth100.obj`
+- Default flat evaluation view: `PoNQ-main/out_hybrid_direct/HybridDirect_full_supervised_intDCCVT/<mesh_id>.obj`
+- Default full diagnostic metric outputs:
+  - `PoNQ-main/src/eval/results/results_HybridDirect_full_supervised_intDCCVT_ponq_thingi.npy`
+  - `PoNQ-main/src/eval/results/results_HybridDirect_full_supervised_intDCCVT_raw.npy`
+  - `PoNQ-main/src/eval/results/results_HybridDirect_full_supervised_intDCCVT_bbox_aligned.npy`
+  - `PoNQ-main/src/eval/results/results_HybridDirect_full_supervised_intDCCVT_hotspot_summary.csv`
+- Default full diagnostic result over 31 shapes using `PoNQ-main/src/eval/eval_HOTSPOT.py` with `100000` samples:
+  - `ponq_thingi`: `CD x 1e-5 = 465.425`, `F1 = 0.027`, `NC = 0.638`, `ECD = 2.269`, `EF1 = 0.000`
+  - `raw`: `CD x 1e-5 = 1861.174`, `F1 = 0.010`, `NC = 0.638`, `ECD = 9.076`, `EF1 = 0.000`
+  - `bbox_aligned`: `CD x 1e-5 = 77.289`, `F1 = 0.095`, `NC = 0.707`, `ECD = 9.079`, `EF1 = 0.000`
+- Diagnostic baseline extraction output: `outputs/neural_dccvt/hybrid_direct_v1/extract_full/<mesh_id>/DCCVT_0_hybrid_direct_projDCCVT_cvt100_sdfsmooth100.obj`
+- Diagnostic baseline flat evaluation view: `PoNQ-main/out_hybrid_direct/HybridDirect_full_supervised_projDCCVT/<mesh_id>.obj`
+- Diagnostic baseline metric outputs:
+  - `PoNQ-main/src/eval/results/results_HybridDirect_full_supervised_projDCCVT_ponq_thingi.npy`
+  - `PoNQ-main/src/eval/results/results_HybridDirect_full_supervised_projDCCVT_raw.npy`
+  - `PoNQ-main/src/eval/results/results_HybridDirect_full_supervised_projDCCVT_bbox_aligned.npy`
+  - `PoNQ-main/src/eval/results/results_HybridDirect_full_supervised_projDCCVT_hotspot_summary.csv`
+- Diagnostic baseline result over 31 shapes using `PoNQ-main/src/eval/eval_HOTSPOT.py` with `100000` samples:
+  - `ponq_thingi`: `CD x 1e-5 = 377.587`, `F1 = 0.041`, `NC = 0.592`, `ECD = 2.268`, `EF1 = 0.000`
+  - `raw`: `CD x 1e-5 = 1510.220`, `F1 = 0.015`, `NC = 0.593`, `ECD = 9.075`, `EF1 = 0.000`
+  - `bbox_aligned`: `CD x 1e-5 = 91.150`, `F1 = 0.095`, `NC = 0.622`, `ECD = 9.078`, `EF1 = 0.000`
+- Interpretation: `intDCCVT` is the default mesh for evaluation. It improves bbox-aligned CD and normal consistency over the `projDCCVT` diagnostic baseline, but still trails the HotSpot PoNQ baseline. The near-zero edge F1 suggests the direct DCCVT field needs additional supervision or mesh-loss fine-tuning before it is competitive.
+
 ## PoNQ ABC Reproduction Smoke Test
 
 - Config: `PoNQ-main/configs/local_abc_cnn_multiple_quadrics_split_smoke.yaml`

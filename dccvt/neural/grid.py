@@ -63,6 +63,27 @@ def make_cell_lower_corners(
     return torch.stack(xyz, dim=-1).reshape(-1, 3)
 
 
+def make_canonical_sites(
+    grid_n: int,
+    *,
+    device: Optional[torch.device] = None,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Return the canonical DCCVT site grid for a ``grid_n`` SDF vertex grid.
+
+    DCCVT initializes one site at each point of a ``(grid_n - 1)^3`` regular
+    grid spanning ``[-1, 1]^3``. This differs from PoNQ-style cell centers.
+    """
+    grid_n = validate_grid_n(grid_n)
+    cells = grid_n - 1
+    axis = torch.linspace(-1.0, 1.0, cells, device=device, dtype=dtype)
+    try:
+        xyz = torch.meshgrid(axis, axis, axis, indexing="ij")
+    except TypeError:
+        xyz = torch.meshgrid(axis, axis, axis)
+    return torch.stack(xyz, dim=-1).reshape(-1, 3)
+
+
 def make_near_surface_mask_np(
     sdf_grid: np.ndarray,
     *,
@@ -103,6 +124,81 @@ def make_gt_activity_mask_np(samples: np.ndarray, grid_n: int) -> np.ndarray:
     idx = np.clip(idx, 0, cells - 1)
     mask[idx[:, 0], idx[:, 1], idx[:, 2]] = True
     return mask.reshape(-1)
+
+
+def point_udf_grid(
+    points: torch.Tensor,
+    *,
+    grid_n: int,
+    chunk_size: int = 2048,
+) -> torch.Tensor:
+    """Return nearest-neighbor unsigned distances from grid vertices to points."""
+    grid_n = validate_grid_n(grid_n)
+    points = points.reshape(-1, 3)
+    if points.numel() == 0:
+        raise ValueError("`points` must contain at least one 3D point")
+
+    coords = make_coord_grid(grid_n, device=points.device, dtype=points.dtype)
+    distances: list[torch.Tensor] = []
+    for chunk in coords.split(chunk_size, dim=0):
+        dists = torch.cdist(chunk.unsqueeze(0), points.unsqueeze(0), p=2).squeeze(0)
+        distances.append(dists.min(dim=1).values)
+    return torch.cat(distances, dim=0).reshape(grid_n, grid_n, grid_n)
+
+
+def build_hybrid_input_channels(
+    sdf_grid: torch.Tensor,
+    target_points: torch.Tensor,
+    *,
+    grid_n: Optional[int] = None,
+    udf_clip: float = 4.0,
+    confidence_sigma_scale: float = 1.5,
+    chunk_size: int = 2048,
+) -> torch.Tensor:
+    """Build HotSpot plus point-cloud zero-level evidence channels.
+
+    Channels are ``sdf``, ``abs_sdf``, normalized clipped point UDF, and point
+    confidence. The point UDF is normalized by the SDF grid cell size.
+    """
+    if sdf_grid.dim() == 4 and sdf_grid.shape[0] == 1:
+        sdf_grid = sdf_grid[0]
+    if sdf_grid.dim() != 3 or len(set(sdf_grid.shape)) != 1:
+        raise ValueError(f"`sdf_grid` must have shape (G,G,G) or (1,G,G,G), got {sdf_grid.shape}")
+
+    resolved_grid_n = validate_grid_n(grid_n or int(sdf_grid.shape[0]))
+    if sdf_grid.shape[0] != resolved_grid_n:
+        raise ValueError(f"SDF grid shape {sdf_grid.shape} does not match grid_n={resolved_grid_n}")
+
+    target_points = target_points.to(device=sdf_grid.device, dtype=sdf_grid.dtype)
+    udf = point_udf_grid(target_points, grid_n=resolved_grid_n, chunk_size=chunk_size)
+    cell_size = cell_size_from_grid(resolved_grid_n)
+    normalized_udf = (udf / cell_size).clamp(min=0.0, max=float(udf_clip))
+    sigma = float(confidence_sigma_scale) * cell_size
+    confidence = torch.exp(-0.5 * (udf / sigma).pow(2))
+    return torch.stack((sdf_grid, sdf_grid.abs(), normalized_udf, confidence), dim=0)
+
+
+def build_hybrid_input_channels_np(
+    sdf_grid: np.ndarray,
+    target_points: np.ndarray,
+    *,
+    grid_n: Optional[int] = None,
+    udf_clip: float = 4.0,
+    confidence_sigma_scale: float = 1.5,
+    chunk_size: int = 2048,
+) -> np.ndarray:
+    """NumPy wrapper for ``build_hybrid_input_channels``."""
+    sdf_tensor = torch.from_numpy(np.asarray(sdf_grid, dtype=np.float32))
+    points_tensor = torch.from_numpy(np.asarray(target_points, dtype=np.float32).reshape(-1, 3))
+    channels = build_hybrid_input_channels(
+        sdf_tensor,
+        points_tensor,
+        grid_n=grid_n,
+        udf_clip=udf_clip,
+        confidence_sigma_scale=confidence_sigma_scale,
+        chunk_size=chunk_size,
+    )
+    return channels.detach().cpu().numpy().astype(np.float32)
 
 
 def _prepare_grid_and_points(
