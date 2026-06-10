@@ -3,10 +3,34 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import torch
+
+
+HYBRID_DIRECT_CHANNELS = ("hotspot_sdf", "abs_hotspot_sdf", "point_udf", "point_confidence")
+VALID_HYBRID_DIRECT_CHANNELS = frozenset(HYBRID_DIRECT_CHANNELS)
+
+
+def validate_hybrid_channel_names(channel_names: Optional[Sequence[str]] = None) -> tuple[str, ...]:
+    """Validate and normalize hybrid direct input channel names."""
+    if channel_names is None:
+        names = HYBRID_DIRECT_CHANNELS
+    else:
+        names = tuple(str(name) for name in channel_names)
+
+    if not names:
+        raise ValueError("Hybrid direct input requires at least one channel")
+    if names[0] != "hotspot_sdf":
+        raise ValueError("`hotspot_sdf` must be the first hybrid direct input channel")
+    if len(set(names)) != len(names):
+        raise ValueError(f"Hybrid direct channel names must be unique, got {names}")
+
+    unknown = sorted(set(names) - VALID_HYBRID_DIRECT_CHANNELS)
+    if unknown:
+        raise ValueError(f"Unknown hybrid direct channel names: {unknown}")
+    return names
 
 
 def validate_grid_n(grid_n: int) -> int:
@@ -153,13 +177,16 @@ def build_hybrid_input_channels(
     grid_n: Optional[int] = None,
     udf_clip: float = 4.0,
     confidence_sigma_scale: float = 1.5,
+    channel_names: Optional[Sequence[str]] = None,
     chunk_size: int = 2048,
 ) -> torch.Tensor:
     """Build HotSpot plus point-cloud zero-level evidence channels.
 
-    Channels are ``sdf``, ``abs_sdf``, normalized clipped point UDF, and point
-    confidence. The point UDF is normalized by the SDF grid cell size.
+    Available channels are ``hotspot_sdf``, ``abs_hotspot_sdf``,
+    ``point_udf``, and ``point_confidence``. The point UDF is normalized by the
+    SDF grid cell size.
     """
+    names = validate_hybrid_channel_names(channel_names)
     if sdf_grid.dim() == 4 and sdf_grid.shape[0] == 1:
         sdf_grid = sdf_grid[0]
     if sdf_grid.dim() != 3 or len(set(sdf_grid.shape)) != 1:
@@ -169,13 +196,29 @@ def build_hybrid_input_channels(
     if sdf_grid.shape[0] != resolved_grid_n:
         raise ValueError(f"SDF grid shape {sdf_grid.shape} does not match grid_n={resolved_grid_n}")
 
-    target_points = target_points.to(device=sdf_grid.device, dtype=sdf_grid.dtype)
-    udf = point_udf_grid(target_points, grid_n=resolved_grid_n, chunk_size=chunk_size)
-    cell_size = cell_size_from_grid(resolved_grid_n)
-    normalized_udf = (udf / cell_size).clamp(min=0.0, max=float(udf_clip))
-    sigma = float(confidence_sigma_scale) * cell_size
-    confidence = torch.exp(-0.5 * (udf / sigma).pow(2))
-    return torch.stack((sdf_grid, sdf_grid.abs(), normalized_udf, confidence), dim=0)
+    udf: Optional[torch.Tensor] = None
+    cell_size: Optional[float] = None
+    if "point_udf" in names or "point_confidence" in names:
+        target_points = target_points.to(device=sdf_grid.device, dtype=sdf_grid.dtype)
+        udf = point_udf_grid(target_points, grid_n=resolved_grid_n, chunk_size=chunk_size)
+        cell_size = cell_size_from_grid(resolved_grid_n)
+
+    channels: list[torch.Tensor] = []
+    for name in names:
+        if name == "hotspot_sdf":
+            channels.append(sdf_grid)
+        elif name == "abs_hotspot_sdf":
+            channels.append(sdf_grid.abs())
+        elif name == "point_udf":
+            assert udf is not None and cell_size is not None
+            channels.append((udf / cell_size).clamp(min=0.0, max=float(udf_clip)))
+        elif name == "point_confidence":
+            assert udf is not None and cell_size is not None
+            sigma = float(confidence_sigma_scale) * cell_size
+            channels.append(torch.exp(-0.5 * (udf / sigma).pow(2)))
+        else:
+            raise AssertionError(f"Unhandled hybrid direct channel: {name}")
+    return torch.stack(channels, dim=0)
 
 
 def build_hybrid_input_channels_np(
@@ -185,6 +228,7 @@ def build_hybrid_input_channels_np(
     grid_n: Optional[int] = None,
     udf_clip: float = 4.0,
     confidence_sigma_scale: float = 1.5,
+    channel_names: Optional[Sequence[str]] = None,
     chunk_size: int = 2048,
 ) -> np.ndarray:
     """NumPy wrapper for ``build_hybrid_input_channels``."""
@@ -196,6 +240,7 @@ def build_hybrid_input_channels_np(
         grid_n=grid_n,
         udf_clip=udf_clip,
         confidence_sigma_scale=confidence_sigma_scale,
+        channel_names=channel_names,
         chunk_size=chunk_size,
     )
     return channels.detach().cpu().numpy().astype(np.float32)

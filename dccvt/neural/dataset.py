@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from dccvt.neural.grid import build_hybrid_input_channels_np
+from dccvt.neural.grid import build_hybrid_input_channels_np, validate_hybrid_channel_names
 
 
 def _read_ids(path: Path) -> list[str]:
@@ -141,6 +141,7 @@ class HybridDirectDataset(Dataset):
         label_w_sdfsmooth: float = 100.0,
         point_udf_clip: float = 4.0,
         point_confidence_sigma_scale: float = 1.5,
+        channel_names: Optional[Sequence[str]] = None,
     ) -> None:
         self.files = [Path(path) for path in cache_files]
         self.label_root = Path(label_root)
@@ -152,6 +153,7 @@ class HybridDirectDataset(Dataset):
         self.label_w_sdfsmooth = float(label_w_sdfsmooth)
         self.point_udf_clip = float(point_udf_clip)
         self.point_confidence_sigma_scale = float(point_confidence_sigma_scale)
+        self.channel_names = validate_hybrid_channel_names(channel_names)
         if not self.files:
             raise ValueError("HybridDirectDataset requires at least one cache file")
 
@@ -192,6 +194,7 @@ class HybridDirectDataset(Dataset):
             grid_n=grid_n,
             udf_clip=self.point_udf_clip,
             confidence_sigma_scale=self.point_confidence_sigma_scale,
+            channel_names=self.channel_names,
         )
 
         return {

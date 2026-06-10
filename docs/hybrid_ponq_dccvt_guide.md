@@ -135,9 +135,36 @@ The default JSON config is `configs/neural_hybrid_direct_v1.json`:
   "site_delta_scale": 0.3,
   "sdf_residual_scale": 0.5,
   "point_udf_clip": 4.0,
-  "point_confidence_sigma_scale": 1.5
+  "point_confidence_sigma_scale": 1.5,
+  "channel_names": [
+    "hotspot_sdf",
+    "abs_hotspot_sdf",
+    "point_udf",
+    "point_confidence"
+  ]
 }
 ```
+
+`channel_names` is now the source of truth for the hybrid input layout.
+`input_channels` must match its length; if omitted in a future config, the
+typed config derives it from `channel_names`. The only valid names are
+`hotspot_sdf`, `abs_hotspot_sdf`, `point_udf`, and `point_confidence`.
+`hotspot_sdf` must stay first so checkpoint inference and direct
+`model(input_grid)` calls can recover the dense SDF channel consistently.
+
+The checked-in channel ablation configs are:
+
+| Run name | Config | Channels |
+| --- | --- | --- |
+| `hotspot_sdf` | `configs/neural_hybrid_direct_ablation_hotspot_sdf.json` | `hotspot_sdf` |
+| `hotspot_point_udf` | `configs/neural_hybrid_direct_ablation_hotspot_point_udf.json` | `hotspot_sdf`, `point_udf` |
+| `hotspot_point_udf_abs` | `configs/neural_hybrid_direct_ablation_hotspot_point_udf_abs.json` | `hotspot_sdf`, `point_udf`, `abs_hotspot_sdf` |
+| `hotspot_point_udf_confidence` | `configs/neural_hybrid_direct_ablation_hotspot_point_udf_confidence.json` | `hotspot_sdf`, `point_udf`, `point_confidence` |
+| `full` | `configs/neural_hybrid_direct_ablation_full.json` | `hotspot_sdf`, `point_udf`, `point_confidence`, `abs_hotspot_sdf` |
+
+The default `configs/neural_hybrid_direct_v1.json` is unchanged for backward
+compatibility. The `full` ablation intentionally uses the user-requested
+channel order, and each checkpoint records its own `channel_names`.
 
 ### Decoder Blocks
 
@@ -200,7 +227,7 @@ For each mesh, the dataset loads:
 - `sdf_grid` from `outputs/neural_hotspot_sdf/thingi32_g33/<mesh_id>.npz`
 - `target_points` from the same cache
 - `sites` and `sites_sdf` labels from `outputs/neural_labels/n32/<mesh_id>/`
-- hybrid input channels built from SDF plus point evidence
+- hybrid input channels selected by the model config
 
 The current full supervised run used labels with:
 
@@ -222,6 +249,96 @@ Stage A uses direct supervision against optimized DCCVT labels:
   demand otherwise.
 
 The implementation is [losses.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/losses.py:195). The sign loss is especially important because negative SDF sites are sparse in the labels.
+
+For one batch, the supervised objective is:
+
+```text
+L = w_site * L_site
+  + w_sdf * L_sdf
+  + w_sign * L_sign
+  + w_residual * L_residual
+```
+
+The default weights are set by the training CLI:
+
+```text
+w_site = 1.0
+w_sdf = 1.0
+w_sign = 0.1
+w_residual = 0.01
+sdf_near_weight = 4.0
+sdf_near_tau = 0.1
+sign_temperature = 0.05
+```
+
+`L_site` is the Smooth L1, or Huber, loss between predicted sites and label
+sites:
+
+```text
+L_site = mean_i SmoothL1(x_i, x_i*)
+```
+
+Here `x_i` is the predicted DCCVT site and `x_i*` is the optimized DCCVT label
+site. This term teaches the site head to reproduce the spatial layout of the
+DCCVT optimizer. It is robust to occasional large label differences because
+Smooth L1 is quadratic near zero error and linear for larger errors.
+
+`L_sdf` is a near-surface-weighted Smooth L1 loss on the scalar SDF value
+attached to each predicted site:
+
+```text
+L_sdf = mean_i a_i * SmoothL1(phi_i, phi_i*)
+a_i = 1 + sdf_near_weight * exp(-abs(phi_i*) / sdf_near_tau)
+```
+
+Here `phi_i` is the final predicted site SDF:
+
+```text
+phi_i = HotSpotSDF(x_i) + sdf_residual_i
+```
+
+and `phi_i*` is the label SDF. The multiplier `a_i` is largest when the label
+SDF is close to zero, so this term spends more capacity on sites near the
+surface. This matters because DCCVT extraction depends most strongly on where
+the signed field crosses zero, not on far-away SDF magnitudes.
+
+`L_sign` is a binary inside/outside classification loss derived from the
+predicted SDF value:
+
+```text
+inside_i* = 1 if phi_i* < 0 else 0
+logit_i = -phi_i / sign_temperature
+L_sign = BCEWithLogits(logit_i, inside_i*)
+```
+
+The negative sign in `logit_i` makes negative predicted SDF values correspond to
+inside probability. The implementation also uses a positive-class weight:
+
+```text
+pos_weight = outside_label_count / inside_label_count
+```
+
+In this code, the positive class is `inside_i* = 1`. This balancing is important
+because inside, negative-SDF sites are sparse; without it, the model can get a
+low average loss while predicting too many outside values. The temperature
+controls how sharply SDF magnitude maps to inside/outside confidence. With the
+default `0.05`, sign errors close to zero still receive a meaningful gradient.
+
+`L_residual` penalizes the SDF correction itself:
+
+```text
+L_residual = mean_i sdf_residual_i^2
+```
+
+This keeps the model anchored to HotSpot. The residual head can override
+HotSpot when labels demand it, but this term discourages unnecessary correction
+of an already reasonable SDF sample. It does not penalize site movement; it only
+acts on the additive SDF residual.
+
+The logged `site`, `sdf`, `sign`, and `residual` values are the unweighted loss
+components. The logged `loss` is the weighted sum used for backpropagation.
+`sign_accuracy` reports whether `phi_i` and `phi_i*` have matching signs, while
+`negative_fraction` reports the fraction of label sites with `phi_i* < 0`.
 
 The final supervised checkpoint log ended at epoch `299` with:
 
@@ -245,6 +362,57 @@ Stage B exists in code but has not been evaluated for this experiment. It uses
 the full predicted site/SDF field, computes DCCVT clipped-mesh geometry, and
 adds Chamfer, CVT, and SDF smoothness losses. The hook is [losses.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/losses.py:247), and training enables it with `--stage mesh` in [hybrid_train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_train.py:212).
 
+The mesh-stage objective is:
+
+```text
+L_mesh = w_mesh_chamfer * L_chamfer
+       + w_mesh_cvt * L_cvt
+       + w_mesh_sdfsmooth * L_sdfsmooth
+```
+
+with CLI defaults:
+
+```text
+w_mesh_chamfer = 1000.0
+w_mesh_cvt = 100.0
+w_mesh_sdfsmooth = 100.0
+```
+
+`L_chamfer` compares the DCCVT clipped surface points produced by the current
+predicted `(sites, sites_sdf)` field against the target point cloud:
+
+```text
+L_chamfer = Chamfer(projected_clipped_surface_points, target_points)
+```
+
+This is the most direct surface-quality term. Unlike `L_site` and `L_sdf`, it
+does not ask the network to match a saved DCCVT label pointwise; it asks the
+extracted geometry to lie near the target surface.
+
+`L_cvt` is the DCCVT centroidal Voronoi term computed from the clipped vertices.
+It encourages sites to remain well placed relative to the clipped cells they
+induce. This keeps the DCCVT representation geometrically regular instead of
+letting site positions move only to reduce Chamfer distance.
+
+`L_sdfsmooth` is the same kind of discrete SDF regularization used by the DCCVT
+optimizer. In the hybrid mesh hook it is:
+
+```text
+L_sdfsmooth = discrete_tet_volume_eikonal_loss / 10
+            + tet_sdf_motion_mean_curvature_loss
+```
+
+The eikonal term encourages the tetrahedral SDF gradient to behave like a signed
+distance field, while the curvature term discourages noisy SDF motion across the
+Delaunay tetrahedra. This loss depends on both the predicted site positions and
+the predicted site SDF values.
+
+The mesh loss skips a batch item if there are fewer than five sites, if all
+predicted SDF values have the same sign, if clipped extraction returns no
+surface points, or if the geometry computation raises an exception. The reported
+`mesh_used_shapes` and `mesh_skipped_shapes` counters should therefore be
+checked whenever Stage B is used.
+
 This is the most direct next experiment because the current failure mode is
 mesh quality, not just supervised label fit.
 
@@ -263,7 +431,9 @@ Important code references:
 - Main training loop: [hybrid_train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_train.py:154)
 
 Checkpoints and `resolved_config.json` save the resolved model config, seed,
-channel list, command arguments, and training stats.
+channel list, command arguments, and training stats. Training passes
+`channel_names` into `HybridDirectDataset`; inference reads `channel_names` from
+the checkpoint and rebuilds the same input layout.
 
 ### Inference, Prediction Files, And Extraction
 
@@ -303,8 +473,9 @@ path.
 
 ### Unit Tests
 
-The current tests cover canonical grid ordering, point UDF/confidence channels,
-forward shapes, residual SDF composition, and checkpoint reload. See
+The current tests cover canonical grid ordering, selected input-channel layouts,
+point UDF/confidence channels, reduced-channel forward passes, residual SDF
+composition, checkpoint reload, and ablation runner command construction. See
 [test_neural_hybrid_direct.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/tests/test_neural_hybrid_direct.py:10).
 
 ## Reproduction Workflow
@@ -343,6 +514,80 @@ The corresponding resolved config is:
 
 ```text
 outputs/neural_dccvt/hybrid_direct_v1/full_supervised/resolved_config.json
+```
+
+### Channel Ablation Runner
+
+The generic ablation runner trains all five channel combinations. By default it
+runs sequentially. With `--parallel`, it detects free GPUs with `nvidia-smi`,
+assigns one ablation per GPU, writes each run log to `<output-root>/<run-name>/train.log`,
+and waits/polls when all selected GPUs are busy. It owns `--config` and
+`--checkpoint-dir`; all other arguments are forwarded to
+`scripts/train_dccvt_hybrid_direct.py`.
+
+```bash
+python scripts/run_hybrid_direct_channel_ablation.py \
+  --output-root outputs/neural_dccvt/hybrid_direct_ablation_smoke_313444 \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --label-root outputs/neural_labels/n32 \
+  --mesh-ids 313444 \
+  --epochs 1 \
+  --batch-size 1 \
+  --seed 69 \
+  --save-every 0
+```
+
+The per-run checkpoint directories are:
+
+```text
+outputs/neural_dccvt/hybrid_direct_ablation_smoke_313444/hotspot_sdf/
+outputs/neural_dccvt/hybrid_direct_ablation_smoke_313444/hotspot_point_udf/
+outputs/neural_dccvt/hybrid_direct_ablation_smoke_313444/hotspot_point_udf_abs/
+outputs/neural_dccvt/hybrid_direct_ablation_smoke_313444/hotspot_point_udf_confidence/
+outputs/neural_dccvt/hybrid_direct_ablation_smoke_313444/full/
+```
+
+Use `--dry-run` to print the five training commands without running them. The
+runner refuses to reuse non-empty per-run checkpoint directories unless
+`--allow-existing` is passed.
+
+The full sequential command is:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 PoNQ-main/.venv/bin/python \
+  scripts/run_hybrid_direct_channel_ablation.py \
+  --output-root outputs/neural_dccvt/hybrid_direct_ablation \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --label-root outputs/neural_labels/n32 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --stage supervised \
+  --epochs 300 \
+  --batch-size 1 \
+  --lr 6.4e-5 \
+  --device cuda \
+  --seed 69 \
+  --save-every 25
+```
+
+The full parallel command is:
+
+```bash
+PYTHONUNBUFFERED=1 PoNQ-main/.venv/bin/python \
+  scripts/run_hybrid_direct_channel_ablation.py \
+  --parallel \
+  --devices auto \
+  --min-free-gb 20 \
+  --poll-seconds 60 \
+  --output-root outputs/neural_dccvt/hybrid_direct_ablation \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --label-root outputs/neural_labels/n32 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --stage supervised \
+  --epochs 300 \
+  --batch-size 1 \
+  --lr 6.4e-5 \
+  --seed 69 \
+  --save-every 25
 ```
 
 ### No-Extract Inference

@@ -39,6 +39,69 @@ python scripts/infer_dccvt_hybrid_direct.py \
 
 - Optional mesh fine-tuning: pass `--stage mesh --batch-size 1`; this reuses DCCVT clipped-mesh Chamfer, CVT, and SDF smoothness losses and requires the CUDA/gDel3D runtime.
 - Assumptions: inputs and labels use the existing normalized `[-1, 1]^3` convention; label site ordering matches the canonical DCCVT `torch.linspace(-1, 1, 32)` grid; KNN point features are reserved for a later ablation if voxel UDF/density underfits.
+
+### Hybrid Direct Channel Ablation
+
+- Runner: `scripts/run_hybrid_direct_channel_ablation.py`
+- Output convention: per-run checkpoints and resolved configs are written to `outputs/neural_dccvt/hybrid_direct_ablation/<run_name>/` unless `--output-root` is overridden.
+- Configs:
+  - `hotspot_sdf`: `configs/neural_hybrid_direct_ablation_hotspot_sdf.json`
+  - `hotspot_point_udf`: `configs/neural_hybrid_direct_ablation_hotspot_point_udf.json`
+  - `hotspot_point_udf_abs`: `configs/neural_hybrid_direct_ablation_hotspot_point_udf_abs.json`
+  - `hotspot_point_udf_confidence`: `configs/neural_hybrid_direct_ablation_hotspot_point_udf_confidence.json`
+  - `full`: `configs/neural_hybrid_direct_ablation_full.json`
+- Seed behavior: the runner forwards `--seed` to each training process; each checkpoint and `resolved_config.json` records that seed and its exact `channel_names`.
+- Parallel behavior: pass `--parallel` to auto-detect free GPUs with `nvidia-smi`; the runner assigns one ablation per GPU, writes each run log to `<output-root>/<run_name>/train.log`, and waits according to `--poll-seconds` if no GPU has at least `--min-free-gb` free.
+- Unchanged behavior: losses, supervised labels, dataset filters, metrics, extraction code, and prediction output formats are unchanged; only the model input channels differ.
+- Dry-run command:
+
+```bash
+python scripts/run_hybrid_direct_channel_ablation.py \
+  --dry-run \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --label-root outputs/neural_labels/n32 \
+  --mesh-ids 313444 \
+  --epochs 1 \
+  --batch-size 1 \
+  --seed 69 \
+  --save-every 0
+```
+
+- Smoke train command:
+
+```bash
+python scripts/run_hybrid_direct_channel_ablation.py \
+  --output-root outputs/neural_dccvt/hybrid_direct_ablation_smoke_313444 \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --label-root outputs/neural_labels/n32 \
+  --mesh-ids 313444 \
+  --epochs 1 \
+  --batch-size 1 \
+  --seed 69 \
+  --save-every 0
+```
+
+- Parallel full command:
+
+```bash
+PYTHONUNBUFFERED=1 PoNQ-main/.venv/bin/python \
+  scripts/run_hybrid_direct_channel_ablation.py \
+  --parallel \
+  --devices auto \
+  --min-free-gb 20 \
+  --poll-seconds 60 \
+  --output-root outputs/neural_dccvt/hybrid_direct_ablation \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --label-root outputs/neural_labels/n32 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --stage supervised \
+  --epochs 300 \
+  --batch-size 1 \
+  --lr 6.4e-5 \
+  --seed 69 \
+  --save-every 25
+```
+
 - Full supervised checkpoint: `outputs/neural_dccvt/hybrid_direct_v1/full_supervised/latest.pt`
 - Default full extraction output: `outputs/neural_dccvt/hybrid_direct_v1/extract_full/<mesh_id>/DCCVT_0_hybrid_direct_intDCCVT_cvt100_sdfsmooth100.obj`
 - Default flat evaluation view: `PoNQ-main/out_hybrid_direct/HybridDirect_full_supervised_intDCCVT/<mesh_id>.obj`

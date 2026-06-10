@@ -12,15 +12,14 @@ from torch import nn
 from torch.nn import functional as F
 
 from dccvt.neural.grid import (
+    HYBRID_DIRECT_CHANNELS,
     cell_size_from_grid,
     make_canonical_sites,
     make_cell_lower_corners,
     trilinear_interpolate_sdf,
     validate_grid_n,
+    validate_hybrid_channel_names,
 )
-
-
-HYBRID_DIRECT_CHANNELS = ("hotspot_sdf", "abs_hotspot_sdf", "point_udf", "point_confidence")
 
 
 @dataclass
@@ -28,7 +27,7 @@ class HybridDirectConfig:
     """Typed configuration for the hybrid direct DCCVT extractor."""
 
     grid_n: int = 33
-    input_channels: int = 4
+    input_channels: int | None = None
     feature_dim: int = 128
     encoder_layers: int = 5
     decoder_layers: int = 3
@@ -40,7 +39,11 @@ class HybridDirectConfig:
 
     def __post_init__(self) -> None:
         self.grid_n = validate_grid_n(self.grid_n)
-        self.input_channels = int(self.input_channels)
+        self.channel_names = validate_hybrid_channel_names(self.channel_names)
+        if self.input_channels is None:
+            self.input_channels = len(self.channel_names)
+        else:
+            self.input_channels = int(self.input_channels)
         self.feature_dim = int(self.feature_dim)
         self.encoder_layers = int(self.encoder_layers)
         self.decoder_layers = int(self.decoder_layers)
@@ -48,7 +51,6 @@ class HybridDirectConfig:
         self.sdf_residual_scale = float(self.sdf_residual_scale)
         self.point_udf_clip = float(self.point_udf_clip)
         self.point_confidence_sigma_scale = float(self.point_confidence_sigma_scale)
-        self.channel_names = tuple(self.channel_names)
         if self.input_channels != len(self.channel_names):
             raise ValueError(
                 f"input_channels={self.input_channels} does not match "

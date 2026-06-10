@@ -148,6 +148,7 @@ def _build_dataset(args: argparse.Namespace, config: HybridDirectConfig) -> Hybr
         label_w_sdfsmooth=args.label_w_sdfsmooth,
         point_udf_clip=config.point_udf_clip,
         point_confidence_sigma_scale=config.point_confidence_sigma_scale,
+        channel_names=config.channel_names,
     )
 
 

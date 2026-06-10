@@ -1,0 +1,14 @@
+{
+  "grid_n": 33,
+  "input_channels": 1,
+  "feature_dim": 128,
+  "encoder_layers": 5,
+  "decoder_layers": 3,
+  "site_delta_scale": 0.3,
+  "sdf_residual_scale": 0.5,
+  "point_udf_clip": 4.0,
+  "point_confidence_sigma_scale": 1.5,
+  "channel_names": [
+    "hotspot_sdf"
+  ]
+}

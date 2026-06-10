@@ -1,6 +1,7 @@
 """Neural DCCVT components based on PoNQ's dense SDF-grid formulation."""
 
 from dccvt.neural.grid import (
+    HYBRID_DIRECT_CHANNELS,
     build_hybrid_input_channels,
     build_hybrid_input_channels_np,
     default_near_surface_threshold,
@@ -11,12 +12,14 @@ from dccvt.neural.grid import (
     make_near_surface_mask_np,
     point_udf_grid,
     trilinear_interpolate_sdf,
+    validate_hybrid_channel_names,
 )
 from dccvt.neural.models import DCCVTHybridDirectNet, DCCVTPoNQNet, HybridDirectConfig
 
 __all__ = [
     "DCCVTHybridDirectNet",
     "DCCVTPoNQNet",
+    "HYBRID_DIRECT_CHANNELS",
     "HybridDirectConfig",
     "build_hybrid_input_channels",
     "build_hybrid_input_channels_np",
@@ -28,4 +31,5 @@ __all__ = [
     "make_near_surface_mask_np",
     "point_udf_grid",
     "trilinear_interpolate_sdf",
+    "validate_hybrid_channel_names",
 ]

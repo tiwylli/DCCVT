@@ -68,6 +68,7 @@ def run_inference(
         grid_n=grid_n,
         udf_clip=model.config_obj.point_udf_clip,
         confidence_sigma_scale=model.config_obj.point_confidence_sigma_scale,
+        channel_names=model.config_obj.channel_names,
     )
     input_grid = torch.from_numpy(input_grid_np[None, ...]).to(device)
     sdf_grid = torch.from_numpy(sdf_grid_np[None, None, ...]).to(device)
