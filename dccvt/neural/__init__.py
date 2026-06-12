@@ -14,6 +14,7 @@ from dccvt.neural.grid import (
     trilinear_interpolate_sdf,
     validate_hybrid_channel_names,
 )
+from dccvt.neural.hybrid_initial import HybridInitialHotSpotConfig, build_initial_hotspot_field
 from dccvt.neural.models import DCCVTHybridDirectNet, DCCVTPoNQNet, HybridDirectConfig
 
 __all__ = [
@@ -21,8 +22,10 @@ __all__ = [
     "DCCVTPoNQNet",
     "HYBRID_DIRECT_CHANNELS",
     "HybridDirectConfig",
+    "HybridInitialHotSpotConfig",
     "build_hybrid_input_channels",
     "build_hybrid_input_channels_np",
+    "build_initial_hotspot_field",
     "default_near_surface_threshold",
     "make_canonical_sites",
     "make_cell_lower_corners",

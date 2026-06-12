@@ -486,6 +486,111 @@ All commands assume the repository root:
 cd /export/livia/home/vision/Wcharawi/dev/DCCVT
 ```
 
+### Initial HotSpot Canonical Baseline
+
+This baseline represents the state before neural prediction or optimization:
+
+```text
+sites = make_canonical_sites(grid_n)
+sites_sdf = trilinear_hotspot_sdf(sdf_grid, sites)
+```
+
+It uses the exact canonical DCCVT grid and the cached HotSpot SDF values only.
+There are no learned site offsets, no learned SDF residuals, and no jitter.
+
+Generate the full split:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 /tmp/dccvt-venv/bin/python \
+  scripts/extract_hybrid_initial_hotspot.py \
+  --config configs/neural_hybrid_initial_hotspot.json
+```
+
+A one-shape smoke command is:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 /tmp/dccvt-venv/bin/python \
+  scripts/extract_hybrid_initial_hotspot.py \
+  --config configs/neural_hybrid_initial_hotspot.json \
+  --mesh-ids 313444 \
+  --output-root outputs/neural_dccvt/hybrid_initial_hotspot_smoke \
+  --overwrite
+```
+
+Default outputs are written to:
+
+```text
+outputs/neural_dccvt/hybrid_initial_hotspot/<mesh_id>/
+```
+
+Each mesh directory contains the initial field bundle plus the extracted
+`intDCCVT` and `projDCCVT` meshes:
+
+```text
+<mesh_id>_initial_hotspot_field.npz
+DCCVT_0_initial_hotspot_intDCCVT_cvt100_sdfsmooth100.obj
+DCCVT_0_initial_hotspot_intDCCVT_cvt100_sdfsmooth100.npz
+DCCVT_0_initial_hotspot_projDCCVT_cvt100_sdfsmooth100.obj
+DCCVT_0_initial_hotspot_projDCCVT_cvt100_sdfsmooth100.npz
+target.ply
+```
+
+Create flat evaluation views:
+
+```bash
+SPLIT="PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt"
+SRC_ROOT="$PWD/outputs/neural_dccvt/hybrid_initial_hotspot"
+
+for variant in intDCCVT projDCCVT; do
+  PRED_DIR="PoNQ-main/out_hybrid_direct/HybridInitialHotSpot_${variant}"
+  mkdir -p "$PRED_DIR"
+
+  while read -r id; do
+    [ -z "$id" ] && continue
+    ln -sfn \
+      "$SRC_ROOT/$id/DCCVT_0_initial_hotspot_${variant}_cvt100_sdfsmooth100.obj" \
+      "$PRED_DIR/$id.obj"
+  done < "$SPLIT"
+done
+```
+
+Run metrics from `PoNQ-main`:
+
+```bash
+cd /export/livia/home/vision/Wcharawi/dev/DCCVT/PoNQ-main
+
+.venv/bin/python src/eval/eval_HOTSPOT.py \
+  out_hybrid_direct/HybridInitialHotSpot_intDCCVT \
+  -gt_dir /export/livia/home/vision/Wcharawi/dev/DCCVT/mesh/thingi32 \
+  -all_models src/eval/hotspot_thingi32_g33_ids.txt \
+  -pred_suffix .obj \
+  -mode all \
+  -sample_num 100000
+
+.venv/bin/python src/eval/eval_HOTSPOT.py \
+  out_hybrid_direct/HybridInitialHotSpot_projDCCVT \
+  -gt_dir /export/livia/home/vision/Wcharawi/dev/DCCVT/mesh/thingi32 \
+  -all_models src/eval/hotspot_thingi32_g33_ids.txt \
+  -pred_suffix .obj \
+  -mode all \
+  -sample_num 100000
+```
+
+The expected metric output files are:
+
+```text
+PoNQ-main/src/eval/results/results_HybridInitialHotSpot_intDCCVT_ponq_thingi.npy
+PoNQ-main/src/eval/results/results_HybridInitialHotSpot_intDCCVT_raw.npy
+PoNQ-main/src/eval/results/results_HybridInitialHotSpot_intDCCVT_bbox_aligned.npy
+PoNQ-main/src/eval/results/results_HybridInitialHotSpot_intDCCVT_hotspot_summary.csv
+PoNQ-main/src/eval/results/results_HybridInitialHotSpot_projDCCVT_ponq_thingi.npy
+PoNQ-main/src/eval/results/results_HybridInitialHotSpot_projDCCVT_raw.npy
+PoNQ-main/src/eval/results/results_HybridInitialHotSpot_projDCCVT_bbox_aligned.npy
+PoNQ-main/src/eval/results/results_HybridInitialHotSpot_projDCCVT_hotspot_summary.csv
+```
+
+Metric values are pending until this evaluator is run on the extracted meshes.
+
 ### Full Supervised Training
 
 The completed full supervised run used the HotSpot grid-33 cache split and

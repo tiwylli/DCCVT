@@ -40,6 +40,41 @@ python scripts/infer_dccvt_hybrid_direct.py \
 - Optional mesh fine-tuning: pass `--stage mesh --batch-size 1`; this reuses DCCVT clipped-mesh Chamfer, CVT, and SDF smoothness losses and requires the CUDA/gDel3D runtime.
 - Assumptions: inputs and labels use the existing normalized `[-1, 1]^3` convention; label site ordering matches the canonical DCCVT `torch.linspace(-1, 1, 32)` grid; KNN point features are reserved for a later ablation if voxel UDF/density underfits.
 
+### Initial HotSpot Canonical Baseline
+
+- Config: `configs/neural_hybrid_initial_hotspot.json`
+- Extraction script: `scripts/extract_hybrid_initial_hotspot.py`
+- Input caches: `outputs/neural_hotspot_sdf/thingi32_g33/*.npz`
+- Split: `PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt`
+- Output convention: per-mesh fields and extracted meshes are written under `outputs/neural_dccvt/hybrid_initial_hotspot/<mesh_id>/`.
+- Purpose: measure the initial state before neural prediction or DCCVT optimization by using exact canonical sites and HotSpot SDF values sampled at those sites.
+- Field definition: `sites = make_canonical_sites(grid_n)` and `sites_sdf = trilinear_interpolate_sdf(hotspot_sdf_grid, sites)`.
+- Seed behavior: extraction records seed `69` in `resolved_config.json`, per-mesh field bundles, and `summary.json`; no stochastic site perturbation is applied.
+- Metric status: evaluated with `PoNQ-main/src/eval/eval_HOTSPOT.py` over the 31-shape HotSpot/Thingi32 split.
+- Metric outputs:
+  - `PoNQ-main/src/eval/results/results_HybridInitialHotSpot_intDCCVT_ponq_thingi.npy`
+  - `PoNQ-main/src/eval/results/results_HybridInitialHotSpot_intDCCVT_raw.npy`
+  - `PoNQ-main/src/eval/results/results_HybridInitialHotSpot_intDCCVT_bbox_aligned.npy`
+  - `PoNQ-main/src/eval/results/results_HybridInitialHotSpot_intDCCVT_hotspot_summary.csv`
+  - `PoNQ-main/src/eval/results/results_HybridInitialHotSpot_projDCCVT_ponq_thingi.npy`
+  - `PoNQ-main/src/eval/results/results_HybridInitialHotSpot_projDCCVT_raw.npy`
+  - `PoNQ-main/src/eval/results/results_HybridInitialHotSpot_projDCCVT_bbox_aligned.npy`
+  - `PoNQ-main/src/eval/results/results_HybridInitialHotSpot_projDCCVT_hotspot_summary.csv`
+- Default `intDCCVT` result:
+  - `ponq_thingi`: `CD x 1e-5 = 274.530`, `F1 = 0.050`, `NC = 0.744`, `ECD = 2.269`, `EF1 = 0.000`
+  - `raw`: `CD x 1e-5 = 1099.273`, `F1 = 0.020`, `NC = 0.744`, `ECD = 9.076`, `EF1 = 0.000`
+  - `bbox_aligned`: `CD x 1e-5 = 123.232`, `F1 = 0.119`, `NC = 0.799`, `ECD = 9.073`, `EF1 = 0.000`
+- Smoke extraction command:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 /tmp/dccvt-venv/bin/python \
+  scripts/extract_hybrid_initial_hotspot.py \
+  --config configs/neural_hybrid_initial_hotspot.json \
+  --mesh-ids 313444 \
+  --output-root outputs/neural_dccvt/hybrid_initial_hotspot_smoke \
+  --overwrite
+```
+
 ### Hybrid Direct Channel Ablation
 
 - Runner: `scripts/run_hybrid_direct_channel_ablation.py`
@@ -213,3 +248,45 @@ PYTHONUNBUFFERED=1 PoNQ-main/.venv/bin/python \
   - `raw`: `CD x 1e-5 = 1232.188`, `F1 = 0.015`, `NC = 0.729`, `ECD = 1.510`, `EF1 = 0.008`
   - `bbox_aligned`: `CD x 1e-5 = 14.024`, `F1 = 0.261`, `NC = 0.896`, `ECD = 0.240`, `EF1 = 0.079`
 - Interpretation: `bbox_aligned` is diagnostic only. The large CD/F1 improvement indicates the poor strict score is strongly affected by a uniform scale/translation mismatch, not only by local mesh quality.
+
+## HotSpot Hybrid Comparison Table
+
+- Evaluator: `PoNQ-main/src/eval/eval_HOTSPOT.py`
+- Split: `PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt`
+- Count: `31`
+- Sample count: `100000`
+- DCCVT rows use the default `intDCCVT` mesh. The `projDCCVT` diagnostic result files are retained separately under `PoNQ-main/src/eval/results/`.
+
+| case | mesh | mode | count | CD x1e-5 | F1 | NC | ECD | EF1 |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| Hybrid initial HotSpot | intDCCVT | `ponq_thingi` | 31 | 274.530 | 0.050 | 0.744 | 2.269 | 0.000 |
+| Hybrid initial HotSpot | intDCCVT | `raw` | 31 | 1099.273 | 0.020 | 0.744 | 9.076 | 0.000 |
+| Hybrid initial HotSpot | intDCCVT | `bbox_aligned` | 31 | 123.232 | 0.119 | 0.799 | 9.073 | 0.000 |
+| HotSpot PoNQ ABC retrained | PoNQ | `ponq_thingi` | 31 | 307.902 | 0.042 | 0.729 | 0.377 | 0.029 |
+| HotSpot PoNQ ABC retrained | PoNQ | `raw` | 31 | 1232.188 | 0.015 | 0.729 | 1.510 | 0.008 |
+| HotSpot PoNQ ABC retrained | PoNQ | `bbox_aligned` | 31 | 14.024 | 0.261 | 0.896 | 0.240 | 0.079 |
+| HybridDirect full supervised | intDCCVT | `ponq_thingi` | 31 | 465.425 | 0.027 | 0.638 | 2.269 | 0.000 |
+| HybridDirect full supervised | intDCCVT | `raw` | 31 | 1861.174 | 0.010 | 0.638 | 9.076 | 0.000 |
+| HybridDirect full supervised | intDCCVT | `bbox_aligned` | 31 | 77.289 | 0.095 | 0.707 | 9.079 | 0.000 |
+| Ablation `hotspot_sdf` | intDCCVT | `ponq_thingi` | 31 | 436.067 | 0.028 | 0.641 | 2.269 | 0.000 |
+| Ablation `hotspot_sdf` | intDCCVT | `raw` | 31 | 1745.309 | 0.010 | 0.640 | 9.076 | 0.000 |
+| Ablation `hotspot_sdf` | intDCCVT | `bbox_aligned` | 31 | 77.255 | 0.103 | 0.703 | 9.072 | 0.000 |
+| Ablation `hotspot_point_udf` | intDCCVT | `ponq_thingi` | 31 | 390.553 | 0.036 | 0.632 | 2.269 | 0.000 |
+| Ablation `hotspot_point_udf` | intDCCVT | `raw` | 31 | 1562.331 | 0.013 | 0.632 | 9.076 | 0.000 |
+| Ablation `hotspot_point_udf` | intDCCVT | `bbox_aligned` | 31 | 63.832 | 0.117 | 0.709 | 9.076 | 0.000 |
+| Ablation `hotspot_point_udf_abs` | intDCCVT | `ponq_thingi` | 31 | 400.670 | 0.032 | 0.631 | 2.269 | 0.000 |
+| Ablation `hotspot_point_udf_abs` | intDCCVT | `raw` | 31 | 1602.415 | 0.012 | 0.631 | 9.075 | 0.000 |
+| Ablation `hotspot_point_udf_abs` | intDCCVT | `bbox_aligned` | 31 | 63.841 | 0.116 | 0.706 | 9.076 | 0.000 |
+| Ablation `hotspot_point_udf_confidence` | intDCCVT | `ponq_thingi` | 31 | 396.248 | 0.033 | 0.630 | 2.268 | 0.000 |
+| Ablation `hotspot_point_udf_confidence` | intDCCVT | `raw` | 31 | 1584.442 | 0.012 | 0.631 | 9.075 | 0.000 |
+| Ablation `hotspot_point_udf_confidence` | intDCCVT | `bbox_aligned` | 31 | 62.547 | 0.116 | 0.709 | 9.076 | 0.000 |
+
+| case | mesh | mode | count | CD x1e-5 | F1 | NC | ECD | EF1 |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| Hybrid initial HotSpot | intDCCVT | `bbox_aligned` | 31 | 123.232 | 0.119 | 0.799 | 9.073 | 0.000 |
+| HotSpot PoNQ ABC retrained | PoNQ | `bbox_aligned` | 31 | 14.024 | 0.261 | 0.896 | 0.240 | 0.079 |
+| HybridDirect full supervised | intDCCVT | `bbox_aligned` | 31 | 77.289 | 0.095 | 0.707 | 9.079 | 0.000 |
+| Ablation `hotspot_sdf` | intDCCVT | `bbox_aligned` | 31 | 77.255 | 0.103 | 0.703 | 9.072 | 0.000 |
+| Ablation `hotspot_point_udf` | intDCCVT | `bbox_aligned` | 31 | 63.832 | 0.117 | 0.709 | 9.076 | 0.000 |
+| Ablation `hotspot_point_udf_abs` | intDCCVT | `bbox_aligned` | 31 | 63.841 | 0.116 | 0.706 | 9.076 | 0.000 |
+| Ablation `hotspot_point_udf_confidence` | intDCCVT | `bbox_aligned` | 31 | 62.547 | 0.116 | 0.709 | 9.076 | 0.000 |

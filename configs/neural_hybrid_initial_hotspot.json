@@ -1,0 +1,8 @@
+{
+  "cache_root": "outputs/neural_hotspot_sdf/thingi32_g33",
+  "split_file": "PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt",
+  "output_root": "outputs/neural_dccvt/hybrid_initial_hotspot",
+  "seed": 69,
+  "w_cvt": 100.0,
+  "w_sdfsmooth": 100.0
+}
