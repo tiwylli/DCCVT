@@ -251,6 +251,7 @@ def hybrid_direct_mesh_loss(
     chamfer_weight: float = 1000.0,
     cvt_weight: float = 100.0,
     sdfsmooth_weight: float = 100.0,
+    strict: bool = False,
 ) -> tuple[torch.Tensor, Dict[str, float]]:
     """Fine-tune direct predictions through DCCVT clipped-mesh losses."""
     from dccvt.geometry import compute_clipped_mesh, compute_cvt_loss_from_clipped_vertices, compute_delaunay_simplices
@@ -266,23 +267,39 @@ def hybrid_direct_mesh_loss(
     for b in range(outputs["sites"].shape[0]):
         sites = outputs["sites"][b]
         sites_sdf = outputs["sites_sdf"][b]
-        if sites.shape[0] < 5 or not ((sites_sdf.min() < 0) and (sites_sdf.max() > 0)):
+        if sites.shape[0] < 5:
+            if strict:
+                raise RuntimeError(f"Mesh loss requires at least 5 sites for batch item {b}, got {sites.shape[0]}")
+            skipped_shapes += 1
+            continue
+        if not ((sites_sdf.min() < 0) and (sites_sdf.max() > 0)):
+            if strict:
+                raise RuntimeError(f"Mesh loss requires positive and negative SDF values for batch item {b}")
             skipped_shapes += 1
             continue
         try:
             d3d = compute_delaunay_simplices(sites)
             projected_points, clipped_vertices, sites_sdf_grads, W = compute_clipped_mesh(sites, d3d, sites_sdf)
             if projected_points.numel() == 0:
+                if strict:
+                    raise RuntimeError(f"Mesh loss extracted no projected surface points for batch item {b}")
                 skipped_shapes += 1
                 continue
             chamfer = chamfer_distance_points(projected_points, target_points[b])
-            cvt = compute_cvt_loss_from_clipped_vertices(sites, d3d, clipped_vertices)
-            d3d_tensor = torch.as_tensor(d3d, device=sites.device).detach()
-            eps_H = estimate_eps_H(sites, d3d, multiplier=1.5 * 2).detach()
-            eikonal = discrete_tet_volume_eikonal_loss(sites, sites_sdf_grads, d3d_tensor)
-            curvature = tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3d, eps_H)
-            smooth = eikonal / 10.0 + curvature
-        except Exception:
+            cvt = sites.sum() * 0.0
+            if cvt_weight != 0.0:
+                cvt = compute_cvt_loss_from_clipped_vertices(sites, d3d, clipped_vertices)
+
+            smooth = sites_sdf.sum() * 0.0
+            if sdfsmooth_weight != 0.0:
+                d3d_tensor = torch.as_tensor(d3d, device=sites.device).detach()
+                eps_H = estimate_eps_H(sites, d3d, multiplier=1.5 * 2).detach()
+                eikonal = discrete_tet_volume_eikonal_loss(sites, sites_sdf_grads, d3d_tensor)
+                curvature = tet_sdf_motion_mean_curvature_loss(sites, sites_sdf, W, d3d, eps_H)
+                smooth = eikonal / 10.0 + curvature
+        except Exception as exc:
+            if strict:
+                raise RuntimeError(f"Mesh loss geometry failed for batch item {b}") from exc
             skipped_shapes += 1
             continue
 

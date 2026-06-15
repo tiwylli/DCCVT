@@ -115,6 +115,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--w-mesh-chamfer", type=float, default=1000.0)
     parser.add_argument("--w-mesh-cvt", type=float, default=100.0)
     parser.add_argument("--w-mesh-sdfsmooth", type=float, default=100.0)
+    parser.add_argument(
+        "--strict-mesh-loss",
+        action="store_true",
+        help="Abort if a mesh-stage batch item cannot produce a valid differentiable surface.",
+    )
     parser.add_argument("--save-every", type=int, default=10)
     return parser
 
@@ -217,6 +222,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                     chamfer_weight=args.w_mesh_chamfer,
                     cvt_weight=args.w_mesh_cvt,
                     sdfsmooth_weight=args.w_mesh_sdfsmooth,
+                    strict=args.strict_mesh_loss,
                 )
                 loss = loss + args.w_mesh * mesh_loss
                 stats.update(mesh_stats)

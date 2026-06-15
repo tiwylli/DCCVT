@@ -1,5 +1,82 @@
 # Experiments
 
+## Hybrid Direct Mesh-Loss Adaptation Study
+
+- Config: `configs/neural_hybrid_mesh_finetune_cv.json`
+- Runner: `scripts/run_hybrid_mesh_finetune_cv.py`
+- Starting checkpoint: `outputs/neural_dccvt/hybrid_direct_v1/full_supervised/latest.pt` at epoch `299`
+- Input split: `PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt`
+- Output root: `outputs/neural_dccvt/hybrid_direct_mesh_finetune_cv/`
+- Purpose: test whether differentiable DCCVT mesh losses improve an already supervised hybrid direct predictor.
+- Study type: adaptation. Fold test meshes are excluded from mesh fine-tuning, but the shared supervised checkpoint was trained on all 31 meshes. This is not a clean unseen-shape generalization experiment.
+- Fold assignment: preserve source-file order and assign each ID to test fold `index % 5`. Test fold sizes are `7, 6, 6, 6, 6`.
+- Seed behavior: training, DataLoader ordering, inference, and metric surface/edge sampling use seed `69`. The resolved config and all fold split files are saved under the output root.
+- Training schedule: 25 epochs, batch size 1, AdamW with a fresh optimizer, LR `1e-5`, all model parameters trainable, and supervised losses retained.
+- Variants:
+  - `chamfer_only`: `1000 * L_chamfer`
+  - `composite`: `1000 * L_chamfer + 100 * L_cvt + 100 * L_sdfsmooth`
+- Strict behavior: mesh fine-tuning aborts on invalid SDF signs, empty clipped surfaces, or geometry failures instead of silently skipping the shape.
+- Evaluation mesh: `intDCCVT`; `projDCCVT` remains in each inference directory as a diagnostic artifact.
+- Metrics: 100,000 samples with `ponq_thingi`, `raw`, and `bbox_aligned` modes. Primary metrics are bbox-aligned Chamfer and normal consistency.
+- Qualification rule: improve bbox-aligned Chamfer in at least 4/5 folds and 16/31 shapes, lose no more than `0.01` aggregate normal consistency, and have zero extraction failures.
+
+Prepare and inspect the commands:
+
+```bash
+/tmp/dccvt-venv/bin/python scripts/run_hybrid_mesh_finetune_cv.py \
+  --config configs/neural_hybrid_mesh_finetune_cv.json \
+  --stage all \
+  --dry-run
+```
+
+One-fold/one-variant subset execution:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 /tmp/dccvt-venv/bin/python \
+  scripts/run_hybrid_mesh_finetune_cv.py \
+  --config configs/neural_hybrid_mesh_finetune_cv.json \
+  --output-root outputs/neural_dccvt/hybrid_direct_mesh_finetune_cv_smoke \
+  --stage all \
+  --folds 0 \
+  --variants chamfer_only
+```
+
+Full multi-GPU study:
+
+```bash
+/tmp/dccvt-venv/bin/python scripts/run_hybrid_mesh_finetune_cv.py \
+  --config configs/neural_hybrid_mesh_finetune_cv.json \
+  --stage all \
+  --parallel \
+  --devices auto \
+  --min-free-gb 20 \
+  --poll-seconds 60
+```
+
+Stages can also be run separately with `--stage prepare`, `train`, `infer`,
+`evaluate`, or `summarize`. Use `--folds` and `--variants` to select subsets.
+Completed training and inference artifacts are reused; partial checkpoint
+directories require `--force` to restart from the configured supervised
+checkpoint.
+
+Output convention:
+
+```text
+outputs/neural_dccvt/hybrid_direct_mesh_finetune_cv/
+  resolved_config.json
+  splits/fold_<n>_{train,test}.txt
+  runs/<variant>/fold_<n>/checkpoints/
+  inference/{baseline,<variant>}/...
+  eval_meshes/<method>_intDCCVT/<mesh_id>.obj
+  evaluation/results_*.npy
+  evaluation/results_*_hotspot_summary.csv
+  summary/per_shape_metrics.csv
+  summary/fold_summary.csv
+  summary/decision_summary.json
+```
+
+- Metric status: pending full study execution.
+
 ## Hybrid PoNQ-DCCVT Direct Extractor v1
 
 - Guide: [docs/hybrid_ponq_dccvt_guide.md](/export/livia/home/vision/Wcharawi/dev/DCCVT/docs/hybrid_ponq_dccvt_guide.md)

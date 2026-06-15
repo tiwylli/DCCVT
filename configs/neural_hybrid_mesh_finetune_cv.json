@@ -1,0 +1,69 @@
+{
+  "experiment_name": "hybrid_direct_mesh_finetune_cv",
+  "source_ids_file": "PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt",
+  "model_config": "configs/neural_hybrid_direct_v1.json",
+  "cache_root": "outputs/neural_hotspot_sdf/thingi32_g33",
+  "label_root": "outputs/neural_labels/n32",
+  "starting_checkpoint": "outputs/neural_dccvt/hybrid_direct_v1/full_supervised/latest.pt",
+  "starting_checkpoint_epoch": 299,
+  "ground_truth_root": "mesh/thingi32",
+  "train_python": "/tmp/dccvt-venv/bin/python",
+  "eval_python": "PoNQ-main/.venv/bin/python",
+  "fold_count": 5,
+  "epochs": 25,
+  "batch_size": 1,
+  "learning_rate": 1e-05,
+  "num_workers": 0,
+  "seed": 69,
+  "save_every": 5,
+  "target_subsample": null,
+  "label": {
+    "upsampling": 0,
+    "state": "final",
+    "variant": "projDCCVT",
+    "w_cvt": 100.0,
+    "w_sdfsmooth": 100.0
+  },
+  "supervised_loss": {
+    "w_site": 1.0,
+    "w_sdf": 1.0,
+    "w_sign": 0.1,
+    "w_residual": 0.01,
+    "sdf_near_weight": 4.0,
+    "sdf_near_tau": 0.1,
+    "sign_temperature": 0.05
+  },
+  "variants": [
+    {
+      "name": "chamfer_only",
+      "w_mesh": 1.0,
+      "w_chamfer": 1000.0,
+      "w_cvt": 0.0,
+      "w_sdfsmooth": 0.0
+    },
+    {
+      "name": "composite",
+      "w_mesh": 1.0,
+      "w_chamfer": 1000.0,
+      "w_cvt": 100.0,
+      "w_sdfsmooth": 100.0
+    }
+  ],
+  "evaluation": {
+    "mesh_variant": "intDCCVT",
+    "sample_count": 100000,
+    "seed": 69,
+    "modes": [
+      "ponq_thingi",
+      "raw",
+      "bbox_aligned"
+    ],
+    "w_cvt": 100.0,
+    "w_sdfsmooth": 100.0
+  },
+  "qualification": {
+    "minimum_improved_folds": 4,
+    "minimum_improved_shapes": 16,
+    "maximum_nc_regression": 0.01
+  }
+}

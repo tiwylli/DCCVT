@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import csv
 from pathlib import Path
@@ -136,8 +138,10 @@ def compute_edge_metrics(gt_mesh: trimesh.Trimesh, pred_mesh: trimesh.Trimesh) -
     return ecd2, ef1
 
 
-def evaluate_one(item: tuple[int, str, Path, Path, str, int]) -> np.ndarray:
-    idx, model_id, gt_path, pred_path, mode, sample_count = item
+def evaluate_one(item: tuple[int, str, Path, Path, str, int, int | None]) -> np.ndarray:
+    idx, model_id, gt_path, pred_path, mode, sample_count, seed = item
+    if seed is not None:
+        np.random.seed(seed + idx)
     gt_mesh = trimesh.load(gt_path, force="mesh")
     pred_mesh = trimesh.load(pred_path, force="mesh")
 
@@ -200,6 +204,7 @@ def evaluate_mode(
     gt_dir: Path,
     pred_suffix: str,
     sample_count: int,
+    seed: int | None,
 ) -> np.ndarray:
     items = []
     for idx, model_id in enumerate(model_ids):
@@ -209,7 +214,7 @@ def evaluate_mode(
             raise FileNotFoundError(gt_path)
         if not pred_path.exists():
             raise FileNotFoundError(pred_path)
-        items.append((idx, model_id, gt_path, pred_path, mode, sample_count))
+        items.append((idx, model_id, gt_path, pred_path, mode, sample_count, seed))
 
     out = joblib.Parallel(n_jobs=-1)(joblib.delayed(evaluate_one)(item) for item in items)
     return np.array(out)
@@ -233,6 +238,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-pred_suffix", type=str, default=".obj")
     parser.add_argument("-mode", choices=("all",) + MODE_NAMES, default="all")
     parser.add_argument("-sample_num", type=int, default=100000)
+    parser.add_argument(
+        "-seed",
+        type=int,
+        default=None,
+        help="Optional base seed. Each mesh uses seed + its index in -all_models.",
+    )
+    parser.add_argument(
+        "-results_dir",
+        type=str,
+        default="src/eval/results",
+        help="Directory for .npy metric arrays and the summary CSV.",
+    )
     return parser.parse_args()
 
 
@@ -243,7 +260,7 @@ def main() -> None:
     model_ids = read_model_ids(Path(args.all_models))
     modes = MODE_NAMES if args.mode == "all" else (args.mode,)
 
-    results_dir = Path("src/eval/results")
+    results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
     base_name = save_name_from_pred_dir(pred_dir)
 
@@ -257,6 +274,7 @@ def main() -> None:
             gt_dir=gt_dir,
             pred_suffix=args.pred_suffix,
             sample_count=args.sample_num,
+            seed=args.seed,
         )
         npy_path = results_dir / f"results_{base_name}_{mode}.npy"
         np.save(npy_path, out)
