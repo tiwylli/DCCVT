@@ -42,6 +42,361 @@ Current ABC metric summary:
 | `ABC_pretrained_PoNQ_ABC_retrained_32` | 1.230 | 0.847 | 0.962 | 0.190 | 0.691 |
 | `ABC_pretrained_PoNQ_ABC_retrained_64` | 0.859 | 0.892 | 0.980 | 0.137 | 0.855 |
 
+## HybridPoNQ ABC Training At 32 Cubed
+
+The HybridPoNQ experiment reuses the ABC HDF5 files above and adds an exact
+point-cloud UDF channel. The 129 cubed UDF is a preprocessing artifact only.
+Training and inference both consume 33 cubed SDF/UDF vertex grids and predict
+one 32 cubed DCCVT site/SDF field.
+
+There is no 16 cubed or 64 cubed model path in this experiment.
+
+### Architecture And Data Flow
+
+For each shape:
+
+1. Read the one-million-point `pointcloud` from the PoNQ HDF5 file.
+2. Compute exact nearest-sample distances on `[-0.5, 0.5]^3` at 129 cubed
+   vertices.
+3. Store `128_udf` and the exact aligned view
+   `32_udf = 128_udf[::4, ::4, ::4]`.
+4. Load `32_sdf` and `32_udf`, multiply both by two, and stack them as
+   `[SDF, UDF]` in the DCCVT `[-1, 1]^3` frame.
+5. Apply the PoNQ-style `Conv3d(kernel_size=2)` encoder to produce 32 cubed
+   cell features.
+6. Predict bounded canonical-site offsets and residual SDF values.
+
+The internal model channel name `hotspot_sdf` is retained for checkpoint
+compatibility, but it contains the exact ABC `32_sdf` field in this experiment.
+
+The comparison variants are:
+
+- `direct`: random two-channel encoder and zero-initialized DCCVT heads.
+- `ponq_pretrained`: copy a reproduced PoNQ encoder into the SDF channel,
+  zero the new UDF input weights, and zero both DCCVT heads.
+
+Training uses a fixed Delaunay connectivity computed from the canonical 32
+cubed lattice. Recomputing Delaunay after microscopic movement of a perfectly
+regular lattice creates near-degenerate tetrahedra and non-finite circumcenters.
+Delaunay connectivity is already detached from autograd, so the fixed topology
+keeps training finite. Final extraction always recomputes exact Delaunay
+connectivity from the predicted sites.
+
+### Files And Interfaces
+
+- `configs/hybrid_ponq_abc_dccvt_v1.json`: resolved paths, model settings,
+  PoNQ phases, DCCVT steps, losses, seed, and qualification thresholds.
+- `scripts/precompute_abc_udf.py`: resumable multi-GPU UDF preprocessing.
+- `scripts/train_hybrid_ponq_abc.py`: Python-3.9-compatible PoNQ DDP training.
+- `scripts/train_hybrid_dccvt_abc.py`: DCCVT pilot/full training, extraction,
+  metrics, qualification, and checkpoint resume.
+- `dccvt/neural/abc_hybrid.py`: typed config, ABC dataset, sidecar validation,
+  and encoder-transfer logic.
+- `dccvt/neural/abc_dccvt_train.py`: step-based DDP training and evaluation.
+
+The DCCVT environment requires `h5py==3.14.0` in addition to its existing
+PyTorch3D and geometry runtime:
+
+```bash
+/tmp/dccvt-venv/bin/python -m pip install h5py==3.14.0
+```
+
+The PoNQ pretraining command must use `PoNQ-main/.venv/bin/python`. The DCCVT
+training command must use `/tmp/dccvt-venv/bin/python` because `pygdel3d` is
+installed only in that environment.
+
+### UDF Preprocessing
+
+Run from the repository root:
+
+```bash
+/tmp/dccvt-venv/bin/python scripts/precompute_abc_udf.py \
+  --config configs/hybrid_ponq_abc_dccvt_v1.json \
+  --gpus 0,1,2,3 \
+  --split all \
+  --resume
+```
+
+Important arguments:
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `--gpus` | `0,1,2,3` | Deterministic worker/GPU assignment. |
+| `--split` | `all` | Process `train`, `validation`, or their ordered union. |
+| `--limit` | unset | Restrict shape count for a smoke test. |
+| `--resume` | false | Validate and skip complete sidecars. |
+| `--fast-resume-check` | false | Skip the full aligned-value comparison. |
+
+Each output is written atomically to:
+
+```text
+/tmp/ponq_abc/gt_UDF_128/<model_id>.hdf5
+```
+
+Datasets and attributes:
+
+```text
+128_udf                 float32 [129,129,129]
+32_udf                  float32 [33,33,33]
+coordinate_min          -0.5
+coordinate_max           0.5
+source_point_count       1000000
+preprocessing_version    abc_udf_129_stride4_v1
+downsample_rule          128_udf[::4,::4,::4]
+```
+
+Logs are saved under `/tmp/ponq_abc/gt_UDF_128/logs/`. Failures are written
+per GPU as JSONL, and `summary.json` records written, skipped, and failed
+counts.
+
+One-shape smoke test:
+
+```bash
+/tmp/dccvt-venv/bin/python scripts/precompute_abc_udf.py \
+  --config configs/hybrid_ponq_abc_dccvt_v1.json \
+  --gpus 0 \
+  --split train \
+  --limit 1 \
+  --resume
+```
+
+### PoNQ Encoder Reproduction
+
+Run the exact three configured phases with global batch size 48:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+PoNQ-main/.venv/bin/torchrun --standalone --nproc_per_node=4 \
+  scripts/train_hybrid_ponq_abc.py \
+  --config configs/hybrid_ponq_abc_dccvt_v1.json
+```
+
+`--nproc_per_node` must equal the number of GPUs exposed by
+`CUDA_VISIBLE_DEVICES`. CUDA renumbers visible devices locally, so
+`CUDA_VISIBLE_DEVICES=0,2,3` exposes only three devices: `cuda:0`, `cuda:1`,
+and `cuda:2`. For that case, launch three ranks:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,2,3 \
+PoNQ-main/.venv/bin/torchrun --standalone --nproc_per_node=3 \
+  scripts/train_hybrid_ponq_abc.py \
+  --config configs/hybrid_ponq_abc_dccvt_v1.json \
+  --preload-mode sdf
+```
+
+The configured global batch size is 48, so a three-GPU launch uses local batch
+size 16 instead of 12. If memory is tight, use a temporary config with a smaller
+global batch size divisible by three, for example 24:
+
+```bash
+cp configs/hybrid_ponq_abc_dccvt_v1.json /tmp/hybrid_ponq_abc_3gpu.json
+PoNQ-main/.venv/bin/python - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("/tmp/hybrid_ponq_abc_3gpu.json")
+config = json.loads(path.read_text())
+config["ponq_training"]["global_batch_size"] = 24
+path.write_text(json.dumps(config, indent=2) + "\n")
+PY
+
+CUDA_VISIBLE_DEVICES=0,2,3 \
+PoNQ-main/.venv/bin/torchrun --standalone --nproc_per_node=3 \
+  scripts/train_hybrid_ponq_abc.py \
+  --config /tmp/hybrid_ponq_abc_3gpu.json \
+  --preload-mode sdf
+```
+
+Use the four-GPU command above for the exact reproduced batch size and local
+batch geometry.
+
+The schedule is:
+
+| Phase | Epochs | Surface samples | Learning rate |
+| --- | ---: | ---: | ---: |
+| 1 | 195 | 500,000 | `6.4e-5` |
+| 2 | 195 | 700,000 | `3.2e-5` |
+| 3 | 137 | 700,000 | `3.2e-5` |
+
+AdamW uses weight decay `0.01`, betas `(0.9, 0.999)`, AMSGrad, `K=4`, and
+loss weights `[100, 100, 0.1, 0.1, 0.1, 1]`.
+
+The original loader sampled once and held the complete dataset in one process.
+The DDP implementation preserves the fixed per-phase sample indices and loss
+definitions, but defaults to `--preload-mode sdf`: it caches only the small
+SDF-derived fields and reads sampled point/normals from HDF5 per batch. This
+avoids holding hundreds of 500k to 700k point samples per rank in host RAM.
+Exact rank manifests are saved for reproducibility.
+
+Outputs:
+
+```text
+outputs/hybrid_ponq_abc/ponq_pretraining/
+  resolved_config.json
+  rank_splits/rank_<n>.txt
+  phase_<n>_latest.pt
+  ponq_encoder.pt
+```
+
+Use `--resume <checkpoint> --resume-optimizer` to continue. The
+`--max-epochs-per-phase` option is for smoke testing only and must not be used
+for the reproduction run.
+
+PoNQ loader modes:
+
+| Mode | Behavior | Use |
+| --- | --- | --- |
+| `sdf` | Cache SDF, near-surface masks, and GT cell masks; read sampled point/normals per batch. | Default and recommended. |
+| `none` | Load all fields on demand. | Lowest resident memory, slower. |
+| `full` | Materialize sampled point/normals for every rank-local shape. | Legacy behavior; avoid on memory-limited runs. |
+
+The trainer also checks GPU memory before preloading. By default each rank
+requires at least 12 GiB free on its assigned GPU. If a run fails this check,
+select different `CUDA_VISIBLE_DEVICES`, stop other jobs, or lower
+`ponq_training.global_batch_size`. The guard can be disabled with
+`--min-free-gb 0`, but doing so can produce cuDNN allocation or algorithm
+selection errors later.
+
+cuDNN uses the legacy PoNQ policy by default: deterministic cuDNN is disabled
+and benchmarking is enabled. Use `--cudnn-deterministic` only when bitwise
+cuDNN determinism matters more than compatibility/performance.
+
+### DCCVT Pilot And Full Training
+
+Both variants use:
+
+- four-GPU DDP with one shape per GPU step;
+- 100,000 target points per shape;
+- `1000 * Chamfer`;
+- `0.01 * mean(site_delta^2)`;
+- `0.01 * mean(sdf_residual^2)`;
+- no CVT or SDF smoothness loss;
+- validation every 250 steps;
+- best-checkpoint selection by proxy Chamfer;
+- seed `69`.
+
+Direct pilot:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+/tmp/dccvt-venv/bin/torchrun --standalone --nproc_per_node=4 \
+  scripts/train_hybrid_dccvt_abc.py \
+  --config configs/hybrid_ponq_abc_dccvt_v1.json \
+  --variant direct \
+  --run pilot \
+  --stage all
+```
+
+PoNQ-initialized pilot:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+/tmp/dccvt-venv/bin/torchrun --standalone --nproc_per_node=4 \
+  scripts/train_hybrid_dccvt_abc.py \
+  --config configs/hybrid_ponq_abc_dccvt_v1.json \
+  --variant ponq_pretrained \
+  --encoder-checkpoint outputs/hybrid_ponq_abc/ponq_pretraining/ponq_encoder.pt \
+  --run pilot \
+  --stage all
+```
+
+After a variant passes the pilot gate, replace `--run pilot` with
+`--run full`. The pilot uses 128 seeded training shapes, 32 validation shapes,
+and 250 steps. The full run uses all 3,843 training shapes, a fixed 64-shape
+validation proxy, and 3,000 steps.
+
+Training-only, evaluation-only, and resume examples:
+
+```bash
+# Training only
+/tmp/dccvt-venv/bin/torchrun --standalone --nproc_per_node=4 \
+  scripts/train_hybrid_dccvt_abc.py \
+  --config configs/hybrid_ponq_abc_dccvt_v1.json \
+  --variant direct --run full --stage train
+
+# Resume optimizer and model state
+/tmp/dccvt-venv/bin/torchrun --standalone --nproc_per_node=4 \
+  scripts/train_hybrid_dccvt_abc.py \
+  --config configs/hybrid_ponq_abc_dccvt_v1.json \
+  --variant direct --run full --stage train \
+  --resume outputs/hybrid_ponq_abc/direct/full/checkpoints/latest.pt \
+  --resume-optimizer
+
+# Evaluate an explicit checkpoint over all 1,071 validation IDs
+/tmp/dccvt-venv/bin/torchrun --standalone --nproc_per_node=4 \
+  scripts/train_hybrid_dccvt_abc.py \
+  --config configs/hybrid_ponq_abc_dccvt_v1.json \
+  --variant direct --run full --stage evaluate \
+  --checkpoint outputs/hybrid_ponq_abc/direct/full/checkpoints/best.pt
+```
+
+Pass `--skip-baseline` during evaluation to avoid re-extracting the canonical
+baseline when it is already available.
+
+### Outputs And Acceptance
+
+Each run writes:
+
+```text
+outputs/hybrid_ponq_abc/<variant>/<pilot|full>/
+  resolved_config.json
+  splits/{train,validation,validation_proxy}.txt
+  validation_step_<step>.json
+  checkpoints/{best,latest,step_<step>}.pt
+  evaluation/
+    validation_ids.txt
+    model/{meshes,metrics.npy,metrics.summary.json}
+    canonical/{meshes,metrics.npy,metrics.summary.json}
+    summary.json
+```
+
+Checkpoints contain the model and optimizer states, model config, resolved
+experiment config, command arguments, seed, initialization metadata, Git
+revision, and proxy metrics.
+
+The pilot qualifies only when:
+
+- all 32 meshes extract;
+- squared Chamfer improves by at least 5 percent over canonical DCCVT;
+- normal consistency regresses by no more than `0.01`;
+- edge F1 regresses by no more than `0.05`.
+
+Metrics use the existing PoNQ ABC definitions: Chamfer, F1, normal
+consistency, edge Chamfer, and edge F1. The updated evaluator accepts an
+explicit names file, seed, sample count, output prefix, and prediction pattern
+while preserving its original positional command.
+
+### Common Failures And Limitations
+
+- `ModuleNotFoundError: h5py`: install `h5py==3.14.0` in the DCCVT environment.
+- `ModuleNotFoundError: pygdel3d`: DCCVT training was launched from the PoNQ
+  environment; use `/tmp/dccvt-venv`.
+- PoNQ pretraining exits with `SIGKILL` during `preload`: the OS killed a rank,
+  usually because the older full preload exhausted host RAM or swap. Use the
+  default `--preload-mode sdf`, or pass `--preload-mode none` for the lowest
+  resident memory.
+- `RuntimeError: Unable to find a valid cuDNN algorithm to run convolution`
+  during PoNQ pretraining: the selected GPU is usually too full for the local
+  batch, or deterministic cuDNN was forced. Check `nvidia-smi`; avoid GPUs with
+  other large jobs, keep the default cuDNN policy, or reduce
+  `ponq_training.global_batch_size`.
+- `RuntimeError: invalid device ordinal` or a preflight error saying torchrun
+  launched more local processes than visible CUDA devices: match
+  `--nproc_per_node` to the number of entries in `CUDA_VISIBLE_DEVICES`.
+  For example, `CUDA_VISIBLE_DEVICES=0,2,3` requires `--nproc_per_node=3`, not
+  `4`.
+- Missing UDF sidecars: finish preprocessing or rerun with `--resume`.
+- Sidecar version mismatch: delete or regenerate the reported file with the
+  current config.
+- Non-finite training loss: the trainer aborts instead of saving the invalid
+  state. Do not change `delaunay_mode` from `canonical_fixed`.
+- The UDF is the distance to the supplied one-million-point surface sample,
+  not an analytic point-to-triangle distance.
+- The aligned 33 cubed UDF preserves exact values at model vertices but cannot
+  expose 129 cubed detail to a 32 cubed model.
+- Final extraction is expensive because exact 32 cubed Delaunay connectivity
+  is recomputed for every validation shape.
+
 ## Environment
 
 The PoNQ environment lives inside the PoNQ repository:

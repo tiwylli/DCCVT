@@ -23,6 +23,7 @@ Flask==3.1.1
 fonttools==4.59.0
 fsspec==2025.7.0
 gudhi==3.11.0
+h5py==3.14.0
 idna==3.10
 importlib_metadata==8.7.0
 ipycanvas==0.13.3

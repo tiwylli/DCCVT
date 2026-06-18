@@ -252,6 +252,7 @@ def hybrid_direct_mesh_loss(
     cvt_weight: float = 100.0,
     sdfsmooth_weight: float = 100.0,
     strict: bool = False,
+    delaunay_simplices=None,
 ) -> tuple[torch.Tensor, Dict[str, float]]:
     """Fine-tune direct predictions through DCCVT clipped-mesh losses."""
     from dccvt.geometry import compute_clipped_mesh, compute_cvt_loss_from_clipped_vertices, compute_delaunay_simplices
@@ -278,7 +279,11 @@ def hybrid_direct_mesh_loss(
             skipped_shapes += 1
             continue
         try:
-            d3d = compute_delaunay_simplices(sites)
+            d3d = (
+                compute_delaunay_simplices(sites)
+                if delaunay_simplices is None
+                else delaunay_simplices
+            )
             projected_points, clipped_vertices, sites_sdf_grads, W = compute_clipped_mesh(sites, d3d, sites_sdf)
             if projected_points.numel() == 0:
                 if strict:

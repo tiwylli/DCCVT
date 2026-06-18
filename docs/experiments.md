@@ -1,5 +1,34 @@
 # Experiments
 
+## HybridPoNQ ABC DCCVT At 32 Cubed
+
+- Config: `configs/hybrid_ponq_abc_dccvt_v1.json`
+- Guide: `docs/ponq_abc_reproduction_guide.md`
+- Inputs: PoNQ ABC `32_sdf`, one-million-point ABC surface samples, and exact
+  UDF sidecars under `/tmp/ponq_abc/gt_UDF_128/`.
+- Resolution: 33 cubed SDF/UDF input vertices and 32 cubed DCCVT output sites
+  for preprocessing, training, inference, and evaluation. The stored 129
+  cubed UDF is never passed to the model.
+- Comparisons: random shared encoder (`direct`) versus reproduced PoNQ encoder
+  transfer (`ponq_pretrained`), with identical zero-initialized DCCVT heads.
+- PoNQ schedule: three phases of 195, 195, and 137 epochs with the original
+  sample counts, optimizer settings, and six loss weights.
+- DCCVT loss: `1000 * Chamfer + 0.01 * site displacement + 0.01 * SDF
+  residual`; CVT and SDF smoothness are disabled.
+- Training topology: fixed canonical Delaunay connectivity for numerical
+  stability; exact predicted-site Delaunay is recomputed during extraction.
+- Pilot: seeded 128/32 train/validation subset, 250 steps.
+- Full run: all 3,843 training IDs, fixed 64-shape proxy, 3,000 steps, and
+  final evaluation on all 1,071 IDs in `abc_eval_last20.txt`.
+- Seed: `69`, saved with resolved config, split manifests, checkpoints, and
+  metric metadata.
+- Qualification: 100 percent extraction, at least 5 percent Chamfer
+  improvement, normal consistency regression at most `0.01`, and edge-F1
+  regression at most `0.05`.
+- Output: `outputs/hybrid_ponq_abc/<variant>/<pilot|full>/`.
+- Status: implementation and one-shape runtime smoke tests complete; full UDF
+  preprocessing, four-GPU pilot, and full experiments have not been run.
+
 ## Hybrid Direct Mesh-Loss Adaptation Study
 
 - Config: `configs/neural_hybrid_mesh_finetune_cv.json`

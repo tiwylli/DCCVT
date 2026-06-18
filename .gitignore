@@ -90,6 +90,7 @@ PoNQ-main/src/eval/results/*
 
 !PoNQ-main/src/utils/
 PoNQ-main/src/utils/*
+!PoNQ-main/src/utils/abc_ddp_training.py
 !PoNQ-main/src/utils/abc_watertight_train_smoke.txt
 !PoNQ-main/src/utils/generate_mesh_hotspot_ponq.py
 !PoNQ-main/src/utils/data_processing/
