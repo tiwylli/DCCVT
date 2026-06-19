@@ -5,6 +5,9 @@
 `dccvt/neural/` contains an experimental PoNQ-style neural implementation for
 predicting DCCVT Voronoi generator sites from a dense HotSpot SDF grid.
 
+The learned HotSpot near-surface iterative refinement path is documented
+separately in [Neural Iterative Refinement Guide](neural_iterative_refinement_guide.md).
+
 The implemented pipeline is:
 
 ```text

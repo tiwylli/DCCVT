@@ -146,6 +146,79 @@ python scripts/infer_dccvt_hybrid_direct.py \
 - Optional mesh fine-tuning: pass `--stage mesh --batch-size 1`; this reuses DCCVT clipped-mesh Chamfer, CVT, and SDF smoothness losses and requires the CUDA/gDel3D runtime.
 - Assumptions: inputs and labels use the existing normalized `[-1, 1]^3` convention; label site ordering matches the canonical DCCVT `torch.linspace(-1, 1, 32)` grid; KNN point features are reserved for a later ablation if voxel UDF/density underfits.
 
+### Hybrid Sparse Refine v0
+
+- Config: `configs/neural_hybrid_sparse_refine_v0.json`
+- Extraction script: `scripts/extract_hybrid_sparse_refine.py`
+- Input caches: `outputs/neural_hotspot_sdf/thingi32_g33/*.npz`
+- Split: `PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt`
+- Output convention: per-mesh fields and extracted meshes are written under `outputs/neural_dccvt/hybrid_sparse_refine_v0/<mesh_id>/`.
+- Purpose: test a sparse canonical DCCVT initialization plus procedural spawned sites before adding a learned refinement head.
+- Field definition: start from `make_canonical_sites(base_grid_n)` with default `base_grid_n=17`, sample HotSpot SDF values from the existing `33^3` cache, run one DCCVT adaptive upsampling round, clamp sites to `[-1, 1]^3`, and resample SDF values from the same HotSpot grid.
+- Seed behavior: extraction records seed `69` in `resolved_config.json`, per-mesh field bundles, and `summary.json`; stochastic upsampling candidate selection uses the configured seed.
+- Smoke command:
+
+```bash
+python scripts/extract_hybrid_sparse_refine.py \
+  --config configs/neural_hybrid_sparse_refine_v0.json \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_smoke.txt \
+  --output-root outputs/neural_dccvt/hybrid_sparse_refine_v0_smoke \
+  --overwrite \
+  --fail-fast
+```
+
+### Hybrid Iterative Sparse Refine v1
+
+- Detailed guide: [Neural Iterative Refinement Guide](neural_iterative_refinement_guide.md)
+- Config: `configs/neural_hybrid_iter_refine_v1.json`
+- Training script: `scripts/train_hybrid_iter_refine.py`
+- Inference script: `scripts/infer_hybrid_iter_refine.py`
+- Input caches: `outputs/neural_hotspot_sdf/thingi32_g33/*.npz`
+- Split: `PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt`
+- Output convention: checkpoints under `outputs/neural_dccvt/hybrid_iter_refine_v1/checkpoints/`; per-mesh predictions and extracted meshes under `outputs/neural_dccvt/hybrid_iter_refine_v1/<mesh_id>/`.
+- Purpose: train a learned iterative refinement model through DCCVT mesh loss only, without DCCVT upsample label supervision.
+- Field definition: start from 512 deterministically jittered background sites and up to 1,618 HotSpot-projected inside/outside pairs. Procedural DCCVT scoring selects up to 128 unique parents per round, and the network predicts bounded offsets around four tetrahedral child slots plus bounded SDF residuals.
+- Default budget: 3,748 initialization sites and at most 512 learned children for a one-round maximum of 4,260 sites, matching the v0 diagnostic scale without using target points for site placement.
+- Stability behavior: near-surface pairs must have opposite HotSpot signs and minimum spacing; invalid initializations are skipped with a structured reason unless `--strict-initialization` is passed. Child candidates too close to current or previously accepted sites are rejected.
+- Compatibility: checkpoints without `config_version` load as legacy canonical initialization. Training refuses to resume a checkpoint when its initialization mode differs from the requested config.
+- Current limitation: training uses `--batch-size 1` because each shape has Delaunay-dependent topology and parent selection.
+- Smoke command:
+
+```bash
+python scripts/train_hybrid_iter_refine.py \
+  --config configs/neural_hybrid_iter_refine_v1.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_smoke.txt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v1_smoke/checkpoints_near \
+  --epochs 1 \
+  --target-subsample 64 \
+  --feature-dim 8 \
+  --encoder-layers 1 \
+  --decoder-layers 1 \
+  --w-mesh-cvt 0 \
+  --w-mesh-sdfsmooth 0
+
+python scripts/infer_hybrid_iter_refine.py \
+  --checkpoint outputs/neural_dccvt/hybrid_iter_refine_v1_smoke/checkpoints_near/latest.pt \
+  --cache outputs/neural_hotspot_sdf/thingi32_g33/252119.npz \
+  --output-dir outputs/neural_dccvt/hybrid_iter_refine_v1_smoke/252119_near
+```
+
+- Full Thingi32 overfit command:
+
+```bash
+python scripts/train_hybrid_iter_refine.py \
+  --config configs/neural_hybrid_iter_refine_v1.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v1_thingi32_overfit/checkpoints \
+  --epochs 1000 \
+  --target-subsample 4096 \
+  --lr 6.4e-5 \
+  --save-every 25 \
+  --seed 69
+```
+
 ### Initial HotSpot Canonical Baseline
 
 - Config: `configs/neural_hybrid_initial_hotspot.json`
