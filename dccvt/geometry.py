@@ -12,7 +12,7 @@ from dccvt.device import device
 from dccvt.sdf_gradients import compute_sdf_gradients_sites_tets
 
 
-def _tetra_edges(tetrahedra: torch.Tensor, device: torch.device) -> torch.Tensor:
+def _tetra_edges(tetrahedra: torch.Tensor) -> torch.Tensor:
     return torch.cat(
         [
             tetrahedra[:, [0, 1]],
@@ -23,7 +23,7 @@ def _tetra_edges(tetrahedra: torch.Tensor, device: torch.device) -> torch.Tensor
             tetrahedra[:, [1, 3]],
         ],
         dim=0,
-    ).to(device)
+    )
 
 
 def _as_tet_tensor(d3dsimplices: Any, device: torch.device) -> torch.Tensor:
@@ -57,25 +57,11 @@ def _barycentric_weights(
     return torch.cat([w0, w123], dim=1)
 
 
-def _accumulate_centroids(
-    indices: torch.Tensor,
-    values: torch.Tensor,
-    num_sites: int,
-    device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    centroids = torch.zeros(num_sites, values.shape[1], dtype=values.dtype, device=device)
-    counts = torch.zeros(num_sites, device=device, dtype=values.dtype)
-    centroids.index_add_(0, indices, values)
-    counts.index_add_(0, indices, torch.ones(values.shape[0], device=device, dtype=values.dtype))
-    centroids /= counts.clamp(min=1).unsqueeze(1)
-    return centroids, counts
-
-
 def compute_delaunay_simplices(sites: torch.Tensor) -> np.ndarray:
     """Compute Delaunay simplices for sites using pygdel3d."""
     sites_np = sites.detach().cpu().numpy()
     d3dsimplices, _ = pygdel3d.triangulate(sites_np)
-    return np.array(d3dsimplices)
+    return np.asarray(d3dsimplices)
 
 
 def compute_clipped_mesh(
@@ -171,7 +157,7 @@ def find_zero_crossing_vertices_3d(sites, simplices, sites_sdf):
     """
     sdf_values = sites_sdf
 
-    all_tetrahedra = torch.as_tensor(np.array(simplices), device=device)
+    all_tetrahedra = torch.as_tensor(simplices, device=sites_sdf.device)
     zero_crossing_pairs = find_zero_crossing_site_pairs(all_tetrahedra, sdf_values)
 
     # Check if vertices has a pair of zero crossing sites
@@ -197,7 +183,7 @@ def find_zero_crossing_vertices_3d(sites, simplices, sites_sdf):
 
 
 def find_zero_crossing_site_pairs(all_tetrahedra, sdf_values):
-    tetra_edges = _tetra_edges(all_tetrahedra, device)
+    tetra_edges = _tetra_edges(all_tetrahedra)
     # Sort each edge to ensure uniqueness (because (a, b) and (b, a) are the same)
     tetra_edges, _ = torch.sort(tetra_edges, dim=1)
     # neighbors = torch.unique(tetra_edges, dim=0)
@@ -418,30 +404,50 @@ def compute_circumcenters(sites, vertices_to_compute):
     Returns:
         torch.Tensor: (M, 3) tensor of computed Voronoi vertices.
     """
-    # Extract tetrahedra site coordinates in a batched manner
-    tetrahedra = sites[vertices_to_compute]  # Shape: (M, 4, 3)
+    tetrahedra = sites[vertices_to_compute]  # (M, 4, 3)
+    origin = tetrahedra[:, 0]
+    a = tetrahedra[:, 1] - origin
+    b = tetrahedra[:, 2] - origin
+    c = tetrahedra[:, 3] - origin
 
-    # Compute squared norms of each point
-    squared_norms = (tetrahedra**2).sum(dim=2, keepdim=True)  # Shape: (M, 4, 1)
+    bc = torch.cross(b, c, dim=1)
+    ca = torch.cross(c, a, dim=1)
+    ab = torch.cross(a, b, dim=1)
+    numerator = (
+        a.square().sum(dim=1, keepdim=True) * bc
+        + b.square().sum(dim=1, keepdim=True) * ca
+        + c.square().sum(dim=1, keepdim=True) * ab
+    )
+    denominator = 2 * (a * bc).sum(dim=1, keepdim=True)
+    circumcenters = origin + numerator / denominator
 
-    # Construct the 4x4 matrices in batch
-    ones_col = torch.ones_like(squared_norms)  # Column of ones for homogeneous coordinates
+    # The cross-product formula is substantially cheaper than four batched 4x4
+    # determinants. Retain the original formula for nearly-flat tetrahedra,
+    # where equivalent formulas can have meaningfully different gradients.
+    with torch.no_grad():
+        edge_scale = a.norm(dim=1) * b.norm(dim=1) * c.norm(dim=1)
+        quality = (denominator.squeeze(1).abs() / 2) / edge_scale.clamp_min(
+            torch.finfo(sites.dtype).tiny
+        )
+        ill_conditioned = quality < torch.finfo(sites.dtype).eps**0.5
 
-    A = torch.cat([tetrahedra, ones_col], dim=2)  # Shape: (M, 4, 4)
-    Dx = torch.cat([squared_norms, tetrahedra[:, :, 1:], ones_col], dim=2)
-    Dy = torch.cat([tetrahedra[:, :, :1], squared_norms, tetrahedra[:, :, 2:], ones_col], dim=2)
-    Dz = torch.cat([tetrahedra[:, :, :2], squared_norms, ones_col], dim=2)
+    circumcenters[ill_conditioned] = _determinant_circumcenters(tetrahedra[ill_conditioned])
+    return circumcenters
 
-    # Compute determinants in batch
-    detA = torch.linalg.det(A)  # Shape: (M,)
-    detDx = torch.linalg.det(Dx)
-    detDy = torch.linalg.det(Dy)  # todo, removed Negative due to orientation
-    detDz = torch.linalg.det(Dz)
 
-    # Compute circumcenters
-    circumcenters = 0.5 * torch.stack([detDx / detA, detDy / detA, detDz / detA], dim=1)
-
-    return circumcenters  # Shape: (M, 3)
+def _determinant_circumcenters(tetrahedra: torch.Tensor) -> torch.Tensor:
+    """Use the original determinant formula for nearly-flat tetrahedra."""
+    squared_norms = tetrahedra.square().sum(dim=2, keepdim=True)
+    ones = torch.ones_like(squared_norms)
+    A = torch.cat([tetrahedra, ones], dim=2)
+    Dx = torch.cat([squared_norms, tetrahedra[:, :, 1:], ones], dim=2)
+    Dy = torch.cat([tetrahedra[:, :, :1], squared_norms, tetrahedra[:, :, 2:], ones], dim=2)
+    Dz = torch.cat([tetrahedra[:, :, :2], squared_norms, ones], dim=2)
+    det_A = torch.linalg.det(A)
+    return 0.5 * torch.stack(
+        [torch.linalg.det(Dx) / det_A, torch.linalg.det(Dy) / det_A, torch.linalg.det(Dz) / det_A],
+        dim=1,
+    )
 
 
 def project_vertices_to_tet_plane(
@@ -509,11 +515,13 @@ def project_vertices_newton(grads, sdf_verts, new_vertices):
 
 def compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, all_vor_vertices):
     d3dsimplices = torch.as_tensor(d3dsimplices, device=sites.device).detach()
-    # compute centroids
-    indices = d3dsimplices.flatten()  # Flatten simplex indices
-    centers = all_vor_vertices.repeat_interleave(d3dsimplices.shape[1], dim=0).to(sites.device)
-    M = len(sites)
-    centroids, _ = _accumulate_centroids(indices, centers, M, sites.device)
+    centroids = torch.zeros_like(sites)
+    counts = torch.zeros(len(sites), dtype=sites.dtype, device=sites.device)
+    ones = torch.ones(len(d3dsimplices), dtype=sites.dtype, device=sites.device)
+    for i in range(d3dsimplices.shape[1]):
+        centroids.index_add_(0, d3dsimplices[:, i], all_vor_vertices)
+        counts.index_add_(0, d3dsimplices[:, i], ones)
+    centroids /= counts.clamp(min=1).unsqueeze(1)
 
     diff = torch.linalg.norm(sites - centroids, dim=1)
     penalties = torch.where(diff.abs() < 0.5, diff, torch.zeros_like(diff))
