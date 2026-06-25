@@ -23,8 +23,9 @@ The implementation keeps three site sets distinct:
 3. **Final active field**: the complete initialization plus all accepted learned
    children from every refinement round.
 
-The checked-in default uses one round, at most 128 parents, and four child slots
-per parent. Its maximum final site count is therefore
+The historical v1 config uses four input channels, one round, at most 128
+parents, and four child slots per parent. Its maximum final site count is
+therefore
 
 ```text
 512 background
@@ -33,15 +34,21 @@ per parent. Its maximum final site count is therefore
 = 4260 sites maximum
 ```
 
-Spacing checks can reject children, so 4,260 is a maximum rather than a
-guaranteed final count.
+The active comparison configs use only `hotspot_sdf` and `point_udf`, and add
+an initialization-only baseline. Their budgets are 3,748 initial sites,
+4,260 sites for one round with 128 parents, and 4,772 sites for either two
+128-parent rounds or one 256-parent round. Spacing checks can reject children,
+so these are maxima rather than guaranteed final counts.
 
 Primary code references:
 
 - [`dccvt/neural/iter_refine.py`](../dccvt/neural/iter_refine.py): config,
   initialization, parent selection, model, training, inference, and export.
 - [`configs/neural_hybrid_iter_refine_v1.json`](../configs/neural_hybrid_iter_refine_v1.json):
-  checked-in v1 defaults.
+  historical four-channel v1 defaults.
+- `configs/neural_hybrid_iter_refine_initial_v2_hotspot_point_udf.json` and
+  `configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_*.json`: active
+  two-channel baseline and comparison configs.
 - [`tests/test_neural_iter_refine.py`](../tests/test_neural_iter_refine.py):
   executable behavioral specification.
 
@@ -58,7 +65,7 @@ HotSpot cache
        |    + 1618 projected surface anchors * 2 signed sites
        |    = 3748 initial sites
        |
-       +--> four-channel input grid (4 x 33 x 33 x 33)
+       +--> two-channel input grid (2 x 33 x 33 x 33)
               |
               v
           3D CNN encoder
@@ -111,7 +118,7 @@ The iterative dataset directly requires:
 | Key | Expected value | Use |
 | --- | --- | --- |
 | `sdf_grid` | Float array `(33, 33, 33)` by default | Initialization, first input channel, and child SDF sampling. |
-| `target_points` | Float array `(N, 3)` | Point-UDF/confidence input channels and mesh-loss target. |
+| `target_points` | Float array `(N, 3)` | Point-UDF input channel and mesh-loss target. Historical four-channel v1 also used point confidence. |
 | `grid_n` | Scalar integer | Must equal `hotspot_grid_n`. |
 | `mesh_id` | Scalar string, optional | Logging and output naming; cache stem is the fallback. |
 
@@ -127,7 +134,8 @@ normalization.
 
 `target_points` have two roles:
 
-1. They build the `point_udf` and `point_confidence` neural input channels.
+1. They build the `point_udf` neural input channel. Historical four-channel
+   v1 also built `point_confidence`.
 2. They are the target set for clipped-mesh Chamfer loss.
 
 They do **not** place the background sites, projected anchors, or initial signed
@@ -321,34 +329,37 @@ initial_sdf = trilinear_sample(sdf_grid, initial_sites)
 
 ## Neural Input and Encoder
 
-The default input has four channels, built by
+The active comparison input has two channels, built by
 `build_hybrid_input_channels_np()` in
 [`dccvt/neural/grid.py`](../dccvt/neural/grid.py):
 
 | Channel | Meaning |
 | --- | --- |
 | `hotspot_sdf` | Signed HotSpot values on the `33^3` grid. Must remain the first channel. |
-| `abs_hotspot_sdf` | Absolute HotSpot SDF magnitude. |
 | `point_udf` | Distance from each grid vertex to the nearest target point, normalized by grid-cell size and clipped. |
-| `point_confidence` | Gaussian confidence derived from the point UDF. |
 
 Default input shape:
 
 ```text
-(B, C, G, G, G) = (1, 4, 33, 33, 33)
+(B, C, G, G, G) = (1, 2, 33, 33, 33)
 ```
 
 The first encoder layer is:
 
 ```text
-Conv3d(4, 128, kernel_size=2, stride=1)
+Conv3d(2, 128, kernel_size=2, stride=1)
 LeakyReLU(0.01)
 ```
+
+The historical v1 config used four channels: `hotspot_sdf`,
+`abs_hotspot_sdf`, `point_udf`, and `point_confidence`. Keep that config for
+old checkpoint reproduction instead of resuming old checkpoints into a
+two-channel config.
 
 It converts the `33^3` vertex grid to a `32^3` feature grid:
 
 ```text
-(1, 4, 33, 33, 33) -> (1, 128, 32, 32, 32)
+(1, 2, 33, 33, 33) -> (1, 128, 32, 32, 32)
 ```
 
 Five default `3x3x3` convolutions with padding 1 preserve that shape. There is
@@ -678,11 +689,13 @@ Public neural exports from `dccvt.neural` are:
 - `build_hotspot_near_surface_initialization`
 - `select_procedural_refinement_parents`
 - `run_iterative_refinement`
+- `run_initialization_extraction`
 
 ## Configuration Reference
 
-The source of truth is `HybridIterRefineConfig`. The checked-in JSON writes
-`input_channels=4`; the dataclass itself accepts `None` and derives the value
+The source of truth is `HybridIterRefineConfig`. The active v2 comparison JSON
+files write `input_channels=2`; the historical v1 JSON writes
+`input_channels=4`. The dataclass itself accepts `None` and derives the value
 from `channel_names`.
 
 | Field | Default | Meaning and constraint |
@@ -699,7 +712,7 @@ from `channel_names`.
 | `bootstrap_min_distance` | `0.005` | Minimum distance among initial sites; non-negative. |
 | `bootstrap_seed` | `69` | Seed for background jitter and candidate sampling. |
 | `bootstrap_candidate_multipliers` | `[4,8,16]` | Positive candidate oversampling factors attempted in order. |
-| `input_channels` | `4` in JSON | Must equal the number of `channel_names`; dataclass `None` derives it. |
+| `input_channels` | `2` in active v2 JSON | Must equal the number of `channel_names`; dataclass `None` derives it. |
 | `feature_dim` | `128` | Encoder channel width and sampled parent-feature width. |
 | `encoder_layers` | `5` | Number of padded `3x3x3` convolutions after the first vertex-to-feature convolution. |
 | `decoder_layers` | `2` | Number of hidden linear/LeakyReLU blocks before child output. |
@@ -714,7 +727,7 @@ from `channel_names`.
 | `point_confidence_sigma_scale` | `1.5` | Gaussian confidence sigma in HotSpot cell-size units. |
 | `parent_selection` | `procedural_zero_crossing_curvature` | Only implemented parent-selection mode. |
 | `training_objective` | `mesh_loss_only` | Only implemented training objective. |
-| `channel_names` | Four hybrid channels | Ordered channel list; first entry must be `hotspot_sdf`, names must be valid and unique. |
+| `channel_names` | `["hotspot_sdf", "point_udf"]` in active v2 JSON | Ordered channel list; first entry must be `hotspot_sdf`, names must be valid and unique. |
 
 Legacy config dictionaries without `config_version` are interpreted as version
 1, canonical initialization, no background jitter, no child stencil, and no
@@ -731,11 +744,11 @@ python scripts/train_hybrid_iter_refine.py [options]
 
 | Argument | Default | Behavior |
 | --- | --- | --- |
-| `--config` | `configs/neural_hybrid_iter_refine_v1.json` | JSON model config. |
+| `--config` | `configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r1_p128.json` | JSON model config. Pass `configs/neural_hybrid_iter_refine_v1.json` only to reproduce the historical four-channel run. |
 | `--cache-root` | `outputs/neural_hotspot_sdf/thingi32_g33` | Directory containing cache NPZ files. |
 | `--split-file` | `None` | Text file of mesh IDs; takes precedence over `--mesh-ids`. |
 | `--mesh-ids` | `None` | Comma/space-separated IDs. If both selectors are absent, all cache NPZ files are used. |
-| `--checkpoint-dir` | `outputs/neural_dccvt/hybrid_iter_refine_v1/checkpoints` | Checkpoints and resolved config output. |
+| `--checkpoint-dir` | `outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r1_p128/checkpoints` | Checkpoints and resolved config output. |
 | `--resume` | `None` | Checkpoint to resume. |
 | `--resume-optimizer` | `False` | Restore optimizer state; otherwise optimizer starts fresh. |
 | `--epochs` | `100` | Number of epochs for this invocation. On resume these are additional epochs. |
@@ -879,11 +892,27 @@ Activate the repository environment first. The verified environment used
 
 | Workflow | Required input | Files written | Runtime requirement |
 | --- | --- | --- | --- |
-| Minimal training smoke | One cache selected by the smoke split and the v1 config | Resolved config and checkpoints | Verified with CUDA, `pygdel3d`, and gDel3D. |
+| Initialization-only baseline | HotSpot cache split and initialization v2 config | Initialization field NPZ, resolved config, optional meshes, and summary JSON | No learned checkpoint; mesh extraction requires DCCVT runtime. |
+| Minimal training smoke | One cache selected by the smoke split and a two-channel v2 config | Resolved config and checkpoints | Verified with CUDA, `pygdel3d`, and gDel3D. |
 | Inference and extraction | One checkpoint and one cache | Prediction NPZ, result JSON, both mesh variants, mesh bundles, and target PLY | Verified with CUDA, `pygdel3d`, and gDel3D. |
 | No-extract inference | One checkpoint and one cache | Prediction NPZ and result JSON | Still requires Delaunay parent selection; CPU-only support is Needs verification. |
 | Resume training | Matching checkpoint, config, caches, and split | Updates `latest.pt` and writes configured snapshots | Same runtime requirements as training. |
-| Full Thingi32 overfit | All 31 caches, full split, and v1 config | Long-running checkpoint series and resolved config | Full 1,000-epoch runtime and memory are Needs verification. |
+| Focused Thingi32 overfits | All 31 caches, full split, and two-channel v2 configs | Long-running checkpoint series and resolved configs | Full 1,000-epoch runtime and memory are Needs verification. |
+
+### Initialization-Only Baseline
+
+This exports the 3,748-site HotSpot near-surface initialization without learned
+children. Pass `--no-extract` for a cheap field-only smoke test:
+
+```bash
+python scripts/extract_hybrid_iter_refine_initial.py \
+  --config configs/neural_hybrid_iter_refine_initial_v2_hotspot_point_udf.json \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_smoke.txt \
+  --output-root outputs/neural_dccvt/hybrid_iter_refine_initial_v2_hotspot_point_udf_smoke \
+  --no-extract \
+  --overwrite \
+  --fail-fast
+```
 
 ### Minimal Training Smoke Test
 
@@ -892,10 +921,10 @@ disables expensive auxiliary mesh losses:
 
 ```bash
 python scripts/train_hybrid_iter_refine.py \
-  --config configs/neural_hybrid_iter_refine_v1.json \
+  --config configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r2_p128.json \
   --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
   --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_smoke.txt \
-  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v1_smoke/checkpoints_near \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r2_p128_smoke/checkpoints \
   --epochs 1 \
   --target-subsample 64 \
   --feature-dim 8 \
@@ -914,9 +943,9 @@ Expected outputs include `resolved_config.json`, `latest.pt`, and
 
 ```bash
 python scripts/infer_hybrid_iter_refine.py \
-  --checkpoint outputs/neural_dccvt/hybrid_iter_refine_v1_smoke/checkpoints_near/latest.pt \
+  --checkpoint outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r2_p128_smoke/checkpoints/latest.pt \
   --cache outputs/neural_hotspot_sdf/thingi32_g33/252119.npz \
-  --output-dir outputs/neural_dccvt/hybrid_iter_refine_v1_smoke/252119_near
+  --output-dir outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r2_p128_smoke/252119
 ```
 
 This writes the prediction NPZ, both DCCVT mesh variants, `target.ply`, and
@@ -926,9 +955,9 @@ This writes the prediction NPZ, both DCCVT mesh variants, `target.ply`, and
 
 ```bash
 python scripts/infer_hybrid_iter_refine.py \
-  --checkpoint outputs/neural_dccvt/hybrid_iter_refine_v1_smoke/checkpoints_near/latest.pt \
+  --checkpoint outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r2_p128_smoke/checkpoints/latest.pt \
   --cache outputs/neural_hotspot_sdf/thingi32_g33/252119.npz \
-  --output-dir outputs/neural_dccvt/hybrid_iter_refine_v1_smoke/252119_no_extract \
+  --output-dir outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r2_p128_smoke/252119_no_extract \
   --no-extract
 ```
 
@@ -941,11 +970,11 @@ It only skips final OBJ/mesh-bundle extraction.
 
 ```bash
 python scripts/train_hybrid_iter_refine.py \
-  --config configs/neural_hybrid_iter_refine_v1.json \
+  --config configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r2_p128.json \
   --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
   --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
-  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v1_thingi32_overfit/checkpoints \
-  --resume outputs/neural_dccvt/hybrid_iter_refine_v1_thingi32_overfit/checkpoints/latest.pt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r2_p128/checkpoints \
+  --resume outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r2_p128/checkpoints/latest.pt \
   --resume-optimizer \
   --epochs 100 \
   --target-subsample 4096
@@ -953,17 +982,39 @@ python scripts/train_hybrid_iter_refine.py \
 
 The requested config must have the same initialization mode as the checkpoint.
 
-### Full Thingi32 Overfit Run
+### Focused Thingi32 Overfit Runs
 
 This trains repeatedly on all 31 cached shapes with no held-out validation
 split:
 
 ```bash
 python scripts/train_hybrid_iter_refine.py \
-  --config configs/neural_hybrid_iter_refine_v1.json \
+  --config configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r1_p128.json \
   --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
   --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
-  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v1_thingi32_overfit/checkpoints \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r1_p128/checkpoints \
+  --epochs 1000 \
+  --target-subsample 4096 \
+  --lr 6.4e-5 \
+  --save-every 25 \
+  --seed 69
+
+python scripts/train_hybrid_iter_refine.py \
+  --config configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r2_p128.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r2_p128/checkpoints \
+  --epochs 1000 \
+  --target-subsample 4096 \
+  --lr 6.4e-5 \
+  --save-every 25 \
+  --seed 69
+
+python scripts/train_hybrid_iter_refine.py \
+  --config configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r1_p256.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r1_p256/checkpoints \
   --epochs 1000 \
   --target-subsample 4096 \
   --lr 6.4e-5 \
@@ -971,7 +1022,7 @@ python scripts/train_hybrid_iter_refine.py \
   --seed 69
 ```
 
-This full 1,000-epoch command has not been completed as part of the current
+These full 1,000-epoch commands have not been completed as part of the current
 verification.
 
 ## Verified Behavior
@@ -994,9 +1045,9 @@ initializations:
 The audit output was observed in the verification terminal and was not saved as
 a dedicated repository result file.
 
-### One-Shape Smoke
+### Historical v1 One-Shape Smoke
 
-For mesh `252119`, the saved prediction under
+For mesh `252119`, the historical four-channel v1 saved prediction under
 `outputs/neural_dccvt/hybrid_iter_refine_v1_smoke/252119_near/` contains:
 
 - 512 background sites;

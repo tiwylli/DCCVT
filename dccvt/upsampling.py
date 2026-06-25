@@ -189,6 +189,8 @@ def upsample_sites_adaptive(
     curv_score = _curvature_score(neighbors, grad_est, num_sites, device, eps)
 
     zc_sites = _zero_crossing_sites(neighbors, sdf_values)
+    if zc_sites.numel() == 0:
+        return sites, sdf_values
 
     score_values = _candidate_scores(min_dists, curv_score, zc_sites, eps)
     cand = _sample_candidate_sites(zc_sites, score_values, growth_cap, num_sites, device, eps)

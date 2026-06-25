@@ -1,0 +1,14 @@
+{
+  "cache_root": "outputs/neural_hotspot_sdf/thingi32_g33",
+  "split_file": "PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt",
+  "output_root": "outputs/neural_dccvt/hybrid_sparse_refine_v0",
+  "base_grid_n": 17,
+  "hotspot_grid_n": 33,
+  "refinement_mode": "procedural_upsample",
+  "upsampling_rounds": 1,
+  "growth_cap": 0.1,
+  "clamp_domain": true,
+  "seed": 69,
+  "w_cvt": 100.0,
+  "w_sdfsmooth": 100.0
+}
