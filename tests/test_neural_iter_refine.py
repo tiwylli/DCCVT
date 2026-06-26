@@ -15,7 +15,14 @@ from dccvt.neural.iter_refine import (
     build_hotspot_near_surface_initialization,
     build_train_arg_parser,
     load_iter_refine_config,
+    local_knn_parent_features,
     select_procedural_refinement_parents,
+)
+from dccvt.neural.point_udf_sidecar import (
+    exact_point_udf_grid,
+    load_point_udf_sidecar,
+    validate_point_udf_sidecar,
+    write_point_udf_sidecar,
 )
 
 
@@ -123,6 +130,7 @@ def test_two_channel_comparison_configs_load_expected_budgets():
         "configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r1_p128.json": (1, 128),
         "configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r2_p128.json": (2, 128),
         "configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r1_p256.json": (1, 256),
+        "configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json": (2, 128),
     }
 
     for relative_path, (rounds, parent_budget) in expected.items():
@@ -132,6 +140,68 @@ def test_two_channel_comparison_configs_load_expected_budgets():
         assert config.channel_names == ("hotspot_sdf", "point_udf")
         assert config.num_refinement_rounds == rounds
         assert config.max_parents_per_round == parent_budget
+        if "v3" in relative_path:
+            assert config.local_feature_mode == "udf65_knn_stats"
+            assert config.local_udf_grid_n == 65
+            assert config.local_udf_samples is True
+            assert config.local_knn_features is True
+            assert config.local_knn_k == 8
+            assert config.local_knn_radius == pytest.approx(0.0625)
+
+
+def test_point_udf_sidecar_matches_bruteforce_distances_and_metadata(tmp_path):
+    points = torch.tensor([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]], dtype=torch.float32)
+    udf = exact_point_udf_grid(points, grid_n=65, query_chunk_size=4096)
+    coords = torch.linspace(-1.0, 1.0, 65)
+    probe = torch.tensor(
+        [
+            [0, 0, 0],
+            [32, 32, 32],
+            [64, 64, 64],
+        ],
+        dtype=torch.long,
+    )
+    probe_points = torch.stack([coords[probe[:, 0]], coords[probe[:, 1]], coords[probe[:, 2]]], dim=1)
+    expected = torch.cdist(probe_points.unsqueeze(0), points.unsqueeze(0)).squeeze(0).amin(dim=1)
+
+    assert torch.allclose(udf[probe[:, 0], probe[:, 1], probe[:, 2]], expected, atol=1e-6)
+
+    sidecar_path = tmp_path / "unit.npz"
+    write_point_udf_sidecar(
+        sidecar_path,
+        udf.numpy(),
+        source_cache_path=tmp_path / "unit_cache.npz",
+        source_point_count=points.shape[0],
+        grid_n=65,
+        seed=123,
+        command_args={"seed": 123},
+    )
+
+    valid, reason = validate_point_udf_sidecar(sidecar_path, grid_n=65, check_values=True)
+    loaded = load_point_udf_sidecar(sidecar_path, grid_n=65)
+
+    assert valid is True, reason
+    assert loaded.shape == (65, 65, 65)
+    with np.load(sidecar_path, allow_pickle=False) as data:
+        assert data["65_udf"].shape == (65, 65, 65)
+        assert int(data["grid_n"]) == 65
+        assert int(data["source_point_count"]) == 2
+        metadata = json.loads(str(data["metadata"]))
+    assert metadata["coordinate_min"] == -1.0
+    assert metadata["coordinate_max"] == 1.0
+    assert metadata["source_point_count"] == 2
+
+
+def test_local_knn_parent_features_are_finite_with_fewer_than_k_points():
+    parent_sites = torch.tensor([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]], dtype=torch.float32)
+    target_points = torch.tensor([[0.0, 0.1, 0.0], [0.0, -0.1, 0.0]], dtype=torch.float32)
+
+    features = local_knn_parent_features(parent_sites, target_points, k=8, radius=0.25)
+
+    assert features.shape == (2, 7)
+    assert torch.isfinite(features).all()
+    assert torch.all(features[:, 0] >= 0.0)
+    assert torch.all((features[:, -1] >= 0.0) & (features[:, -1] <= 1.0))
 
 
 def test_iter_refine_initialization_export_has_zero_rounds_and_full_default_site_count(tmp_path):
@@ -224,6 +294,54 @@ def test_iter_refine_forward_two_rounds_has_monotonic_site_growth():
     assert len(outputs["rounds"]) == 2
     assert outputs["sites"].shape[1] >= 96 + 3 * 2
     assert outputs["sites"].shape[1] <= 96 + 2 * 3 * 2
+
+
+def test_v3_forward_uses_local_features_and_grows_default_initialization():
+    pytest.importorskip("pygdel3d")
+    torch.manual_seed(69)
+    root = Path(__file__).resolve().parents[1]
+    base = load_iter_refine_config(
+        root / "configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json"
+    )
+    config = HybridIterRefineConfig.from_dict(
+        {
+            **base.to_dict(),
+            "feature_dim": 4,
+            "encoder_layers": 0,
+            "decoder_layers": 1,
+            "max_parents_per_round": 1,
+            "num_refinement_rounds": 1,
+        }
+    )
+    model = DCCVTHybridIterRefineNet(config)
+    sdf_grid = _linear_sdf_grid(config.hotspot_grid_n)
+    point_udf = torch.zeros_like(sdf_grid)
+    input_grid = torch.stack([sdf_grid, point_udf], dim=0)[None, ...]
+    local_udf_grid = torch.zeros((1, 1, 65, 65, 65), dtype=torch.float32)
+    target_points = torch.tensor(
+        [
+            [-0.5, 0.0, 0.0],
+            [-0.25, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.25, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )[None, ...]
+
+    outputs = model(
+        input_grid,
+        sdf_grid[None, None, ...],
+        target_points=target_points,
+        local_udf_grid=local_udf_grid,
+    )
+
+    assert outputs["base_sites"].shape == (3748, 3)
+    assert outputs["sites"].shape[1] > 3748
+    assert outputs["sites"].requires_grad is True
+    assert len(outputs["rounds"]) == 1
+    assert outputs["rounds"][0]["parent_indices"].shape == (1,)
+    assert outputs["rounds"][0]["spawned_sites"].shape[0] > 0
 
 
 def test_spawn_filter_rejects_existing_and_duplicate_sites():

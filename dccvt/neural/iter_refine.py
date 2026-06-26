@@ -27,7 +27,10 @@ from dccvt.neural.grid import (
     validate_hybrid_channel_names,
 )
 from dccvt.neural.losses import hybrid_direct_mesh_loss
+from dccvt.neural.point_udf_sidecar import load_point_udf_sidecar, point_udf_sidecar_path
+
 VALID_INITIALIZATION_MODES = frozenset(("canonical", "hotspot_near_surface"))
+VALID_LOCAL_FEATURE_MODES = frozenset(("none", "udf65_knn_stats"))
 
 
 @dataclass
@@ -59,6 +62,12 @@ class HybridIterRefineConfig:
     spawn_min_distance: float = 0.0025
     point_udf_clip: float = 4.0
     point_confidence_sigma_scale: float = 1.5
+    local_udf_grid_n: int = 0
+    local_udf_samples: bool = False
+    local_knn_features: bool = False
+    local_knn_k: int = 8
+    local_knn_radius: float = 0.0625
+    local_feature_mode: str = "none"
     parent_selection: str = "procedural_zero_crossing_curvature"
     training_objective: str = "mesh_loss_only"
     channel_names: tuple[str, ...] = field(default_factory=lambda: HYBRID_DIRECT_CHANNELS)
@@ -93,6 +102,12 @@ class HybridIterRefineConfig:
         self.spawn_min_distance = float(self.spawn_min_distance)
         self.point_udf_clip = float(self.point_udf_clip)
         self.point_confidence_sigma_scale = float(self.point_confidence_sigma_scale)
+        self.local_udf_grid_n = int(self.local_udf_grid_n)
+        self.local_udf_samples = bool(self.local_udf_samples)
+        self.local_knn_features = bool(self.local_knn_features)
+        self.local_knn_k = int(self.local_knn_k)
+        self.local_knn_radius = float(self.local_knn_radius)
+        self.local_feature_mode = str(self.local_feature_mode)
         self.parent_selection = str(self.parent_selection)
         self.training_objective = str(self.training_objective)
 
@@ -130,6 +145,21 @@ class HybridIterRefineConfig:
             raise ValueError("child stencil and offset scales must be non-negative")
         if self.sdf_residual_scale < 0.0 or self.spawn_min_distance < 0.0:
             raise ValueError("SDF residual and spawn distance scales must be non-negative")
+        if self.local_feature_mode not in VALID_LOCAL_FEATURE_MODES:
+            raise ValueError(f"Unknown local_feature_mode: {self.local_feature_mode}")
+        if self.local_feature_mode == "udf65_knn_stats":
+            if not self.local_udf_samples or not self.local_knn_features:
+                raise ValueError("local_feature_mode='udf65_knn_stats' requires local UDF samples and KNN features")
+            if self.local_udf_grid_n != 65:
+                raise ValueError("local_feature_mode='udf65_knn_stats' requires local_udf_grid_n=65")
+        if self.local_udf_samples:
+            self.local_udf_grid_n = validate_grid_n(self.local_udf_grid_n)
+        elif self.local_udf_grid_n < 0:
+            raise ValueError("local_udf_grid_n must be non-negative")
+        if self.local_knn_k < 1:
+            raise ValueError("local_knn_k must be positive")
+        if self.local_knn_radius <= 0.0:
+            raise ValueError("local_knn_radius must be positive")
         if self.parent_selection != "procedural_zero_crossing_curvature":
             raise ValueError(f"Unknown parent_selection: {self.parent_selection}")
         if self.training_objective != "mesh_loss_only":
@@ -155,6 +185,16 @@ class HybridIterRefineConfig:
         data["channel_names"] = list(self.channel_names)
         data["bootstrap_candidate_multipliers"] = list(self.bootstrap_candidate_multipliers)
         return data
+
+    @property
+    def local_feature_dim(self) -> int:
+        """Return the per-parent local feature width added to the decoder."""
+        width = 0
+        if self.local_udf_samples:
+            width += 1 + self.slots_per_parent
+        if self.local_knn_features:
+            width += 7
+        return width
 
 
 def load_iter_refine_config(path: str | Path | None = None) -> HybridIterRefineConfig:
@@ -617,6 +657,53 @@ def _select_unique_to_budget(
     return indices[order], scores[order]
 
 
+def local_knn_parent_features(
+    parent_sites: torch.Tensor,
+    target_points: torch.Tensor,
+    *,
+    k: int,
+    radius: float,
+) -> torch.Tensor:
+    """Return local input-point statistics for each refinement parent."""
+    parent_sites = parent_sites.reshape(-1, 3)
+    target_points = target_points.reshape(-1, 3).to(device=parent_sites.device, dtype=parent_sites.dtype)
+    if parent_sites.numel() == 0:
+        return parent_sites.new_empty((0, 7))
+    if target_points.numel() == 0:
+        return parent_sites.new_zeros((parent_sites.shape[0], 7))
+
+    k = min(int(k), int(target_points.shape[0]))
+    radius = float(radius)
+    distances = torch.cdist(parent_sites.unsqueeze(0), target_points.unsqueeze(0), p=2).squeeze(0)
+    knn_dist, knn_idx = torch.topk(distances, k=k, largest=False, sorted=True)
+    knn_points = target_points[knn_idx]
+    offsets = knn_points - parent_sites[:, None, :]
+    nearest_distance = knn_dist[:, :1] / radius
+    mean_offset = offsets.mean(dim=1) / radius
+    mean_distance = knn_dist.mean(dim=1, keepdim=True) / radius
+    radius_density = (distances <= radius).sum(dim=1, keepdim=True).to(parent_sites.dtype) / max(int(k), 1)
+
+    centered = offsets - offsets.mean(dim=1, keepdim=True)
+    if k > 1:
+        covariance = centered.transpose(1, 2) @ centered / float(k - 1)
+        eigenvalues = torch.linalg.eigvalsh(covariance).clamp_min(0.0)
+        anisotropy = (eigenvalues[:, -1:] - eigenvalues[:, :1]) / eigenvalues[:, -1:].clamp_min(1e-12)
+    else:
+        anisotropy = parent_sites.new_zeros((parent_sites.shape[0], 1))
+
+    features = torch.cat(
+        [
+            nearest_distance.clamp(max=8.0),
+            mean_offset.clamp(min=-8.0, max=8.0),
+            mean_distance.clamp(max=8.0),
+            radius_density.clamp(max=8.0),
+            anisotropy.clamp(min=0.0, max=1.0),
+        ],
+        dim=1,
+    )
+    return torch.nan_to_num(features, nan=0.0, posinf=8.0, neginf=-8.0)
+
+
 def select_procedural_refinement_parents(
     sites: torch.Tensor,
     sites_sdf: torch.Tensor,
@@ -671,23 +758,32 @@ class HybridIterRefineDataset(Dataset):
         *,
         config: HybridIterRefineConfig,
         target_subsample: Optional[int] = None,
+        local_udf_root: str | Path | None = None,
+        allow_missing_local_features: bool = False,
     ) -> None:
         self.files = [Path(path) for path in cache_files]
         self.config = config
         self.target_subsample = target_subsample
+        self.local_udf_root = None if local_udf_root is None else Path(local_udf_root)
+        self.allow_missing_local_features = bool(allow_missing_local_features)
         self._initialization_cache: dict[int, dict[str, Any]] = {}
         if not self.files:
             raise ValueError("HybridIterRefineDataset requires at least one cache file")
+        if self.config.local_udf_samples and self.local_udf_root is None and not self.allow_missing_local_features:
+            raise ValueError("Config requests local UDF samples; provide --local-udf-root or allow missing features")
 
     def __len__(self) -> int:
         return len(self.files)
 
-    def _target_points(self, data: np.lib.npyio.NpzFile) -> np.ndarray:
-        points = np.asarray(data["target_points"], dtype=np.float32).reshape(-1, 3)
+    def _subsample_target_points(self, points: np.ndarray) -> np.ndarray:
         if self.target_subsample is None or points.shape[0] <= self.target_subsample:
             return points
         indices = np.random.choice(points.shape[0], self.target_subsample, replace=False)
         return points[indices]
+
+    def _target_points(self, data: np.lib.npyio.NpzFile) -> np.ndarray:
+        points = np.asarray(data["target_points"], dtype=np.float32).reshape(-1, 3)
+        return self._subsample_target_points(points)
 
     def _initialization(self, index: int, sdf_grid: np.ndarray) -> dict[str, Any]:
         initialization = self._initialization_cache.get(index)
@@ -696,11 +792,33 @@ class HybridIterRefineDataset(Dataset):
             self._initialization_cache[index] = initialization
         return initialization
 
+    def _local_udf_grid(self, cache_path: Path) -> tuple[np.ndarray, str, bool]:
+        if not self.config.local_udf_samples:
+            return np.zeros((0,), dtype=np.float32), "", False
+        if self.local_udf_root is None:
+            if self.allow_missing_local_features:
+                grid_n = self.config.local_udf_grid_n
+                return np.zeros((grid_n, grid_n, grid_n), dtype=np.float32), "", False
+            raise ValueError("Config requests local UDF samples but no local UDF root was provided")
+
+        sidecar_path = point_udf_sidecar_path(self.local_udf_root, cache_path.stem)
+        if not sidecar_path.exists():
+            if self.allow_missing_local_features:
+                grid_n = self.config.local_udf_grid_n
+                return np.zeros((grid_n, grid_n, grid_n), dtype=np.float32), str(sidecar_path), False
+            raise FileNotFoundError(f"Missing local point-UDF sidecar: {sidecar_path}")
+        return (
+            load_point_udf_sidecar(sidecar_path, grid_n=self.config.local_udf_grid_n),
+            str(sidecar_path),
+            True,
+        )
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         cache_path = self.files[index]
         with np.load(cache_path, allow_pickle=False) as data:
             sdf_grid = np.asarray(data["sdf_grid"], dtype=np.float32)
-            target_points = self._target_points(data)
+            full_target_points = np.asarray(data["target_points"], dtype=np.float32).reshape(-1, 3)
+            target_points = self._subsample_target_points(full_target_points)
             grid_n = int(np.asarray(data["grid_n"]).item())
             mesh_id = str(np.asarray(data["mesh_id"]).item()) if "mesh_id" in data else cache_path.stem
         if grid_n != self.config.hotspot_grid_n:
@@ -714,10 +832,15 @@ class HybridIterRefineDataset(Dataset):
             confidence_sigma_scale=self.config.point_confidence_sigma_scale,
             channel_names=self.config.channel_names,
         )
+        local_udf_grid, local_udf_path, local_udf_valid = self._local_udf_grid(cache_path)
         return {
             "input_grid": torch.from_numpy(input_grid),
             "sdf_grid": torch.from_numpy(sdf_grid[None, ...]),
             "target_points": torch.from_numpy(target_points),
+            "local_target_points": torch.from_numpy(full_target_points if self.config.local_knn_features else target_points),
+            "local_udf_grid": torch.from_numpy(local_udf_grid),
+            "local_udf_path": local_udf_path,
+            "local_udf_valid": torch.tensor(bool(local_udf_valid)),
             "grid_n": torch.tensor(grid_n, dtype=torch.long),
             "mesh_id": mesh_id,
             "cache_path": str(cache_path),
@@ -792,7 +915,7 @@ class DCCVTHybridIterRefineNet(nn.Module):
             )
         self.encoder = nn.Sequential(*encoder)
 
-        parent_dim = config_obj.feature_dim + 4
+        parent_dim = config_obj.feature_dim + 4 + config_obj.local_feature_dim
         decoder: list[nn.Module] = []
         for _ in range(config_obj.decoder_layers):
             decoder.extend(
@@ -835,6 +958,68 @@ class DCCVTHybridIterRefineNet(nn.Module):
         sampled = F.grid_sample(features, grid_points, mode="bilinear", align_corners=True)
         return sampled[0, :, :, 0, 0].transpose(0, 1)
 
+    def _sample_scalar_grid(self, scalar_grid: torch.Tensor, points: torch.Tensor) -> torch.Tensor:
+        if points.numel() == 0:
+            return points.new_empty((0,))
+        if scalar_grid.dim() == 3:
+            scalar_grid = scalar_grid[None, None, ...]
+        elif scalar_grid.dim() == 4:
+            scalar_grid = scalar_grid[:, None, ...] if scalar_grid.shape[0] == 1 else scalar_grid[None, ...]
+        elif scalar_grid.dim() != 5:
+            raise ValueError(f"Expected scalar grid with 3, 4, or 5 dims, got {scalar_grid.shape}")
+        if scalar_grid.shape[0] != 1 or scalar_grid.shape[1] != 1:
+            raise ValueError(f"Expected scalar grid shape (1,1,G,G,G), got {scalar_grid.shape}")
+        grid_points = points[:, [2, 1, 0]].reshape(1, -1, 1, 1, 3).clamp(-1.0, 1.0)
+        sampled = F.grid_sample(scalar_grid, grid_points, mode="bilinear", align_corners=True)
+        return sampled[0, 0, :, 0, 0]
+
+    def _local_udf_parent_features(
+        self,
+        parent_sites: torch.Tensor,
+        local_udf_grid: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if not self.config_obj.local_udf_samples:
+            return parent_sites.new_empty((parent_sites.shape[0], 0))
+        if local_udf_grid is None or local_udf_grid.numel() == 0:
+            raise ValueError("Config requests local UDF samples but no local UDF grid was provided")
+
+        stencil = self.child_stencil.to(device=parent_sites.device, dtype=parent_sites.dtype)
+        stencil = stencil[None, :, :] * self.config_obj.child_stencil_scale
+        sample_points = torch.cat(
+            [parent_sites[:, None, :], parent_sites[:, None, :] + stencil],
+            dim=1,
+        ).reshape(-1, 3)
+        values = self._sample_scalar_grid(local_udf_grid.to(device=parent_sites.device, dtype=parent_sites.dtype), sample_points)
+        cell_size = 2.0 / float(self.config_obj.local_udf_grid_n - 1)
+        values = (values / cell_size).clamp(min=0.0, max=self.config_obj.point_udf_clip)
+        return values.reshape(parent_sites.shape[0], 1 + self.config_obj.slots_per_parent)
+
+    def _local_parent_features(
+        self,
+        parent_sites: torch.Tensor,
+        target_points: torch.Tensor | None,
+        local_udf_grid: torch.Tensor | None,
+    ) -> torch.Tensor:
+        parts: list[torch.Tensor] = []
+        if self.config_obj.local_udf_samples:
+            parts.append(self._local_udf_parent_features(parent_sites, local_udf_grid))
+        if self.config_obj.local_knn_features:
+            if target_points is None:
+                raise ValueError("Config requests local KNN features but no target points were provided")
+            if target_points.dim() == 3:
+                target_points = target_points[0]
+            parts.append(
+                local_knn_parent_features(
+                    parent_sites,
+                    target_points,
+                    k=self.config_obj.local_knn_k,
+                    radius=self.config_obj.local_knn_radius,
+                )
+            )
+        if not parts:
+            return parent_sites.new_empty((parent_sites.shape[0], 0))
+        return torch.cat(parts, dim=1)
+
     def _filter_spawned_sites(
         self,
         spawned_sites: torch.Tensor,
@@ -867,13 +1052,16 @@ class DCCVTHybridIterRefineNet(nn.Module):
         sites: torch.Tensor,
         sites_sdf: torch.Tensor,
         parent_indices: torch.Tensor,
+        target_points: torch.Tensor | None,
+        local_udf_grid: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, int]:
         if parent_indices.numel() == 0:
             return sites.new_empty((0, 3)), sites_sdf.new_empty((0,)), 0
         parent_sites = sites[parent_indices]
         parent_sdf = sites_sdf[parent_indices].unsqueeze(1)
         parent_features = self._sample_features(features, parent_sites)
-        decoder_input = torch.cat([parent_features, parent_sites, parent_sdf], dim=1)
+        local_features = self._local_parent_features(parent_sites, target_points, local_udf_grid)
+        decoder_input = torch.cat([parent_features, parent_sites, parent_sdf, local_features], dim=1)
         decoded = self.refine_decoder(decoder_input)
         decoded = decoded.reshape(parent_indices.numel(), self.config_obj.slots_per_parent, 4)
 
@@ -891,6 +1079,8 @@ class DCCVTHybridIterRefineNet(nn.Module):
         input_grid: torch.Tensor,
         hotspot_sdf_grid: torch.Tensor | None = None,
         initial_field: Optional[dict[str, Any]] = None,
+        target_points: torch.Tensor | None = None,
+        local_udf_grid: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         if input_grid.dim() == 4:
             input_grid = input_grid.unsqueeze(0)
@@ -945,6 +1135,8 @@ class DCCVTHybridIterRefineNet(nn.Module):
                 sites,
                 sites_sdf,
                 parent_indices,
+                target_points,
+                local_udf_grid,
             )
             rounds.append(
                 {
@@ -983,9 +1175,17 @@ def run_iterative_refinement(
     input_grid: torch.Tensor,
     hotspot_sdf_grid: torch.Tensor,
     initial_field: Optional[dict[str, Any]] = None,
+    target_points: torch.Tensor | None = None,
+    local_udf_grid: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     """Run the iterative refinement model and return extraction-ready fields."""
-    return model(input_grid, hotspot_sdf_grid, initial_field=initial_field)
+    return model(
+        input_grid,
+        hotspot_sdf_grid,
+        initial_field=initial_field,
+        target_points=target_points,
+        local_udf_grid=local_udf_grid,
+    )
 
 
 def save_checkpoint(
@@ -1074,6 +1274,8 @@ def build_train_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train iterative learned sparse refinement with mesh loss only.")
     parser.add_argument("--config", default="configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r1_p128.json")
     parser.add_argument("--cache-root", default="outputs/neural_hotspot_sdf/thingi32_g33")
+    parser.add_argument("--local-udf-root", default=None)
+    parser.add_argument("--allow-missing-local-features", action="store_true")
     parser.add_argument("--split-file", default=None)
     parser.add_argument("--mesh-ids", default=None)
     parser.add_argument("--checkpoint-dir", default="outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r1_p128/checkpoints")
@@ -1125,7 +1327,13 @@ def train_main(argv: Optional[list[str]] = None) -> None:
         mesh_ids=parse_mesh_ids(args.mesh_ids),
         split_file=args.split_file,
     )
-    dataset = HybridIterRefineDataset(cache_files, config=config, target_subsample=args.target_subsample)
+    dataset = HybridIterRefineDataset(
+        cache_files,
+        config=config,
+        target_subsample=args.target_subsample,
+        local_udf_root=args.local_udf_root,
+        allow_missing_local_features=args.allow_missing_local_features,
+    )
     generator = torch.Generator()
     generator.manual_seed(args.seed)
     dataloader = DataLoader(
@@ -1160,6 +1368,10 @@ def train_main(argv: Optional[list[str]] = None) -> None:
             input_grid = batch["input_grid"].to(device, non_blocking=True)
             sdf_grid = batch["sdf_grid"].to(device, non_blocking=True)
             target_points = batch["target_points"].to(device, non_blocking=True)
+            local_target_points = batch["local_target_points"].to(device, non_blocking=True)
+            local_udf_grid = None
+            if config.local_udf_samples:
+                local_udf_grid = batch["local_udf_grid"].to(device, non_blocking=True)
             initial_field = _initialization_from_batch(batch, device, input_grid.dtype)
             if not initial_field["valid"]:
                 reason = initial_field["reason"]
@@ -1173,7 +1385,13 @@ def train_main(argv: Optional[list[str]] = None) -> None:
                 continue
 
             optimizer.zero_grad(set_to_none=True)
-            outputs = model(input_grid, sdf_grid, initial_field=initial_field)
+            outputs = model(
+                input_grid,
+                sdf_grid,
+                initial_field=initial_field,
+                target_points=local_target_points if config.local_knn_features else target_points,
+                local_udf_grid=local_udf_grid,
+            )
             loss, stats = hybrid_direct_mesh_loss(
                 outputs,
                 target_points,
@@ -1192,6 +1410,32 @@ def train_main(argv: Optional[list[str]] = None) -> None:
             for key, value in stats.items():
                 epoch_stats[key] = epoch_stats.get(key, 0.0) + float(value)
             epoch_stats["site_count"] = epoch_stats.get("site_count", 0.0) + float(outputs["sites"].shape[1])
+            epoch_stats["local_udf_grid_n"] = epoch_stats.get("local_udf_grid_n", 0.0) + float(
+                config.local_udf_grid_n if config.local_udf_samples else 0
+            )
+            epoch_stats["local_knn_features"] = epoch_stats.get("local_knn_features", 0.0) + float(
+                config.local_knn_features
+            )
+            if config.local_knn_features:
+                epoch_stats["local_target_point_count"] = epoch_stats.get("local_target_point_count", 0.0) + float(
+                    local_target_points.shape[1]
+                )
+            if config.local_udf_samples:
+                local_udf_valid = batch["local_udf_valid"]
+                epoch_stats["local_udf_valid"] = epoch_stats.get("local_udf_valid", 0.0) + float(
+                    local_udf_valid.reshape(-1)[0].item()
+                )
+            for round_index, round_data in enumerate(outputs["rounds"]):
+                prefix = f"round_{round_index:02d}"
+                epoch_stats[f"{prefix}_parent_count"] = epoch_stats.get(f"{prefix}_parent_count", 0.0) + float(
+                    round_data["parent_indices"].shape[0]
+                )
+                epoch_stats[f"{prefix}_spawned_site_count"] = epoch_stats.get(
+                    f"{prefix}_spawned_site_count", 0.0
+                ) + float(round_data["spawned_sites"].shape[0])
+                epoch_stats[f"{prefix}_rejected_spawn_count"] = epoch_stats.get(
+                    f"{prefix}_rejected_spawn_count", 0.0
+                ) + float(round_data["rejected_spawn_count"].item())
             initialization_diagnostics = outputs["initialization_diagnostics"]
             for key in (
                 "initial_site_count",
@@ -1497,6 +1741,8 @@ def _save_prediction(
     target_points: np.ndarray,
     checkpoint: dict[str, Any],
     command_args: dict[str, Any],
+    local_udf_path: str = "",
+    local_udf_valid: bool = False,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     sites = outputs["sites"][0].detach().cpu()
@@ -1513,6 +1759,12 @@ def _save_prediction(
         "initialization_valid": bool(outputs["initialization_valid"]),
         "initialization_reason": str(outputs["initialization_reason"]),
         "initialization": initialization_diagnostics,
+        "local_feature_mode": str(checkpoint["model_config"].get("local_feature_mode", "none")),
+        "local_udf_grid_n": int(checkpoint["model_config"].get("local_udf_grid_n", 0)),
+        "local_udf_samples": bool(checkpoint["model_config"].get("local_udf_samples", False)),
+        "local_udf_path": local_udf_path,
+        "local_udf_valid": bool(local_udf_valid),
+        "local_knn_features": bool(checkpoint["model_config"].get("local_knn_features", False)),
     }
     arrays: dict[str, Any] = {
         "sites": sites.numpy().astype(np.float32),
@@ -1527,6 +1779,8 @@ def _save_prediction(
         "input_grid": input_grid.astype(np.float32),
         "sdf_grid": sdf_grid.astype(np.float32),
         "target_points": target_points.astype(np.float32),
+        "local_udf_path": np.array(local_udf_path),
+        "local_udf_valid": np.array(bool(local_udf_valid)),
         "diagnostics": np.array(json.dumps(diagnostics, sort_keys=True)),
         "resolved_config": np.array(json.dumps(checkpoint["model_config"], sort_keys=True)),
         "command_args": np.array(json.dumps(command_args, sort_keys=True)),
@@ -1556,6 +1810,8 @@ def run_inference(
     cache_path: str | Path,
     output_dir: str | Path,
     device_value: str = "auto",
+    local_udf_root: str | Path | None = None,
+    allow_missing_local_features: bool = False,
     extract: bool = True,
     w_cvt: float = 100.0,
     w_sdfsmooth: float = 100.0,
@@ -1584,6 +1840,28 @@ def run_inference(
     )
     input_grid = torch.from_numpy(input_grid_np[None, ...]).to(device)
     sdf_grid = torch.from_numpy(sdf_grid_np[None, None, ...]).to(device)
+    target_points = torch.from_numpy(target_points_np[None, ...]).to(device)
+    local_udf_grid = None
+    local_udf_path = ""
+    local_udf_valid = False
+    if model.config_obj.local_udf_samples:
+        if local_udf_root is None:
+            if not allow_missing_local_features:
+                raise ValueError("Checkpoint config requests local UDF samples; provide --local-udf-root")
+            grid_n = model.config_obj.local_udf_grid_n
+            local_udf_np = np.zeros((grid_n, grid_n, grid_n), dtype=np.float32)
+        else:
+            sidecar_path = point_udf_sidecar_path(local_udf_root, Path(cache_path).stem)
+            local_udf_path = str(sidecar_path)
+            if not sidecar_path.exists():
+                if not allow_missing_local_features:
+                    raise FileNotFoundError(f"Missing local point-UDF sidecar: {sidecar_path}")
+                grid_n = model.config_obj.local_udf_grid_n
+                local_udf_np = np.zeros((grid_n, grid_n, grid_n), dtype=np.float32)
+            else:
+                local_udf_np = load_point_udf_sidecar(sidecar_path, grid_n=model.config_obj.local_udf_grid_n)
+                local_udf_valid = True
+        local_udf_grid = torch.from_numpy(local_udf_np[None, None, ...]).to(device)
     initial_field = build_hotspot_near_surface_initialization(sdf_grid_np, model.config_obj)
     for name in (
         "sites",
@@ -1596,7 +1874,13 @@ def run_inference(
     ):
         initial_field[name] = initial_field[name].to(device=device, dtype=input_grid.dtype)
     with torch.no_grad():
-        outputs = model(input_grid, sdf_grid, initial_field=initial_field)
+        outputs = model(
+            input_grid,
+            sdf_grid,
+            initial_field=initial_field,
+            target_points=target_points,
+            local_udf_grid=local_udf_grid,
+        )
 
     output_path = Path(output_dir)
     prediction_file = _save_prediction(
@@ -1608,6 +1892,8 @@ def run_inference(
         target_points=target_points_np,
         checkpoint=checkpoint,
         command_args=command_args or {},
+        local_udf_path=local_udf_path,
+        local_udf_valid=local_udf_valid,
     )
 
     sites_cpu = outputs["sites"][0].detach().cpu()
@@ -1660,6 +1946,8 @@ def build_infer_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run iterative learned sparse-refinement inference.")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--cache", required=True)
+    parser.add_argument("--local-udf-root", default=None)
+    parser.add_argument("--allow-missing-local-features", action="store_true")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=69)
@@ -1676,6 +1964,8 @@ def infer_main(argv: Optional[list[str]] = None) -> None:
         cache_path=args.cache,
         output_dir=args.output_dir,
         device_value=args.device,
+        local_udf_root=args.local_udf_root,
+        allow_missing_local_features=args.allow_missing_local_features,
         extract=not args.no_extract,
         w_cvt=args.w_cvt,
         w_sdfsmooth=args.w_sdfsmooth,

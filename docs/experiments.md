@@ -176,15 +176,20 @@ python scripts/extract_hybrid_sparse_refine.py \
   - one round, 128 parents: `configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r1_p128.json`
   - two rounds, 128 parents: `configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r2_p128.json`
   - one round, 256 parents: `configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r1_p256.json`
+  - v3 local `65^3` UDF + KNN, two rounds, 128 parents: `configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json`
 - Training script: `scripts/train_hybrid_iter_refine.py`
 - Inference script: `scripts/infer_hybrid_iter_refine.py`
 - Initialization extraction script: `scripts/extract_hybrid_iter_refine_initial.py`
+- Local point-UDF sidecar script: `scripts/precompute_hybrid_iter_refine_udf65.py`
 - Input caches: `outputs/neural_hotspot_sdf/thingi32_g33/*.npz`
+- Local UDF sidecars for v3: `outputs/neural_hotspot_sdf/thingi32_g65_point_udf/*.npz`
 - Split: `PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt`
-- Output convention: use separate roots under `outputs/neural_dccvt/`, for example `hybrid_iter_refine_initial_v2_hotspot_point_udf/`, `hybrid_iter_refine_v2_hotspot_point_udf_r1_p128/`, `hybrid_iter_refine_v2_hotspot_point_udf_r2_p128/`, and `hybrid_iter_refine_v2_hotspot_point_udf_r1_p256/`.
+- Output convention: use separate roots under `outputs/neural_dccvt/`, for example `hybrid_iter_refine_initial_v2_hotspot_point_udf/`, `hybrid_iter_refine_v2_hotspot_point_udf_r1_p128/`, `hybrid_iter_refine_v2_hotspot_point_udf_r2_p128/`, `hybrid_iter_refine_v2_hotspot_point_udf_r1_p256/`, and `hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128/`.
 - Purpose: train a learned iterative refinement model through DCCVT mesh loss only, without DCCVT upsample label supervision.
 - Field definition: start from 512 deterministically jittered background sites and up to 1,618 HotSpot-projected inside/outside pairs. Procedural DCCVT scoring selects up to 128 unique parents per round, and the network predicts bounded offsets around four tetrahedral child slots plus bounded SDF residuals.
 - Two-channel input: `hotspot_sdf` and `point_udf`. The previous Thingi32 overfit used four channels (`hotspot_sdf`, `abs_hotspot_sdf`, `point_udf`, `point_confidence`) and one refinement round.
+- v3 local signal: `configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json` still uses the same two global channels and the same cache `target_points`; it additionally samples a `65^3` exact point-UDF sidecar and local KNN statistics at selected refinement parents. This is intended to expose more of the available input point cloud than the coarse `33^3` UDF channel, without sampling ground-truth mesh surfaces.
+- v3 target behavior: `--target-subsample` still controls the coarse `point_udf` channel and mesh-loss target, but local KNN features use the full cache `target_points`. The training log reports `local_target_point_count` to make this visible.
 - Site budgets: initialization baseline has 3,748 sites; `r1_p128` has at most 4,260 sites; `r2_p128` and `r1_p256` each have at most 4,772 sites before spacing rejections.
 - Stability behavior: near-surface pairs must have opposite HotSpot signs and minimum spacing; invalid initializations are skipped with a structured reason unless `--strict-initialization` is passed. Child candidates too close to current or previously accepted sites are rejected.
 - Compatibility: checkpoints without `config_version` load as legacy canonical initialization. Training refuses to resume a checkpoint when its initialization mode differs from the requested config.
@@ -223,6 +228,39 @@ python scripts/infer_hybrid_iter_refine.py \
   --output-dir outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r2_p128_smoke/252119
 ```
 
+- v3 local-UDF/KNN smoke command:
+
+```bash
+python scripts/precompute_hybrid_iter_refine_udf65.py \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_smoke.txt \
+  --output-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf_smoke \
+  --grid-n 65 \
+  --overwrite \
+  --fail-fast
+
+python scripts/train_hybrid_iter_refine.py \
+  --config configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --local-udf-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf_smoke \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_smoke.txt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128_smoke/checkpoints \
+  --epochs 1 \
+  --target-subsample 64 \
+  --feature-dim 8 \
+  --encoder-layers 1 \
+  --decoder-layers 1 \
+  --w-mesh-cvt 0 \
+  --w-mesh-sdfsmooth 0 \
+  --strict-mesh-loss
+
+python scripts/infer_hybrid_iter_refine.py \
+  --checkpoint outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128_smoke/checkpoints/latest.pt \
+  --cache outputs/neural_hotspot_sdf/thingi32_g33/252119.npz \
+  --local-udf-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf_smoke \
+  --output-dir outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128_smoke/252119
+```
+
 - Focused two-channel Thingi32 overfit commands:
 
 ```bash
@@ -253,6 +291,25 @@ python scripts/train_hybrid_iter_refine.py \
   --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
   --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
   --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r1_p256/checkpoints \
+  --epochs 1000 \
+  --target-subsample 4096 \
+  --lr 6.4e-5 \
+  --save-every 25 \
+  --seed 69
+
+python scripts/precompute_hybrid_iter_refine_udf65.py \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --output-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf \
+  --grid-n 65 \
+  --fail-fast
+
+python scripts/train_hybrid_iter_refine.py \
+  --config configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --local-udf-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128/checkpoints \
   --epochs 1000 \
   --target-subsample 4096 \
   --lr 6.4e-5 \

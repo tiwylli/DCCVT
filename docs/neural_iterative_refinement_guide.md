@@ -34,11 +34,16 @@ therefore
 = 4260 sites maximum
 ```
 
-The active comparison configs use only `hotspot_sdf` and `point_udf`, and add
-an initialization-only baseline. Their budgets are 3,748 initial sites,
+The active v2 comparison configs use only `hotspot_sdf` and `point_udf`, and
+add an initialization-only baseline. Their budgets are 3,748 initial sites,
 4,260 sites for one round with 128 parents, and 4,772 sites for either two
 128-parent rounds or one 256-parent round. Spacing checks can reject children,
 so these are maxima rather than guaranteed final counts.
+
+The active v3 comparison keeps the same application-facing input point cloud
+stored as cache `target_points`, but exposes more of it to the refinement
+decoder. It adds a `65^3` exact point-UDF sidecar and local KNN statistics at
+selected parents. No ground-truth mesh surface sampling is introduced.
 
 Primary code references:
 
@@ -49,6 +54,10 @@ Primary code references:
 - `configs/neural_hybrid_iter_refine_initial_v2_hotspot_point_udf.json` and
   `configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_*.json`: active
   two-channel baseline and comparison configs.
+- `configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json`:
+  two-channel global input plus local `65^3` UDF and KNN parent features.
+- [`dccvt/neural/point_udf_sidecar.py`](../dccvt/neural/point_udf_sidecar.py):
+  exact point-UDF sidecar generation and validation.
 - [`tests/test_neural_iter_refine.py`](../tests/test_neural_iter_refine.py):
   executable behavioral specification.
 
@@ -66,6 +75,8 @@ HotSpot cache
        |    = 3748 initial sites
        |
        +--> two-channel input grid (2 x 33 x 33 x 33)
+       +--> optional v3 local point evidence
+       |      65^3 exact point-UDF sidecar + parent KNN stats
               |
               v
           3D CNN encoder
@@ -76,7 +87,7 @@ HotSpot cache
               |
       Delaunay and procedural parent scoring
               |
-      sample encoder features at selected parents
+      sample encoder features and optional local point features at parents
               |
       learned child offset and SDF residual decoder
               |
@@ -143,9 +154,58 @@ pairs. Near-surface initialization depends only on `sdf_grid` and the model
 config. This distinction is important when reasoning about what information
 the initializer uses.
 
-When `--target-subsample K` is passed, the dataset subsamples points before both
-channel construction and loss evaluation. The subset can therefore affect the
-input tensor as well as the Chamfer target.
+When `--target-subsample K` is passed, v1/v2 behavior subsamples points before
+both channel construction and loss evaluation. The subset can therefore affect
+the input tensor as well as the Chamfer target. v3 still uses that subsampled
+tensor for the coarse `33^3` channel and mesh loss, but its local KNN features
+receive the full cache `target_points` tensor.
+
+### v3 Local Feature Path
+
+v3 keeps the global neural input exactly two-channel:
+
+```text
+hotspot_sdf + point_udf on the 33^3 cache grid
+```
+
+The additional signal is local to selected refinement parents. It is not a new
+dense global encoder branch.
+
+For every selected parent, the decoder receives:
+
+| Feature group | Width | Source |
+| --- | ---: | --- |
+| Coarse encoder feature | `feature_dim` | `grid_sample()` from the `33^3` encoder feature grid. |
+| Parent state | `4` | Parent XYZ plus parent SDF. |
+| Local `65^3` point-UDF samples | `1 + slots_per_parent` | Sidecar UDF sampled at the parent and at the fixed child stencil offsets. |
+| Local KNN statistics | `7` | Full cache `target_points`, not the `--target-subsample` subset. |
+
+With the v3 config defaults this makes the decoder input width:
+
+```text
+128 encoder features
++ 4 parent state values
++ 5 local UDF samples
++ 7 KNN statistics
+= 144 values per parent
+```
+
+The local point-UDF samples are raw nearest-input-point distances stored in the
+sidecar. At runtime they are normalized by the `65^3` cell size and clipped by
+`point_udf_clip`, matching the scale of the coarse `point_udf` channel.
+
+The KNN statistics are:
+
+- nearest-point distance divided by `local_knn_radius`;
+- mean offset vector from parent to the K nearest input points, divided by
+  `local_knn_radius`;
+- mean KNN distance divided by `local_knn_radius`;
+- number of input points within `local_knn_radius`, divided by `local_knn_k`;
+- local covariance anisotropy from the KNN offsets.
+
+This design preserves the refinement program: parent selection remains
+procedural, children are still bounded child slots plus bounded SDF residuals,
+and the differentiable clipped-mesh loss remains the training objective.
 
 ## Near-Surface Initialization
 
@@ -673,12 +733,14 @@ initialization once in the main process.
 | --- | --- |
 | [`dccvt/neural/iter_refine.py`](../dccvt/neural/iter_refine.py) | Typed config, initialization, parent selection, dataset, model, train loop, inference, checkpointing, and prediction export. |
 | [`dccvt/neural/grid.py`](../dccvt/neural/grid.py) | Canonical grids, hybrid input channels, point UDF/confidence, and differentiable SDF interpolation. |
+| [`dccvt/neural/point_udf_sidecar.py`](../dccvt/neural/point_udf_sidecar.py) | Exact point-UDF sidecar generation, validation, and loading for v3 local features. |
 | [`dccvt/neural/losses.py`](../dccvt/neural/losses.py) | Symmetric Chamfer and clipped-mesh training objective. |
 | [`dccvt/geometry.py`](../dccvt/geometry.py) | Delaunay wrapper, clipped geometry, CVT geometry, and differentiable projections. |
 | [`dccvt/sdf_gradients.py`](../dccvt/sdf_gradients.py) | Site/tetrahedron SDF gradients, eikonal, curvature, and smoothing support. |
 | [`dccvt/mesh_ops.py`](../dccvt/mesh_ops.py) | Final `intDCCVT` and `projDCCVT` extraction. |
 | [`scripts/train_hybrid_iter_refine.py`](../scripts/train_hybrid_iter_refine.py) | Thin training wrapper. |
 | [`scripts/infer_hybrid_iter_refine.py`](../scripts/infer_hybrid_iter_refine.py) | Thin inference wrapper. |
+| [`scripts/precompute_hybrid_iter_refine_udf65.py`](../scripts/precompute_hybrid_iter_refine_udf65.py) | Thin v3 point-UDF sidecar precompute wrapper. |
 | [`tests/test_neural_iter_refine.py`](../tests/test_neural_iter_refine.py) | Initialization, parent, round-growth, collision, compatibility, and export tests. |
 
 Public neural exports from `dccvt.neural` are:
@@ -690,6 +752,60 @@ Public neural exports from `dccvt.neural` are:
 - `select_procedural_refinement_parents`
 - `run_iterative_refinement`
 - `run_initialization_extraction`
+
+## Local Point-UDF Sidecars
+
+v3 sidecars are generated from existing HotSpot cache `target_points`, not from
+ground-truth mesh surface resampling. Each sidecar stores a compressed `65_udf`
+array, source cache path, point count, domain `[-1, 1]`, seed, command args, and
+preprocessing version.
+
+The sidecar root convention is:
+
+```text
+outputs/neural_hotspot_sdf/thingi32_g65_point_udf/<mesh_id>.npz
+```
+
+Each sidecar contains:
+
+| Key | Expected value | Use |
+| --- | --- | --- |
+| `65_udf` | Float array `(65,65,65)` | Exact nearest distance from each grid vertex to the cache `target_points`. |
+| `metadata` | JSON string | Full sidecar metadata, including command args. |
+| `preprocessing_version` | `point_udf_sidecar_v1` | Compatibility check. |
+| `grid_n` | Integer scalar, normally `65` | Must match `local_udf_grid_n`. |
+| `coordinate_min`, `coordinate_max` | `-1.0`, `1.0` | Domain convention. |
+| `source_cache_path` | String | Cache used to build the sidecar. |
+| `source_point_count` | Integer scalar | Number of input points used. |
+| `seed` | Integer scalar | Reproducibility metadata. |
+
+```bash
+python scripts/precompute_hybrid_iter_refine_udf65.py \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --output-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf \
+  --grid-n 65 \
+  --fail-fast
+```
+
+The script writes one `<mesh_id>.npz` sidecar per cache plus
+`resolved_config.json` and `summary.json` in the sidecar root. Use
+`--overwrite` to replace existing valid sidecars.
+
+Sidecar command options:
+
+| Argument | Default | Behavior |
+| --- | --- | --- |
+| `--cache-root` | `outputs/neural_hotspot_sdf/thingi32_g33` | Source HotSpot cache root. |
+| `--split-file` | `None` | Optional mesh-id split file. |
+| `--mesh-ids` | `None` | Optional comma/space-separated mesh IDs. |
+| `--output-root` | `outputs/neural_hotspot_sdf/thingi32_g65_point_udf` | Sidecar output root. |
+| `--grid-n` | `65` | Side length of the exact point-UDF grid. v3 config expects 65. |
+| `--query-chunk-size` | `2048` | Number of grid query points per `torch.cdist` chunk. |
+| `--device` | `auto` | Uses CUDA when available, otherwise CPU. |
+| `--seed` | `69` | Recorded in sidecar metadata. |
+| `--overwrite` | `False` | Replace existing valid sidecars. |
+| `--fail-fast` | `False` | Stop at the first sidecar generation failure. |
 
 ## Configuration Reference
 
@@ -725,6 +841,12 @@ from `channel_names`.
 | `spawn_min_distance` | `0.0025` | Minimum distance for accepted learned children; non-negative. |
 | `point_udf_clip` | `4.0` | Maximum normalized point-UDF input value. |
 | `point_confidence_sigma_scale` | `1.5` | Gaussian confidence sigma in HotSpot cell-size units. |
+| `local_udf_grid_n` | `65` in v3, `0` otherwise | Exact local point-UDF sidecar grid size. |
+| `local_udf_samples` | `true` in v3, `false` otherwise | Enables parent and child-stencil UDF samples from the sidecar. |
+| `local_knn_features` | `true` in v3, `false` otherwise | Enables local parent KNN statistics from `target_points`. |
+| `local_knn_k` | `8` | Neighbor count for local KNN statistics. |
+| `local_knn_radius` | `0.0625` | Radius used to normalize KNN distances and count local density. |
+| `local_feature_mode` | `udf65_knn_stats` in v3, `none` otherwise | Local decoder feature mode. |
 | `parent_selection` | `procedural_zero_crossing_curvature` | Only implemented parent-selection mode. |
 | `training_objective` | `mesh_loss_only` | Only implemented training objective. |
 | `channel_names` | `["hotspot_sdf", "point_udf"]` in active v2 JSON | Ordered channel list; first entry must be `hotspot_sdf`, names must be valid and unique. |
@@ -746,6 +868,8 @@ python scripts/train_hybrid_iter_refine.py [options]
 | --- | --- | --- |
 | `--config` | `configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r1_p128.json` | JSON model config. Pass `configs/neural_hybrid_iter_refine_v1.json` only to reproduce the historical four-channel run. |
 | `--cache-root` | `outputs/neural_hotspot_sdf/thingi32_g33` | Directory containing cache NPZ files. |
+| `--local-udf-root` | `None` | Directory containing v3 point-UDF sidecars. Required when the config enables local UDF samples unless `--allow-missing-local-features` is passed. |
+| `--allow-missing-local-features` | `False` | Use zero local UDF features when sidecars are missing. Intended only for smoke/debug runs. |
 | `--split-file` | `None` | Text file of mesh IDs; takes precedence over `--mesh-ids`. |
 | `--mesh-ids` | `None` | Comma/space-separated IDs. If both selectors are absent, all cache NPZ files are used. |
 | `--checkpoint-dir` | `outputs/neural_dccvt/hybrid_iter_refine_v2_hotspot_point_udf_r1_p128/checkpoints` | Checkpoints and resolved config output. |
@@ -796,6 +920,8 @@ python scripts/infer_hybrid_iter_refine.py [options]
 | --- | --- | --- |
 | `--checkpoint` | Required | Iterative-refinement checkpoint. |
 | `--cache` | Required | One HotSpot cache NPZ. |
+| `--local-udf-root` | `None` | Directory containing v3 point-UDF sidecars. Required when the checkpoint config enables local UDF samples unless missing features are explicitly allowed. |
+| `--allow-missing-local-features` | `False` | Use zero local UDF features if the sidecar is missing. Intended only for smoke/debug runs. |
 | `--output-dir` | Required | Prediction and optional mesh output directory. |
 | `--device` | `auto` | Model device selection. |
 | `--seed` | `69` | Inference and extraction seed. |
@@ -850,6 +976,8 @@ Core arrays:
 | `input_grid` | Hybrid neural input `(C,G,G,G)`. |
 | `sdf_grid` | Cached HotSpot grid. |
 | `target_points` | Cache target points used during inference. |
+| `local_udf_path` | Sidecar path used by v3 inference, empty for non-v3 configs. |
+| `local_udf_valid` | Boolean sidecar validity flag recorded for v3 inference. |
 | `diagnostics` | JSON string with final and initialization diagnostics. |
 | `resolved_config` | Checkpoint model config as JSON. |
 | `command_args` | Inference arguments as JSON. |
@@ -879,6 +1007,19 @@ inference_result.json
 `inference_result.json` records prediction path, extraction status, site count,
 and initialization validity/reason.
 
+Important v3 diagnostics in the training log and prediction NPZ include:
+
+- `local_feature_mode`;
+- `local_udf_grid_n`;
+- `local_udf_samples`;
+- `local_udf_path`;
+- `local_udf_valid`;
+- `local_knn_features`;
+- `local_target_point_count`;
+- `round_XX_parent_count`;
+- `round_XX_spawned_site_count`;
+- `round_XX_rejected_spawn_count`.
+
 ## Reproduction Workflow
 
 Run all commands from the repository root:
@@ -894,6 +1035,8 @@ Activate the repository environment first. The verified environment used
 | --- | --- | --- | --- |
 | Initialization-only baseline | HotSpot cache split and initialization v2 config | Initialization field NPZ, resolved config, optional meshes, and summary JSON | No learned checkpoint; mesh extraction requires DCCVT runtime. |
 | Minimal training smoke | One cache selected by the smoke split and a two-channel v2 config | Resolved config and checkpoints | Verified with CUDA, `pygdel3d`, and gDel3D. |
+| v3 sidecar precompute | HotSpot cache split | `65^3` point-UDF sidecars, resolved config, and summary JSON | CUDA recommended; CPU support is slower but expected. |
+| v3 local refinement smoke | One cache, matching sidecar, and v3 config | Resolved config, checkpoints, prediction NPZ, and optional meshes | Verified with CUDA, `pygdel3d`, and gDel3D. |
 | Inference and extraction | One checkpoint and one cache | Prediction NPZ, result JSON, both mesh variants, mesh bundles, and target PLY | Verified with CUDA, `pygdel3d`, and gDel3D. |
 | No-extract inference | One checkpoint and one cache | Prediction NPZ and result JSON | Still requires Delaunay parent selection; CPU-only support is Needs verification. |
 | Resume training | Matching checkpoint, config, caches, and split | Updates `latest.pt` and writes configured snapshots | Same runtime requirements as training. |
@@ -938,6 +1081,53 @@ python scripts/train_hybrid_iter_refine.py \
 
 Expected outputs include `resolved_config.json`, `latest.pt`, and
 `epoch_0000.pt` in the checkpoint directory.
+
+### v3 Local-UDF/KNN Smoke Test
+
+First precompute the matching sidecar for the smoke split:
+
+```bash
+python scripts/precompute_hybrid_iter_refine_udf65.py \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_smoke.txt \
+  --output-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf_smoke \
+  --grid-n 65 \
+  --overwrite \
+  --fail-fast
+```
+
+Then train one reduced-width epoch with v3 local features:
+
+```bash
+python scripts/train_hybrid_iter_refine.py \
+  --config configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --local-udf-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf_smoke \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_smoke.txt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128_smoke/checkpoints \
+  --epochs 1 \
+  --target-subsample 64 \
+  --feature-dim 8 \
+  --encoder-layers 1 \
+  --decoder-layers 1 \
+  --w-mesh-cvt 0 \
+  --w-mesh-sdfsmooth 0 \
+  --strict-mesh-loss \
+  --save-every 1
+```
+
+The verified smoke for mesh `252119` reported both refinement rounds active,
+valid local UDF features, and `local_target_point_count=9600`.
+
+Run v3 inference and extraction with the same sidecar root:
+
+```bash
+python scripts/infer_hybrid_iter_refine.py \
+  --checkpoint outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128_smoke/checkpoints/latest.pt \
+  --cache outputs/neural_hotspot_sdf/thingi32_g33/252119.npz \
+  --local-udf-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf_smoke \
+  --output-dir outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128_smoke/252119
+```
 
 ### Inference and Extraction
 
@@ -1025,6 +1215,39 @@ python scripts/train_hybrid_iter_refine.py \
 These full 1,000-epoch commands have not been completed as part of the current
 verification.
 
+### v3 Full Thingi32 Run
+
+Precompute sidecars for the full 31-shape split:
+
+```bash
+python scripts/precompute_hybrid_iter_refine_udf65.py \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --output-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf \
+  --grid-n 65 \
+  --fail-fast
+```
+
+Train the active v3 local-refinement comparison:
+
+```bash
+python scripts/train_hybrid_iter_refine.py \
+  --config configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --local-udf-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128/checkpoints \
+  --epochs 1000 \
+  --target-subsample 4096 \
+  --lr 6.4e-5 \
+  --save-every 25 \
+  --seed 69
+```
+
+This run uses the full cache `target_points` for local KNN features even though
+the coarse `point_udf` channel and mesh-loss target are subsampled to 4096
+points per batch.
+
 ## Verified Behavior
 
 The following observations were verified during implementation. They are
@@ -1092,6 +1315,37 @@ No full-width 1,000-epoch model or final `ponq_thingi`, `raw`, and
 `bbox_aligned` quality evaluation has been completed. Comparative Chamfer,
 normal consistency, F1, and edge metrics are therefore **Needs verification**.
 
+### v3 Local-UDF/KNN Smoke
+
+For mesh `252119`, the v3 smoke generated one `65^3` sidecar from the existing
+cache `target_points`, then ran one reduced-width training epoch and inference
+with extraction. The training checkpoint reported:
+
+```text
+site_count                   = 4703
+local_udf_grid_n              = 65
+local_knn_features            = 1
+local_target_point_count      = 9600
+local_udf_valid               = 1
+round_00_parent_count         = 128
+round_00_spawned_site_count   = 511
+round_00_rejected_spawn_count = 1
+round_01_parent_count         = 128
+round_01_spawned_site_count   = 444
+round_01_rejected_spawn_count = 68
+```
+
+The subsequent inference/export smoke wrote a prediction with:
+
+```text
+round_count     = 2
+site_count      = 4702
+local_udf_valid = true
+```
+
+Both `intDCCVT` and `projDCCVT` extraction completed. This verifies feature
+plumbing and extraction, not reconstruction-quality improvement.
+
 ## Tests
 
 `tests/test_neural_iter_refine.py` verifies:
@@ -1102,6 +1356,10 @@ normal consistency, F1, and edge metrics are therefore **Needs verification**.
 - no-crossing invalid status;
 - finite in-domain one-round children;
 - monotonic multi-round site growth;
+- exact `65^3` point-UDF sidecar distances and metadata;
+- finite local KNN statistics when fewer than K target points are available;
+- v3 config local-feature settings;
+- v3 default-initialization forward growth with local features;
 - collision rejection;
 - legacy config migration and resume-mode rejection;
 - exported initialization and per-round metadata.
@@ -1153,6 +1411,27 @@ iteration stops.
 Inspect `mesh_used_shapes`, `mesh_skipped_shapes`, and `mesh_no_grad_batch`.
 Use `--strict-mesh-loss` to expose the underlying geometry exception.
 
+### Missing Local UDF Sidecar
+
+v3 configs require `--local-udf-root` during training and inference. Missing or
+invalid sidecars raise an error by default.
+
+Actions:
+
+- run `scripts/precompute_hybrid_iter_refine_udf65.py` for the same split;
+- verify the sidecar root contains `<mesh_id>.npz`;
+- verify sidecar metadata uses `grid_n=65` and preprocessing version
+  `point_udf_sidecar_v1`;
+- use `--allow-missing-local-features` only for deliberate smoke/debug runs,
+  because it replaces sidecar samples with zeros.
+
+### Local KNN Count Looks Subsampled
+
+For v3, `local_target_point_count` should report the full cache point count for
+the loaded mesh. If it equals `--target-subsample`, inspect dataset loading or
+the cache itself; the intended behavior is full-point KNN features and
+subsampled coarse channel/loss.
+
 ### gDel3D Assertions or Process Termination
 
 Likely causes include duplicate/near-duplicate sites, degenerate geometry,
@@ -1194,6 +1473,11 @@ shared extraction runtime.
 - Input point channels and mesh-loss targets come from the same cached target
   points; this experiment is currently an overfit setting, not a clean unseen
   shape generalization study.
+- v3 sidecars are derived from the same cached target points; they do not add
+  ground-truth mesh samples.
+- v3 local KNN features use the full cache point set, while
+  `--target-subsample` still controls the coarse `point_udf` channel and
+  mesh-loss target.
 - Initialization is memoized only within each dataset-process instance.
 - Parent-selection Delaunay and final mesh-loss Delaunay are computed
   separately.
