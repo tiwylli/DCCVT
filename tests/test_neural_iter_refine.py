@@ -12,12 +12,16 @@ from dccvt.neural.iter_refine import (
     _resolve_resume_config,
     _save_initialization_field,
     _save_prediction,
+    build_directed_edges_from_simplices,
     build_hotspot_near_surface_initialization,
     build_train_arg_parser,
+    delaunay_edge_features,
+    fourier_site_position_encoding,
     load_iter_refine_config,
     local_knn_parent_features,
     select_procedural_refinement_parents,
 )
+from dccvt.neural.losses import hybrid_direct_mesh_loss
 from dccvt.neural.point_udf_sidecar import (
     exact_point_udf_grid,
     load_point_udf_sidecar,
@@ -131,6 +135,7 @@ def test_two_channel_comparison_configs_load_expected_budgets():
         "configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r2_p128.json": (2, 128),
         "configs/neural_hybrid_iter_refine_v2_hotspot_point_udf_r1_p256.json": (1, 256),
         "configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json": (2, 128),
+        "configs/neural_hybrid_iter_refine_v4_delaunay_gcnn_udf65_knn_r2_p128.json": (2, 128),
     }
 
     for relative_path, (rounds, parent_budget) in expected.items():
@@ -140,13 +145,70 @@ def test_two_channel_comparison_configs_load_expected_budgets():
         assert config.channel_names == ("hotspot_sdf", "point_udf")
         assert config.num_refinement_rounds == rounds
         assert config.max_parents_per_round == parent_budget
-        if "v3" in relative_path:
+        if "v3" in relative_path or "v4" in relative_path:
+            assert config.base_grid_n == 17
+            assert (config.base_grid_n - 1) ** 3 == 4096
+            assert config.surface_pair_count == 3236
+            assert (config.base_grid_n - 1) ** 3 + config.surface_pair_count == 7332
+            assert (
+                (config.base_grid_n - 1) ** 3
+                + config.surface_pair_count
+                + config.num_refinement_rounds * config.max_parents_per_round * config.slots_per_parent
+                == 8356
+            )
             assert config.local_feature_mode == "udf65_knn_stats"
             assert config.local_udf_grid_n == 65
             assert config.local_udf_samples is True
             assert config.local_knn_features is True
             assert config.local_knn_k == 8
             assert config.local_knn_radius == pytest.approx(0.0625)
+        if "v4" in relative_path:
+            assert config.architecture == "delaunay_gcnn"
+            assert config.graph_layers == 3
+            assert config.graph_hidden_dim == config.feature_dim
+            assert config.site_position_encoding == "fourier"
+            assert config.site_position_num_frequencies == 4
+            assert config.graph_edge_features == "relative_xyz_distance_direction_sdf_delta"
+
+
+def test_fourier_site_position_encoding_is_deterministic_and_finite():
+    sites = torch.tensor([[0.0, 0.5, -1.0], [1.0, -0.25, 0.25]], dtype=torch.float32)
+
+    encoded = fourier_site_position_encoding(sites, num_frequencies=4)
+    second = fourier_site_position_encoding(sites, num_frequencies=4)
+
+    assert encoded.shape == (2, 27)
+    assert torch.equal(encoded, second)
+    assert torch.allclose(encoded[:, :3], sites)
+    assert torch.isfinite(encoded).all()
+
+
+def test_directed_delaunay_edges_and_edge_features_are_bidirectional():
+    sites = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    sites_sdf = torch.tensor([-1.0, 0.5, 0.25, -0.25], dtype=torch.float32)
+    simplices = np.array([[0, 1, 2, 3]], dtype=np.int64)
+
+    edges = build_directed_edges_from_simplices(simplices, num_sites=sites.shape[0], device=sites.device)
+    features = delaunay_edge_features(sites, sites_sdf, edges)
+
+    assert edges.shape == (12, 2)
+    assert features.shape == (12, 8)
+    assert torch.isfinite(features).all()
+
+    forward_index = torch.nonzero((edges[:, 0] == 0) & (edges[:, 1] == 1), as_tuple=False).reshape(-1)[0]
+    reverse_index = torch.nonzero((edges[:, 0] == 1) & (edges[:, 1] == 0), as_tuple=False).reshape(-1)[0]
+    assert torch.allclose(features[forward_index, :3], -features[reverse_index, :3])
+    assert torch.allclose(features[forward_index, 3:4], features[reverse_index, 3:4])
+    assert torch.allclose(features[forward_index, 4:7], -features[reverse_index, 4:7])
+    assert torch.allclose(features[forward_index, 7:], -features[reverse_index, 7:])
 
 
 def test_point_udf_sidecar_matches_bruteforce_distances_and_metadata(tmp_path):
@@ -281,6 +343,62 @@ def test_iter_refine_forward_one_round_appends_finite_spawned_sites():
     assert torch.all(torch.norm(spawned[:, 0] - spawned[:, 1], dim=1) > 0.0)
 
 
+def test_delaunay_gcnn_forward_one_round_appends_finite_spawned_sites():
+    pytest.importorskip("pygdel3d")
+    torch.manual_seed(69)
+    config = HybridIterRefineConfig.from_dict(
+        {
+            **_small_config(rounds=1).to_dict(),
+            "architecture": "delaunay_gcnn",
+            "graph_layers": 2,
+            "graph_hidden_dim": 8,
+            "site_position_num_frequencies": 2,
+        }
+    )
+    model = DCCVTHybridIterRefineNet(config)
+    sdf_grid = _linear_sdf_grid(config.hotspot_grid_n)
+    input_grid = sdf_grid[None, None, ...]
+
+    outputs = model(input_grid, sdf_grid[None, None, ...])
+
+    assert outputs["base_sites"].shape == (96, 3)
+    assert outputs["sites"].shape[1] == 96 + 3 * 2
+    assert outputs["sites_sdf"].shape == (1, 102)
+    assert len(outputs["rounds"]) == 1
+    assert outputs["rounds"][0]["parent_indices"].shape == (3,)
+    assert outputs["rounds"][0]["spawned_sites"].shape == (6, 3)
+    assert torch.isfinite(outputs["sites"]).all()
+    assert torch.isfinite(outputs["sites_sdf"]).all()
+    assert outputs["sites"].requires_grad is True
+
+
+def test_delaunay_gcnn_zero_initialized_decoder_uses_stencil_children():
+    pytest.importorskip("pygdel3d")
+    torch.manual_seed(69)
+    config = HybridIterRefineConfig.from_dict(
+        {
+            **_small_config(rounds=1).to_dict(),
+            "architecture": "delaunay_gcnn",
+            "graph_layers": 1,
+            "graph_hidden_dim": 8,
+            "site_position_num_frequencies": 1,
+            "max_parents_per_round": 1,
+            "spawn_min_distance": 0.0,
+        }
+    )
+    model = DCCVTHybridIterRefineNet(config)
+    sdf_grid = _linear_sdf_grid(config.hotspot_grid_n)
+    input_grid = sdf_grid[None, None, ...]
+
+    outputs = model(input_grid, sdf_grid[None, None, ...])
+
+    parent_index = int(outputs["rounds"][0]["parent_indices"][0].item())
+    parent_site = outputs["base_sites"][parent_index]
+    spawned = outputs["rounds"][0]["spawned_sites"].reshape(1, config.slots_per_parent, 3)[0]
+    expected = parent_site[None, :] + model.child_stencil[: config.slots_per_parent] * config.child_stencil_scale
+    assert torch.allclose(spawned, expected.clamp(-1.0, 1.0), atol=1e-6)
+
+
 def test_iter_refine_forward_two_rounds_has_monotonic_site_growth():
     pytest.importorskip("pygdel3d")
     torch.manual_seed(69)
@@ -306,6 +424,10 @@ def test_v3_forward_uses_local_features_and_grows_default_initialization():
     config = HybridIterRefineConfig.from_dict(
         {
             **base.to_dict(),
+            "base_grid_n": 5,
+            "surface_pair_count": 32,
+            "min_surface_anchors": 8,
+            "bootstrap_candidate_multipliers": (2, 4),
             "feature_dim": 4,
             "encoder_layers": 0,
             "decoder_layers": 1,
@@ -336,8 +458,8 @@ def test_v3_forward_uses_local_features_and_grows_default_initialization():
         local_udf_grid=local_udf_grid,
     )
 
-    assert outputs["base_sites"].shape == (3748, 3)
-    assert outputs["sites"].shape[1] > 3748
+    assert outputs["base_sites"].shape == (96, 3)
+    assert outputs["sites"].shape[1] > 96
     assert outputs["sites"].requires_grad is True
     assert len(outputs["rounds"]) == 1
     assert outputs["rounds"][0]["parent_indices"].shape == (1,)
@@ -369,6 +491,47 @@ def test_legacy_config_and_resume_mode_compatibility():
     assert legacy.child_stencil_scale == 0.0
     with pytest.raises(ValueError, match="different initialization mode"):
         _resolve_resume_config(requested, {"model_config": legacy.to_dict()})
+
+
+def test_resume_rejects_different_base_grid_for_same_initialization():
+    requested = HybridIterRefineConfig.from_dict(
+        {"initialization_mode": "hotspot_near_surface", "base_grid_n": 17}
+    )
+    checkpoint_config = HybridIterRefineConfig.from_dict(
+        {"initialization_mode": "hotspot_near_surface", "base_grid_n": 9}
+    )
+
+    with pytest.raises(ValueError, match="different base grid"):
+        _resolve_resume_config(requested, {"model_config": checkpoint_config.to_dict()})
+
+
+def test_iter_refine_cvt_loss_has_finite_gradients():
+    pytest.importorskip("pygdel3d")
+    torch.manual_seed(69)
+    config = _small_config(rounds=1)
+    model = DCCVTHybridIterRefineNet(config)
+    sdf_grid = _linear_sdf_grid(config.hotspot_grid_n)
+    input_grid = sdf_grid[None, None, ...]
+    outputs = model(input_grid, sdf_grid[None, None, ...])
+    target_points = torch.tensor(
+        [[[-0.75, 0.0, 0.0], [-0.25, 0.0, 0.0], [0.25, 0.0, 0.0], [0.75, 0.0, 0.0]]],
+        dtype=torch.float32,
+    )
+
+    loss, _ = hybrid_direct_mesh_loss(
+        outputs,
+        target_points,
+        chamfer_weight=0.0,
+        cvt_weight=100.0,
+        sdfsmooth_weight=0.0,
+        strict=True,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss).all()
+    for parameter in model.parameters():
+        if parameter.grad is not None:
+            assert torch.isfinite(parameter.grad).all()
 
 
 def test_iter_refine_prediction_export_contains_round_metadata(tmp_path):

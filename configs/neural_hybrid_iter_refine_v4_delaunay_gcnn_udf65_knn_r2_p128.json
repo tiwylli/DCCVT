@@ -35,5 +35,11 @@
   "channel_names": [
     "hotspot_sdf",
     "point_udf"
-  ]
+  ],
+  "architecture": "delaunay_gcnn",
+  "graph_layers": 3,
+  "graph_hidden_dim": 128,
+  "site_position_encoding": "fourier",
+  "site_position_num_frequencies": 4,
+  "graph_edge_features": "relative_xyz_distance_direction_sdf_delta"
 }

@@ -42,6 +42,15 @@ def _loss_zero(outputs: Dict[str, torch.Tensor]) -> torch.Tensor:
     return outputs["sites"].sum() * 0.0
 
 
+def _finite_projected_surface_points(points: torch.Tensor, *, domain_bound: float = 2.0) -> torch.Tensor:
+    """Keep projected surface points usable for normalized-domain mesh losses."""
+    if points.numel() == 0:
+        return points.reshape(0, 3)
+    finite = torch.isfinite(points).all(dim=1)
+    in_domain = points.abs().amax(dim=1) <= float(domain_bound)
+    return points[finite & in_domain]
+
+
 def _training_cell_mask(gt_activity: torch.Tensor, near_surface: torch.Tensor) -> torch.Tensor:
     mask = gt_activity.bool()
     if mask.any():
@@ -164,6 +173,7 @@ def dccvt_finetune_loss(
         try:
             d3d = compute_delaunay_simplices(sites)
             projected_points, clipped_vertices, _, _ = compute_clipped_mesh(sites, d3d, sites_sdf)
+            projected_points = _finite_projected_surface_points(projected_points)
             if projected_points.numel() == 0:
                 skipped_shapes += 1
                 continue
@@ -173,7 +183,10 @@ def dccvt_finetune_loss(
             skipped_shapes += 1
             continue
 
-        total = total + chamfer_weight * chamfer + cvt_weight * cvt
+        if chamfer_weight != 0.0:
+            total = total + float(chamfer_weight) * chamfer
+        if cvt_weight != 0.0:
+            total = total + float(cvt_weight) * cvt
         used_shapes += 1
         chamfer_value += float(chamfer.detach().cpu())
         cvt_value += float(cvt.detach().cpu())
@@ -285,6 +298,7 @@ def hybrid_direct_mesh_loss(
                 else delaunay_simplices
             )
             projected_points, clipped_vertices, sites_sdf_grads, W = compute_clipped_mesh(sites, d3d, sites_sdf)
+            projected_points = _finite_projected_surface_points(projected_points)
             if projected_points.numel() == 0:
                 if strict:
                     raise RuntimeError(f"Mesh loss extracted no projected surface points for batch item {b}")
@@ -308,7 +322,12 @@ def hybrid_direct_mesh_loss(
             skipped_shapes += 1
             continue
 
-        total = total + float(chamfer_weight) * chamfer + float(cvt_weight) * cvt + float(sdfsmooth_weight) * smooth
+        if chamfer_weight != 0.0:
+            total = total + float(chamfer_weight) * chamfer
+        if cvt_weight != 0.0:
+            total = total + float(cvt_weight) * cvt
+        if sdfsmooth_weight != 0.0:
+            total = total + float(sdfsmooth_weight) * smooth
         used_shapes += 1
         chamfer_value += float(chamfer.detach().cpu())
         cvt_value += float(cvt.detach().cpu())

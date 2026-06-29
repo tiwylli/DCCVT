@@ -42,8 +42,11 @@ so these are maxima rather than guaranteed final counts.
 
 The active v3 comparison keeps the same application-facing input point cloud
 stored as cache `target_points`, but exposes more of it to the refinement
-decoder. It adds a `65^3` exact point-UDF sidecar and local KNN statistics at
-selected parents. No ground-truth mesh surface sampling is introduced.
+decoder. It also overwrites the earlier v3 background support with base16
+initialization: `base_grid_n=17` gives `16^3 = 4096` background sites. Together
+with the unchanged 3,236 near-surface sites, v3/v4 now start from 7,332 initial
+sites and have an 8,356-site two-round maximum before spacing rejections. No
+ground-truth mesh surface sampling is introduced.
 
 Primary code references:
 
@@ -56,6 +59,9 @@ Primary code references:
   two-channel baseline and comparison configs.
 - `configs/neural_hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128.json`:
   two-channel global input plus local `65^3` UDF and KNN parent features.
+- `configs/neural_hybrid_iter_refine_v4_delaunay_gcnn_udf65_knn_r2_p128.json`:
+  fair v3 ablation that replaces the dense feature path with Delaunay graph
+  message passing.
 - [`dccvt/neural/point_udf_sidecar.py`](../dccvt/neural/point_udf_sidecar.py):
   exact point-UDF sidecar generation and validation.
 - [`tests/test_neural_iter_refine.py`](../tests/test_neural_iter_refine.py):
@@ -70,17 +76,16 @@ HotSpot cache
   sdf_grid (33^3) + target_points
        |
        +--> deterministic HotSpot-only initialization on CPU
-       |      512 jittered background sites
+       |      4096 jittered background sites for v3/v4
        |    + 1618 projected surface anchors * 2 signed sites
-       |    = 3748 initial sites
+       |    = 7332 initial sites for v3/v4
        |
        +--> two-channel input grid (2 x 33 x 33 x 33)
        +--> optional v3 local point evidence
        |      65^3 exact point-UDF sidecar + parent KNN stats
               |
               v
-          3D CNN encoder
-          (128 x 32 x 32 x 32 by default)
+          dense 3D CNN encoder or v4 Delaunay GCNN
               |
               v
   current sites + current SDF values
@@ -108,6 +113,37 @@ The design separates responsibilities deliberately:
   and how their sampled HotSpot SDF values should be corrected.
 - The mesh loss evaluates the final geometric consequence rather than matching
   children to precomputed refinement labels.
+
+### v4 Delaunay GCNN Feature Path
+
+The v4 config keeps the v3 inputs, initialization, local `65^3` UDF sidecar,
+local KNN statistics, parent budget, and mesh loss. The only intended change is
+the learned feature path: instead of sampling a dense `Conv3d` feature volume at
+selected parents, it runs message passing on the current Delaunay graph.
+
+Each refinement round builds graph nodes from the active DCCVT sites and graph
+edges from the Delaunay tetrahedra already needed by procedural parent
+selection. Each tetrahedron contributes six undirected edges, expanded to both
+directions for message passing.
+
+Node features include:
+
+- global input channels sampled at the site;
+- current site SDF;
+- raw site xyz plus Fourier positional encoding with frequencies `1,2,4,8`;
+- the local UDF sidecar value at the site when enabled;
+- local KNN statistics from cache `target_points` when enabled.
+
+Directed edge features are:
+
+```text
+dx, dy, dz, distance, dir_x, dir_y, dir_z, sdf_dst - sdf_src
+```
+
+Messages are built from source node features, destination node features, and
+edge features. They are aggregated into destination nodes with `index_add`,
+normalized by destination degree, and applied with an MLP residual update. No
+PyTorch Geometric or extra graph dependency is required.
 
 Unlike a full fixed-field predictor, the model spends most of its site budget
 near the inferred surface. Unlike unconstrained point generation, it retains a
@@ -217,11 +253,14 @@ the same initialization is reused across epochs when `num_workers=0`.
 ### Background Support
 
 `make_canonical_sites(base_grid_n)` creates `(base_grid_n - 1)^3` sites. With
-the default `base_grid_n=9`, this is:
+the v3/v4 base16 configs, `base_grid_n=17` gives:
 
 ```text
-(9 - 1)^3 = 8^3 = 512 sites
+(17 - 1)^3 = 16^3 = 4096 sites
 ```
+
+Historical v1/v2 iterative-refinement configs still use `base_grid_n=9`, which
+gives 512 background sites.
 
 The initializer adds Gaussian noise with standard deviation
 `background_jitter_scale=0.005`, using `bootstrap_seed=69`. Coordinates are
@@ -359,11 +398,11 @@ The initialization is valid when it contains at least
 - `no_sign_changing_cells`;
 - `insufficient_valid_surface_pairs`.
 
-With the checked-in Thingi32 caches, the default normally reaches the full
+With the checked-in Thingi32 caches, v3/v4 normally reach the full base16
 budget:
 
 ```text
-512 background sites + 1618 anchors * 2 = 3748 initial sites
+4096 background sites + 1618 anchors * 2 = 7332 initial sites
 ```
 
 The initialization algorithm can be summarized as:
@@ -819,7 +858,7 @@ from `channel_names`.
 | `config_version` | `2` | Supports versions 1 and 2. Missing version is migrated as legacy version 1. |
 | `hotspot_grid_n` | `33` | Side length of the cubic HotSpot vertex grid; must be at least 2. |
 | `initialization_mode` | `hotspot_near_surface` | `hotspot_near_surface` or compatibility mode `canonical`. |
-| `base_grid_n` | `9` | Background grid parameter; produces `(base_grid_n-1)^3` sites. |
+| `base_grid_n` | `9`; `17` in v3/v4 | Background grid parameter; produces `(base_grid_n-1)^3` sites. |
 | `background_jitter_scale` | `0.005` | Standard deviation of background Gaussian jitter; non-negative. |
 | `surface_pair_count` | `3236` | Maximum number of initial near-surface sites; must be non-negative and even. |
 | `min_surface_anchors` | `128` | Minimum accepted pair anchors for a valid initialization; positive. |
@@ -850,6 +889,12 @@ from `channel_names`.
 | `parent_selection` | `procedural_zero_crossing_curvature` | Only implemented parent-selection mode. |
 | `training_objective` | `mesh_loss_only` | Only implemented training objective. |
 | `channel_names` | `["hotspot_sdf", "point_udf"]` in active v2 JSON | Ordered channel list; first entry must be `hotspot_sdf`, names must be valid and unique. |
+| `architecture` | `dense_cnn` | `dense_cnn` for v1-v3, `delaunay_gcnn` for the v4 graph ablation. |
+| `graph_layers` | `3` | Number of Delaunay message-passing layers for `delaunay_gcnn`. |
+| `graph_hidden_dim` | `feature_dim` | Graph hidden width; smoke overrides of `--feature-dim` also shrink this when tied to `feature_dim`. |
+| `site_position_encoding` | `fourier` | Site-coordinate encoding mode for graph nodes. |
+| `site_position_num_frequencies` | `4` | Fourier bands use frequencies `1,2,4,8`. |
+| `graph_edge_features` | `relative_xyz_distance_direction_sdf_delta` | Directed Delaunay edge feature set. |
 
 Legacy config dictionaries without `config_version` are interpreted as version
 1, canonical initialization, no background jitter, no child stencil, and no
@@ -1129,6 +1174,39 @@ python scripts/infer_hybrid_iter_refine.py \
   --output-dir outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128_smoke/252119
 ```
 
+### v4 Delaunay-GCNN Smoke Test
+
+Reuse the same `65^3` point-UDF sidecar generated for v3. Train one
+reduced-width epoch with the graph architecture:
+
+```bash
+python scripts/train_hybrid_iter_refine.py \
+  --config configs/neural_hybrid_iter_refine_v4_delaunay_gcnn_udf65_knn_r2_p128.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --local-udf-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf_smoke \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_smoke.txt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v4_delaunay_gcnn_udf65_knn_r2_p128_smoke/checkpoints \
+  --epochs 1 \
+  --target-subsample 64 \
+  --feature-dim 8 \
+  --w-mesh-cvt 0 \
+  --w-mesh-sdfsmooth 0 \
+  --strict-mesh-loss \
+  --save-every 1
+```
+
+Run no-extract inference first to verify checkpoint loading and prediction
+export before invoking the DCCVT extraction runtime:
+
+```bash
+python scripts/infer_hybrid_iter_refine.py \
+  --checkpoint outputs/neural_dccvt/hybrid_iter_refine_v4_delaunay_gcnn_udf65_knn_r2_p128_smoke/checkpoints/latest.pt \
+  --cache outputs/neural_hotspot_sdf/thingi32_g33/252119.npz \
+  --local-udf-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf_smoke \
+  --output-dir outputs/neural_dccvt/hybrid_iter_refine_v4_delaunay_gcnn_udf65_knn_r2_p128_smoke/252119_no_extract \
+  --no-extract
+```
+
 ### Inference and Extraction
 
 ```bash
@@ -1260,7 +1338,7 @@ All 31 caches listed in
 initializations:
 
 - valid shapes: `31 / 31`;
-- initial sites per shape: `3748`;
+- initial sites per shape: `3748` for v1/v2; overwritten v3/v4 use `7332`;
 - surface anchors per shape: `1618`;
 - minimum observed site distance: approximately `0.005001`;
 - every field contained positive and negative SDF values.

@@ -31,6 +31,10 @@ from dccvt.neural.point_udf_sidecar import load_point_udf_sidecar, point_udf_sid
 
 VALID_INITIALIZATION_MODES = frozenset(("canonical", "hotspot_near_surface"))
 VALID_LOCAL_FEATURE_MODES = frozenset(("none", "udf65_knn_stats"))
+VALID_ARCHITECTURES = frozenset(("dense_cnn", "delaunay_gcnn"))
+VALID_SITE_POSITION_ENCODINGS = frozenset(("fourier",))
+VALID_GRAPH_EDGE_FEATURES = frozenset(("relative_xyz_distance_direction_sdf_delta",))
+GRAPH_EDGE_FEATURE_DIM = 8
 
 
 @dataclass
@@ -71,6 +75,12 @@ class HybridIterRefineConfig:
     parent_selection: str = "procedural_zero_crossing_curvature"
     training_objective: str = "mesh_loss_only"
     channel_names: tuple[str, ...] = field(default_factory=lambda: HYBRID_DIRECT_CHANNELS)
+    architecture: str = "dense_cnn"
+    graph_layers: int = 3
+    graph_hidden_dim: int | None = None
+    site_position_encoding: str = "fourier"
+    site_position_num_frequencies: int = 4
+    graph_edge_features: str = "relative_xyz_distance_direction_sdf_delta"
 
     def __post_init__(self) -> None:
         self.config_version = int(self.config_version)
@@ -110,6 +120,15 @@ class HybridIterRefineConfig:
         self.local_feature_mode = str(self.local_feature_mode)
         self.parent_selection = str(self.parent_selection)
         self.training_objective = str(self.training_objective)
+        self.architecture = str(self.architecture)
+        self.graph_layers = int(self.graph_layers)
+        if self.graph_hidden_dim is None:
+            self.graph_hidden_dim = self.feature_dim
+        else:
+            self.graph_hidden_dim = int(self.graph_hidden_dim)
+        self.site_position_encoding = str(self.site_position_encoding)
+        self.site_position_num_frequencies = int(self.site_position_num_frequencies)
+        self.graph_edge_features = str(self.graph_edge_features)
 
         if self.input_channels != len(self.channel_names):
             raise ValueError(
@@ -164,6 +183,18 @@ class HybridIterRefineConfig:
             raise ValueError(f"Unknown parent_selection: {self.parent_selection}")
         if self.training_objective != "mesh_loss_only":
             raise ValueError(f"Unknown training_objective: {self.training_objective}")
+        if self.architecture not in VALID_ARCHITECTURES:
+            raise ValueError(f"Unknown architecture: {self.architecture}")
+        if self.graph_layers < 0:
+            raise ValueError("graph_layers must be non-negative")
+        if self.graph_hidden_dim < 1:
+            raise ValueError("graph_hidden_dim must be positive")
+        if self.site_position_encoding not in VALID_SITE_POSITION_ENCODINGS:
+            raise ValueError(f"Unknown site_position_encoding: {self.site_position_encoding}")
+        if self.site_position_num_frequencies < 0:
+            raise ValueError("site_position_num_frequencies must be non-negative")
+        if self.graph_edge_features not in VALID_GRAPH_EDGE_FEATURES:
+            raise ValueError(f"Unknown graph_edge_features: {self.graph_edge_features}")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HybridIterRefineConfig":
@@ -192,6 +223,21 @@ class HybridIterRefineConfig:
         width = 0
         if self.local_udf_samples:
             width += 1 + self.slots_per_parent
+        if self.local_knn_features:
+            width += 7
+        return width
+
+    @property
+    def site_position_feature_dim(self) -> int:
+        """Return the encoded site-position feature width."""
+        return 3 + 3 * 2 * self.site_position_num_frequencies
+
+    @property
+    def graph_node_input_dim(self) -> int:
+        """Return the per-site graph input feature width."""
+        width = int(self.input_channels) + 1 + self.site_position_feature_dim
+        if self.local_udf_samples:
+            width += 1
         if self.local_knn_features:
             width += 7
         return width
@@ -588,8 +634,10 @@ def build_hotspot_near_surface_initialization(
     )
 
 
-def _build_neighbors_from_simplices(simplices: np.ndarray, device: torch.device) -> torch.Tensor:
+def _build_neighbors_from_simplices(simplices: np.ndarray | torch.Tensor, device: torch.device) -> torch.Tensor:
     tets = torch.as_tensor(simplices, device=device).long()
+    if tets.numel() == 0:
+        return torch.empty((0, 2), dtype=torch.long, device=device)
     edges = torch.cat(
         [
             tets[:, [0, 1]],
@@ -603,6 +651,22 @@ def _build_neighbors_from_simplices(simplices: np.ndarray, device: torch.device)
     )
     neighbors, _ = torch.sort(edges, dim=1)
     return torch.unique(neighbors, dim=0)
+
+
+def build_directed_edges_from_simplices(
+    simplices: np.ndarray | torch.Tensor,
+    *,
+    num_sites: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Return unique bidirectional Delaunay graph edges from tetrahedra."""
+    neighbors = _build_neighbors_from_simplices(simplices, device)
+    if neighbors.numel() == 0:
+        return torch.empty((0, 2), dtype=torch.long, device=device)
+    if int(neighbors.min().item()) < 0 or int(neighbors.max().item()) >= int(num_sites):
+        raise ValueError("Delaunay simplex indices are outside the site range")
+    directed = torch.cat([neighbors, neighbors[:, [1, 0]]], dim=0)
+    return torch.unique(directed, dim=0)
 
 
 def _neighbor_counts(neighbors: torch.Tensor, num_sites: int, device: torch.device) -> torch.Tensor:
@@ -657,6 +721,37 @@ def _select_unique_to_budget(
     return indices[order], scores[order]
 
 
+def fourier_site_position_encoding(sites: torch.Tensor, num_frequencies: int) -> torch.Tensor:
+    """Encode normalized site coordinates with low-frequency Fourier features."""
+    sites = sites.reshape(-1, 3)
+    parts = [sites]
+    for exponent in range(int(num_frequencies)):
+        frequency = float(2**exponent)
+        phase = torch.pi * frequency * sites
+        parts.extend([torch.sin(phase), torch.cos(phase)])
+    return torch.cat(parts, dim=1)
+
+
+def delaunay_edge_features(
+    sites: torch.Tensor,
+    sites_sdf: torch.Tensor,
+    directed_edges: torch.Tensor,
+    *,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Return relative geometry and SDF-delta features for directed graph edges."""
+    if directed_edges.numel() == 0:
+        return sites.new_empty((0, GRAPH_EDGE_FEATURE_DIM))
+    src = directed_edges[:, 0]
+    dst = directed_edges[:, 1]
+    delta = sites[dst] - sites[src]
+    distance = delta.norm(dim=1, keepdim=True).clamp_min(float(eps))
+    direction = delta / distance
+    sdf_delta = sites_sdf.reshape(-1)[dst, None] - sites_sdf.reshape(-1)[src, None]
+    features = torch.cat([delta, distance, direction, sdf_delta], dim=1)
+    return torch.nan_to_num(features, nan=0.0, posinf=8.0, neginf=-8.0)
+
+
 def local_knn_parent_features(
     parent_sites: torch.Tensor,
     target_points: torch.Tensor,
@@ -709,6 +804,7 @@ def select_procedural_refinement_parents(
     sites_sdf: torch.Tensor,
     *,
     max_parents: int,
+    simplices: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> dict[str, torch.Tensor | np.ndarray]:
     """Select up to a fixed budget of unique zero-crossing Delaunay sites."""
@@ -723,7 +819,10 @@ def select_procedural_refinement_parents(
     from dccvt.sdf_gradients import compute_sdf_gradients_sites_tets
 
     with torch.no_grad():
-        simplices = compute_delaunay_simplices(sites.detach())
+        if simplices is None:
+            simplices = compute_delaunay_simplices(sites.detach())
+        else:
+            simplices = np.asarray(simplices)
         if simplices.size == 0:
             empty = torch.empty((0,), dtype=torch.long, device=sites.device)
             return {"parent_indices": empty, "parent_scores": sites.new_empty((0,)), "simplices": simplices}
@@ -857,6 +956,45 @@ class HybridIterRefineDataset(Dataset):
         }
 
 
+class DelaunayGraphMessageLayer(nn.Module):
+    """Simple mean-aggregation message passing over directed Delaunay edges."""
+
+    def __init__(self, hidden_dim: int, edge_dim: int = GRAPH_EDGE_FEATURE_DIM) -> None:
+        super().__init__()
+        self.message_mlp = nn.Sequential(
+            nn.Linear(hidden_dim * 2 + edge_dim, hidden_dim),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.update_mlp = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(
+        self,
+        node_features: torch.Tensor,
+        directed_edges: torch.Tensor,
+        edge_features: torch.Tensor,
+    ) -> torch.Tensor:
+        if directed_edges.numel() == 0:
+            aggregated = torch.zeros_like(node_features)
+        else:
+            src = directed_edges[:, 0]
+            dst = directed_edges[:, 1]
+            message_input = torch.cat([node_features[src], node_features[dst], edge_features], dim=1)
+            messages = self.message_mlp(message_input)
+            aggregated = torch.zeros_like(node_features)
+            aggregated.index_add_(0, dst, messages)
+            degree = torch.zeros((node_features.shape[0], 1), device=node_features.device, dtype=node_features.dtype)
+            degree_ones = torch.ones((dst.shape[0], 1), device=node_features.device, dtype=node_features.dtype)
+            degree.index_add_(0, dst, degree_ones)
+            aggregated = aggregated / degree.clamp_min(1.0)
+        update = self.update_mlp(torch.cat([node_features, aggregated], dim=1))
+        return node_features + update
+
+
 def _initialization_from_batch(
     batch: dict[str, Any],
     device: torch.device,
@@ -902,20 +1040,34 @@ class DCCVTHybridIterRefineNet(nn.Module):
             config_obj = HybridIterRefineConfig.from_dict({**config.to_dict(), **overrides})
         self.config_obj = config_obj
 
-        encoder: list[nn.Module] = [
-            nn.Conv3d(config_obj.input_channels, config_obj.feature_dim, kernel_size=2, stride=1, bias=True),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-        ]
-        for _ in range(config_obj.encoder_layers):
-            encoder.extend(
+        if config_obj.architecture == "dense_cnn":
+            encoder: list[nn.Module] = [
+                nn.Conv3d(config_obj.input_channels, config_obj.feature_dim, kernel_size=2, stride=1, bias=True),
+                nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            ]
+            for _ in range(config_obj.encoder_layers):
+                encoder.extend(
+                    [
+                        nn.Conv3d(config_obj.feature_dim, config_obj.feature_dim, kernel_size=3, padding=1, bias=True),
+                        nn.LeakyReLU(negative_slope=0.01, inplace=True),
+                    ]
+                )
+            self.encoder = nn.Sequential(*encoder)
+            parent_feature_dim = config_obj.feature_dim
+        else:
+            self.graph_input = nn.Sequential(
+                nn.Linear(config_obj.graph_node_input_dim, config_obj.graph_hidden_dim),
+                nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            )
+            self.graph_layers = nn.ModuleList(
                 [
-                    nn.Conv3d(config_obj.feature_dim, config_obj.feature_dim, kernel_size=3, padding=1, bias=True),
-                    nn.LeakyReLU(negative_slope=0.01, inplace=True),
+                    DelaunayGraphMessageLayer(config_obj.graph_hidden_dim, GRAPH_EDGE_FEATURE_DIM)
+                    for _ in range(config_obj.graph_layers)
                 ]
             )
-        self.encoder = nn.Sequential(*encoder)
+            parent_feature_dim = config_obj.graph_hidden_dim
 
-        parent_dim = config_obj.feature_dim + 4 + config_obj.local_feature_dim
+        parent_dim = parent_feature_dim + 4 + config_obj.local_feature_dim
         decoder: list[nn.Module] = []
         for _ in range(config_obj.decoder_layers):
             decoder.extend(
@@ -994,6 +1146,19 @@ class DCCVTHybridIterRefineNet(nn.Module):
         values = (values / cell_size).clamp(min=0.0, max=self.config_obj.point_udf_clip)
         return values.reshape(parent_sites.shape[0], 1 + self.config_obj.slots_per_parent)
 
+    def _local_udf_site_features(
+        self,
+        sites: torch.Tensor,
+        local_udf_grid: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if not self.config_obj.local_udf_samples:
+            return sites.new_empty((sites.shape[0], 0))
+        if local_udf_grid is None or local_udf_grid.numel() == 0:
+            raise ValueError("Config requests local UDF samples but no local UDF grid was provided")
+        values = self._sample_scalar_grid(local_udf_grid.to(device=sites.device, dtype=sites.dtype), sites)
+        cell_size = 2.0 / float(self.config_obj.local_udf_grid_n - 1)
+        return (values[:, None] / cell_size).clamp(min=0.0, max=self.config_obj.point_udf_clip)
+
     def _local_parent_features(
         self,
         parent_sites: torch.Tensor,
@@ -1019,6 +1184,47 @@ class DCCVTHybridIterRefineNet(nn.Module):
         if not parts:
             return parent_sites.new_empty((parent_sites.shape[0], 0))
         return torch.cat(parts, dim=1)
+
+    def _graph_site_features(
+        self,
+        input_grid: torch.Tensor,
+        sites: torch.Tensor,
+        sites_sdf: torch.Tensor,
+        simplices: np.ndarray,
+        target_points: torch.Tensor | None,
+        local_udf_grid: torch.Tensor | None,
+    ) -> torch.Tensor:
+        sampled_channels = self._sample_features(input_grid, sites)
+        position_features = fourier_site_position_encoding(
+            sites,
+            self.config_obj.site_position_num_frequencies,
+        )
+        parts = [sampled_channels, sites_sdf.reshape(-1, 1), position_features]
+        if self.config_obj.local_udf_samples:
+            parts.append(self._local_udf_site_features(sites, local_udf_grid))
+        if self.config_obj.local_knn_features:
+            if target_points is None:
+                raise ValueError("Config requests local KNN features but no target points were provided")
+            if target_points.dim() == 3:
+                target_points = target_points[0]
+            parts.append(
+                local_knn_parent_features(
+                    sites,
+                    target_points,
+                    k=self.config_obj.local_knn_k,
+                    radius=self.config_obj.local_knn_radius,
+                )
+            )
+        node_features = self.graph_input(torch.cat(parts, dim=1))
+        directed_edges = build_directed_edges_from_simplices(
+            simplices,
+            num_sites=sites.shape[0],
+            device=sites.device,
+        )
+        edge_features = delaunay_edge_features(sites, sites_sdf, directed_edges)
+        for layer in self.graph_layers:
+            node_features = layer(node_features, directed_edges, edge_features)
+        return node_features
 
     def _filter_spawned_sites(
         self,
@@ -1060,6 +1266,30 @@ class DCCVTHybridIterRefineNet(nn.Module):
         parent_sites = sites[parent_indices]
         parent_sdf = sites_sdf[parent_indices].unsqueeze(1)
         parent_features = self._sample_features(features, parent_sites)
+        return self._spawn_from_parent_features(
+            parent_features,
+            sdf_grid,
+            sites,
+            sites_sdf,
+            parent_indices,
+            target_points,
+            local_udf_grid,
+        )
+
+    def _spawn_from_parent_features(
+        self,
+        parent_features: torch.Tensor,
+        sdf_grid: torch.Tensor,
+        sites: torch.Tensor,
+        sites_sdf: torch.Tensor,
+        parent_indices: torch.Tensor,
+        target_points: torch.Tensor | None,
+        local_udf_grid: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        if parent_indices.numel() == 0:
+            return sites.new_empty((0, 3)), sites_sdf.new_empty((0,)), 0
+        parent_sites = sites[parent_indices]
+        parent_sdf = sites_sdf[parent_indices].unsqueeze(1)
         local_features = self._local_parent_features(parent_sites, target_points, local_udf_grid)
         decoder_input = torch.cat([parent_features, parent_sites, parent_sdf, local_features], dim=1)
         decoded = self.refine_decoder(decoder_input)
@@ -1100,7 +1330,7 @@ class DCCVTHybridIterRefineNet(nn.Module):
         if hotspot_sdf_grid.dim() != 4 or hotspot_sdf_grid.shape[0] != 1:
             raise ValueError(f"Expected HotSpot SDF shape (1,G,G,G) or (1,1,G,G,G), got {hotspot_sdf_grid.shape}")
 
-        features = self.encoder(input_grid)
+        dense_features = self.encoder(input_grid) if self.config_obj.architecture == "dense_cnn" else None
         if initial_field is None:
             initial_field = build_hotspot_near_surface_initialization(
                 hotspot_sdf_grid[0].detach().cpu(),
@@ -1129,15 +1359,39 @@ class DCCVTHybridIterRefineNet(nn.Module):
             assert isinstance(parent_indices, torch.Tensor)
             parent_scores = parent_data["parent_scores"]
             assert isinstance(parent_scores, torch.Tensor)
-            spawned_sites, spawned_sdf, rejected_spawn_count = self._spawn_from_parents(
-                features,
-                hotspot_sdf_grid,
-                sites,
-                sites_sdf,
-                parent_indices,
-                target_points,
-                local_udf_grid,
-            )
+            if parent_indices.numel() == 0:
+                spawned_sites, spawned_sdf, rejected_spawn_count = sites.new_empty((0, 3)), sites_sdf.new_empty((0,)), 0
+            elif self.config_obj.architecture == "dense_cnn":
+                assert dense_features is not None
+                spawned_sites, spawned_sdf, rejected_spawn_count = self._spawn_from_parents(
+                    dense_features,
+                    hotspot_sdf_grid,
+                    sites,
+                    sites_sdf,
+                    parent_indices,
+                    target_points,
+                    local_udf_grid,
+                )
+            else:
+                simplices = parent_data["simplices"]
+                assert isinstance(simplices, np.ndarray)
+                graph_features = self._graph_site_features(
+                    input_grid,
+                    sites,
+                    sites_sdf,
+                    simplices,
+                    target_points,
+                    local_udf_grid,
+                )
+                spawned_sites, spawned_sdf, rejected_spawn_count = self._spawn_from_parent_features(
+                    graph_features[parent_indices],
+                    hotspot_sdf_grid,
+                    sites,
+                    sites_sdf,
+                    parent_indices,
+                    target_points,
+                    local_udf_grid,
+                )
             rounds.append(
                 {
                     "round_index": torch.tensor(round_index, device=input_grid.device),
@@ -1198,6 +1452,7 @@ def save_checkpoint(
     stats: dict[str, float],
 ) -> None:
     """Save iterative-refinement training state."""
+    _assert_finite_model_parameters(model)
     payload = {
         "config_version": int(model.config_obj.config_version),
         "epoch": int(epoch),
@@ -1209,6 +1464,22 @@ def save_checkpoint(
         "stats": stats,
     }
     torch.save(payload, path)
+
+
+def _nonfinite_parameter_names(model: nn.Module) -> list[str]:
+    names: list[str] = []
+    for name, parameter in model.named_parameters():
+        if not torch.isfinite(parameter).all():
+            names.append(name)
+    return names
+
+
+def _assert_finite_model_parameters(model: nn.Module) -> None:
+    names = _nonfinite_parameter_names(model)
+    if names:
+        shown = ", ".join(names[:8])
+        suffix = "" if len(names) <= 8 else f", ... ({len(names)} total)"
+        raise RuntimeError(f"Non-finite model parameters detected: {shown}{suffix}")
 
 
 def save_resolved_config(path: Path, *, config: HybridIterRefineConfig, args: argparse.Namespace) -> None:
@@ -1229,6 +1500,9 @@ def _device(value: str) -> torch.device:
 
 def _apply_model_overrides(config: HybridIterRefineConfig, args: argparse.Namespace) -> HybridIterRefineConfig:
     values = config.to_dict()
+    feature_dim_override = getattr(args, "feature_dim", None) if hasattr(args, "feature_dim") else None
+    if feature_dim_override is not None and values.get("graph_hidden_dim") == config.feature_dim:
+        values["graph_hidden_dim"] = feature_dim_override
     for arg_name, key in (
         ("initialization_mode", "initialization_mode"),
         ("hotspot_grid_n", "hotspot_grid_n"),
@@ -1241,6 +1515,8 @@ def _apply_model_overrides(config: HybridIterRefineConfig, args: argparse.Namesp
         ("num_refinement_rounds", "num_refinement_rounds"),
         ("child_offset_scale", "child_offset_scale"),
         ("sdf_residual_scale", "sdf_residual_scale"),
+        ("graph_layers", "graph_layers"),
+        ("graph_hidden_dim", "graph_hidden_dim"),
     ):
         if hasattr(args, arg_name):
             value = getattr(args, arg_name)
@@ -1260,6 +1536,16 @@ def _resolve_resume_config(
         raise ValueError(
             "Cannot resume with a different initialization mode: "
             f"checkpoint={checkpoint_config.initialization_mode}, requested={requested_config.initialization_mode}"
+        )
+    if checkpoint_config.base_grid_n != requested_config.base_grid_n:
+        raise ValueError(
+            "Cannot resume with a different base grid: "
+            f"checkpoint={checkpoint_config.base_grid_n}, requested={requested_config.base_grid_n}"
+        )
+    if checkpoint_config.surface_pair_count != requested_config.surface_pair_count:
+        raise ValueError(
+            "Cannot resume with a different near-surface pair count: "
+            f"checkpoint={checkpoint_config.surface_pair_count}, requested={requested_config.surface_pair_count}"
         )
     return checkpoint_config
 
@@ -1305,6 +1591,8 @@ def build_train_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-refinement-rounds", type=int, default=None)
     parser.add_argument("--child-offset-scale", type=float, default=None)
     parser.add_argument("--sdf-residual-scale", type=float, default=None)
+    parser.add_argument("--graph-layers", type=int, default=None)
+    parser.add_argument("--graph-hidden-dim", type=int, default=None)
     return parser
 
 
@@ -1400,9 +1688,16 @@ def train_main(argv: Optional[list[str]] = None) -> None:
                 sdfsmooth_weight=args.w_mesh_sdfsmooth,
                 strict=args.strict_mesh_loss,
             )
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"Non-finite training loss at epoch {epoch}: {stats}")
             if loss.requires_grad:
                 loss.backward()
+                gradient_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                if not torch.isfinite(gradient_norm):
+                    raise RuntimeError(f"Non-finite gradient norm at epoch {epoch}: {stats}")
+                stats["gradient_norm"] = float(gradient_norm.detach().cpu())
                 optimizer.step()
+                _assert_finite_model_parameters(model)
             else:
                 stats["mesh_no_grad_batch"] = 1.0
 
@@ -1759,12 +2054,18 @@ def _save_prediction(
         "initialization_valid": bool(outputs["initialization_valid"]),
         "initialization_reason": str(outputs["initialization_reason"]),
         "initialization": initialization_diagnostics,
+        "architecture": str(checkpoint["model_config"].get("architecture", "dense_cnn")),
         "local_feature_mode": str(checkpoint["model_config"].get("local_feature_mode", "none")),
         "local_udf_grid_n": int(checkpoint["model_config"].get("local_udf_grid_n", 0)),
         "local_udf_samples": bool(checkpoint["model_config"].get("local_udf_samples", False)),
         "local_udf_path": local_udf_path,
         "local_udf_valid": bool(local_udf_valid),
         "local_knn_features": bool(checkpoint["model_config"].get("local_knn_features", False)),
+        "graph_layers": int(checkpoint["model_config"].get("graph_layers", 0)),
+        "site_position_encoding": str(checkpoint["model_config"].get("site_position_encoding", "fourier")),
+        "graph_edge_features": str(
+            checkpoint["model_config"].get("graph_edge_features", "relative_xyz_distance_direction_sdf_delta")
+        ),
     }
     arrays: dict[str, Any] = {
         "sites": sites.numpy().astype(np.float32),

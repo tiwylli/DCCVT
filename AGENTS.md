@@ -1,4 +1,5 @@
 # AGENTS.md
+on bool3, default env is /tmp/dccvt-venv/bin/python
 
 ## Project goal
 

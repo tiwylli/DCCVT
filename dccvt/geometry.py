@@ -103,7 +103,7 @@ def compute_clipped_mesh(
     proj_bisectors = project_vertices_newton(bisectors_sdf_grad, bisectors_sdf, bisectors)  # (M,3)
     proj_points = torch.cat((proj_vertices, proj_bisectors), 0)
 
-    vert_for_clipped_cvt = all_vor_vertices
+    vert_for_clipped_cvt = all_vor_vertices.clone()
     vert_for_clipped_cvt[used_tet] = proj_vertices
     return proj_points, vert_for_clipped_cvt, sites_sdf_grad, W
 
@@ -515,6 +515,14 @@ def project_vertices_newton(grads, sdf_verts, new_vertices):
 
 def compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, all_vor_vertices):
     d3dsimplices = torch.as_tensor(d3dsimplices, device=sites.device).detach()
+    finite_vertices = torch.isfinite(all_vor_vertices).all(dim=1)
+    if not bool(finite_vertices.any().item()):
+        return sites.sum() * 0.0
+
+    d3dsimplices = d3dsimplices[finite_vertices]
+    # Treat CVT centroids as fixed targets for this step; circumcenter gradients
+    # are ill-conditioned for nearly degenerate tetrahedra.
+    all_vor_vertices = all_vor_vertices[finite_vertices].detach()
     centroids = torch.zeros_like(sites)
     counts = torch.zeros(len(sites), dtype=sites.dtype, device=sites.device)
     ones = torch.ones(len(d3dsimplices), dtype=sites.dtype, device=sites.device)
@@ -523,9 +531,12 @@ def compute_cvt_loss_from_clipped_vertices(sites, d3dsimplices, all_vor_vertices
         counts.index_add_(0, d3dsimplices[:, i], ones)
     centroids /= counts.clamp(min=1).unsqueeze(1)
 
+    active_sites = counts > 0
+    if not bool(active_sites.any().item()):
+        return sites.sum() * 0.0
     diff = torch.linalg.norm(sites - centroids, dim=1)
     penalties = torch.where(diff.abs() < 0.5, diff, torch.zeros_like(diff))
     # print number of zero in penalties
     # print("Number of zero in penalties: ", torch.sum(penalties == 0.0).item())
-    cvt_loss = torch.mean(torch.abs(penalties))
+    cvt_loss = torch.mean(torch.abs(penalties[active_sites]))
     return cvt_loss
