@@ -182,9 +182,10 @@ def run_dccvt_training(
     f_or_clipped_v = None
 
     for epoch in tqdm.tqdm(range(args.num_iterations)):
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
         d3dsimplices = compute_delaunay_simplices(sites)
+        d3dsimplices = _as_tet_tensor(d3dsimplices)
 
         v_vect, f_or_clipped_v, sites_sdf_grads, W = compute_clipped_mesh(
             sites,
