@@ -114,6 +114,34 @@ The design separates responsibilities deliberately:
 - The mesh loss evaluates the final geometric consequence rather than matching
   children to precomputed refinement labels.
 
+### Dense 3D CNN vs Delaunay GCNN
+
+The v1-v3 architecture uses a dense 3D CNN feature path. A 3D CNN applies
+shared convolution kernels on a regular voxel or grid tensor. In this
+implementation, the input is the two-channel `33^3` HotSpot/point-UDF grid, and
+the first `Conv3d` layer converts it to a dense `32^3` feature volume. Selected
+refinement parents then sample that volume with `grid_sample()`.
+
+This is a good fit when the evidence is already grid-aligned: the HotSpot SDF
+and coarse point-UDF channels live on the same regular lattice, convolution has
+a stable local-neighborhood bias, and the implementation gets predictable dense
+memory access. The tradeoff is that the feature volume is not the DCCVT field
+itself. It can encode broad spatial context, but it does not directly propagate
+information along the current Delaunay adjacency of the active sites.
+
+The v4 architecture uses a Delaunay graph CNN. A graph CNN does not convolve on
+a fixed cubic lattice. It builds node features on the active DCCVT sites and
+passes messages along graph edges. Here the graph is the current Delaunay graph
+already computed for procedural parent selection, so the learned features follow
+the same irregular geometry that the refinement loop is modifying.
+
+This is a good fit when site topology matters: a parent can receive information
+from nearby active sites through Delaunay edges, and the feature path naturally
+adapts as children are appended between refinement rounds. The tradeoff is that
+the representation depends on Delaunay graph quality, graph feature design, and
+message-passing depth. It also gives up the mature regular-grid inductive bias
+and memory behavior of dense `Conv3d`.
+
 ### v4 Delaunay GCNN Feature Path
 
 The v4 config keeps the v3 inputs, initialization, local `65^3` UDF sidecar,
@@ -229,6 +257,11 @@ With the v3 config defaults this makes the decoder input width:
 The local point-UDF samples are raw nearest-input-point distances stored in the
 sidecar. At runtime they are normalized by the `65^3` cell size and clipped by
 `point_udf_clip`, matching the scale of the coarse `point_udf` channel.
+They give the decoder a finer local proximity query at the parent and at each
+fixed child-stencil location. This is different from adding a new global input
+channel: the dense encoder still sees only the coarse `33^3` grid, while the
+decoder receives local `65^3` evidence only for parents that the procedural
+selector chose to refine.
 
 The KNN statistics are:
 
@@ -238,6 +271,13 @@ The KNN statistics are:
 - mean KNN distance divided by `local_knn_radius`;
 - number of input points within `local_knn_radius`, divided by `local_knn_k`;
 - local covariance anisotropy from the KNN offsets.
+
+Together, these KNN values summarize local point-cloud evidence that a raw UDF
+sample cannot express alone: how close the nearest point is, where the local
+point cluster sits relative to the parent, how dense the neighborhood is, and
+whether the nearby points form an anisotropic structure. In the v3/v4 configs,
+these statistics use the full cache `target_points`, even when
+`--target-subsample` reduces the coarse `point_udf` channel and mesh-loss target.
 
 This design preserves the refinement program: parent selection remains
 procedural, children are still bounded child slots plus bounded SDF residuals,
@@ -794,10 +834,24 @@ Public neural exports from `dccvt.neural` are:
 
 ## Local Point-UDF Sidecars
 
-v3 sidecars are generated from existing HotSpot cache `target_points`, not from
-ground-truth mesh surface resampling. Each sidecar stores a compressed `65_udf`
-array, source cache path, point count, domain `[-1, 1]`, seed, command args, and
-preprocessing version.
+v3/v4 sidecars are generated from existing HotSpot cache `target_points`, not
+from ground-truth mesh surface resampling. Each sidecar stores a compressed
+`65_udf` array, source cache path, point count, domain `[-1, 1]`, seed, command
+args, and preprocessing version.
+
+The sidecar is an exact nearest-input-point distance grid on a finer regular
+lattice than the model's global input. The coarse `point_udf` channel is built
+on the `33^3` HotSpot grid. The sidecar uses `65^3`, so its cell size is half as
+large:
+
+```text
+33^3 cell size = 2 / (33 - 1) = 0.0625
+65^3 cell size = 2 / (65 - 1) = 0.03125
+```
+
+At runtime, the decoder samples this sidecar only at selected parents and child
+stencil points. It is therefore local point evidence, not a second dense encoder
+branch and not extra supervision.
 
 The sidecar root convention is:
 
@@ -1314,7 +1368,7 @@ python scripts/train_hybrid_iter_refine.py \
   --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
   --local-udf-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf \
   --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
-  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128/checkpoints \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v3_hotspot_point_udf_udf65_knn_r2_p128_base16/checkpoints \
   --epochs 1000 \
   --target-subsample 4096 \
   --lr 6.4e-5 \
@@ -1325,6 +1379,22 @@ python scripts/train_hybrid_iter_refine.py \
 This run uses the full cache `target_points` for local KNN features even though
 the coarse `point_udf` channel and mesh-loss target are subsampled to 4096
 points per batch.
+
+Train the matching v4 Delaunay-GCNN ablation:
+
+```bash
+python scripts/train_hybrid_iter_refine.py \
+  --config configs/neural_hybrid_iter_refine_v4_delaunay_gcnn_udf65_knn_r2_p128.json \
+  --cache-root outputs/neural_hotspot_sdf/thingi32_g33 \
+  --local-udf-root outputs/neural_hotspot_sdf/thingi32_g65_point_udf \
+  --split-file PoNQ-main/src/eval/hotspot_thingi32_g33_ids.txt \
+  --checkpoint-dir outputs/neural_dccvt/hybrid_iter_refine_v4_delaunay_gcnn_udf65_knn_r2_p128_base16/checkpoints \
+  --epochs 1000 \
+  --target-subsample 4096 \
+  --lr 6.4e-5 \
+  --save-every 25 \
+  --seed 69
+```
 
 ## Verified Behavior
 
@@ -1389,9 +1459,59 @@ mesh_used_shapes   = 1.0 per batch
 mesh_skipped_shapes = 0.0 per batch
 ```
 
-No full-width 1,000-epoch model or final `ponq_thingi`, `raw`, and
-`bbox_aligned` quality evaluation has been completed. Comparative Chamfer,
-normal consistency, F1, and edge metrics are therefore **Needs verification**.
+### v3/v4 Base16 Full Runs
+
+The v3 dense-CNN local-feature run and the v4 Delaunay-GCNN ablation were both
+completed for 1,000 epochs on the 31-shape Thingi32 split. The logs are:
+
+- `logs/v3_udf65_knn_base16.log`
+- `logs/v4_delaunay_gcnn_base16.log`
+
+Training-log summaries:
+
+| Run | Architecture | Best epoch | Best loss | Final epoch | Final loss | Last-100 mean loss |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| v3 base16 | Dense 3D CNN + local `65^3` UDF/KNN | 999 | 2.79782 | 999 | 2.79782 | 2.80948 |
+| v4 base16 | Delaunay GCNN + local `65^3` UDF/KNN | 517 | 2.86827 | 999 | 2.87853 | 2.88514 |
+
+Both runs reported `mesh_used_shapes=1.0`, `mesh_skipped_shapes=0.0`,
+`local_udf_valid=1.0`, and `local_target_point_count=9600.0` in the final
+epochs. These are training-objective diagnostics, not held-out validation
+metrics.
+
+Full-split inference and extraction outputs were written under:
+
+- `outputs/neural_dccvt/hybrid_iter_refine_v3_base16_infer/`
+- `outputs/neural_dccvt/hybrid_iter_refine_v4_base16_infer/`
+
+Extraction summary from `inference_result.json` files:
+
+| Run | Extracted shapes | Mean final sites | Min final sites | Max final sites |
+| --- | ---: | ---: | ---: | ---: |
+| v3 base16 | 31 / 31 | 8214.32 | 8119 | 8268 |
+| v4 base16 | 31 / 31 | 8320.32 | 8238 | 8352 |
+
+The standard HotSpot/Thingi32 evaluation summaries are saved in
+`PoNQ-main/src/eval/results/` as
+`results_HybridIterRefine_v3_base16_intDCCVT_hotspot_summary.csv` and
+`results_HybridIterRefine_v4_base16_intDCCVT_hotspot_summary.csv`. The table
+below copies those CSV summary fields. Lower `cd_x1e5` and `ecd` are better;
+higher `f1`, `nc`, and `ef1` are better.
+
+| Run | Mode | Count | cd_x1e5 | f1 | nc | ecd | ef1 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v3 base16 | `ponq_thingi` | 31 | 295.17330 | 0.04172 | 0.69425 | 2.26811 | 0.0000303 |
+| v3 base16 | `raw` | 31 | 1180.69320 | 0.01587 | 0.69425 | 9.07245 | 0.0 |
+| v3 base16 | `bbox_aligned` | 31 | 33.23858 | 0.16806 | 0.79682 | 9.07245 | 0.0 |
+| v4 base16 | `ponq_thingi` | 31 | 293.60886 | 0.03959 | 0.69837 | 2.26811 | 0.0000303 |
+| v4 base16 | `raw` | 31 | 1174.43544 | 0.01517 | 0.69837 | 9.07245 | 0.0 |
+| v4 base16 | `bbox_aligned` | 31 | 38.46162 | 0.14791 | 0.79032 | 9.07245 | 0.0 |
+
+The metrics are mixed. In this result set, v3 has the lower training objective
+and better `bbox_aligned` CD/F1. v4 has slightly lower `ponq_thingi` and `raw`
+CD and higher normal consistency. These results should be read as a comparison
+of the recorded overfit/full-split runs, not as a claim that either feature path
+is generally better.
 
 ### v3 Local-UDF/KNN Smoke
 
@@ -1547,7 +1667,9 @@ shared extraction runtime.
 - Parent activity is procedural, non-differentiable, and recomputed with
   Delaunay every round.
 - Collision filtering is a hard detached decision.
-- The same encoder feature grid is reused across all rounds.
+- For `dense_cnn`, the same encoder feature grid is reused across all rounds.
+  For `delaunay_gcnn`, graph features are recomputed on the current active
+  sites each round.
 - Input point channels and mesh-loss targets come from the same cached target
   points; this experiment is currently an overfit setting, not a clean unseen
   shape generalization study.
@@ -1562,8 +1684,9 @@ shared extraction runtime.
 - Runtime grows with site count and number of rounds; no large-round scaling
   study has been completed.
 - CPU-only full training and extraction are **Needs verification**.
-- Full training quality and standard metric comparisons are **Needs
-  verification**.
+- Standard metric comparisons are verified for the recorded v3/v4 base16
+  `intDCCVT` outputs only; other extraction variants and unseen-shape
+  generalization remain **Needs verification**.
 
 ## Focused Future Ablations
 
