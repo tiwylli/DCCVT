@@ -14,6 +14,7 @@ import numpy as np
 import torch
 
 from dccvt.neural.grid import make_canonical_sites, trilinear_interpolate_sdf, validate_grid_n
+from dccvt.neural.utils import cache_mesh_id, load_npz_cache
 
 
 @dataclass
@@ -106,15 +107,6 @@ def save_resolved_config(
     (output_path / "resolved_config.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def _load_cache(path: str | Path) -> dict[str, np.ndarray]:
-    with np.load(path, allow_pickle=False) as data:
-        return {key: data[key] for key in data.files}
-
-
-def _cache_mesh_id(cache: dict[str, np.ndarray], cache_path: str | Path) -> str:
-    return str(np.asarray(cache.get("mesh_id", np.array(Path(cache_path).stem))).item())
-
-
 def _expected_obj_path(output_dir: Path, state: str, variant: str, config: HybridInitialHotSpotConfig) -> Path:
     return output_dir / (
         f"DCCVT_0_{state}_{variant}_cvt{int(config.w_cvt)}_sdfsmooth{int(config.w_sdfsmooth)}.obj"
@@ -140,11 +132,11 @@ def extract_initial_hotspot_cache(
             "status": "skipped_existing",
         }
 
-    cache = _load_cache(cache_path)
+    cache = load_npz_cache(cache_path)
     sdf_grid_np = np.asarray(cache["sdf_grid"], dtype=np.float32)
     target_points_np = np.asarray(cache["target_points"], dtype=np.float32).reshape(-1, 3)
     grid_n = int(np.asarray(cache["grid_n"]).item())
-    mesh_id = _cache_mesh_id(cache, cache_path)
+    mesh_id = cache_mesh_id(cache, cache_path)
     sites_cpu, sites_sdf_cpu = build_initial_hotspot_field(sdf_grid_np, grid_n=grid_n)
 
     positive_count = int((sites_sdf_cpu > 0).sum().item())

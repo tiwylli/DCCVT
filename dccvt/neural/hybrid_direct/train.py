@@ -4,46 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from dccvt.neural.dataset import HybridDirectDataset, resolve_cache_files
+from dccvt.neural.data.datasets import HybridDirectDataset, resolve_cache_files
 from dccvt.neural.losses import hybrid_direct_mesh_loss, hybrid_direct_supervised_loss
 from dccvt.neural.models import DCCVTHybridDirectNet, HybridDirectConfig, load_hybrid_direct_config
-
-
-def _parse_mesh_ids(value: Optional[str]) -> Optional[list[str]]:
-    if not value:
-        return None
-    return [part for part in value.replace(",", " ").split() if part]
-
-
-def _device(value: str) -> torch.device:
-    if value == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(value)
-
-
-def seed_everything(seed: int) -> None:
-    """Seed Python, NumPy, and PyTorch for reproducible supervised training."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-def _seed_worker(worker_id: int) -> None:
-    worker_seed = (torch.initial_seed() + worker_id) % 2**32
-    random.seed(worker_seed)
-    np.random.seed(worker_seed)
+from dccvt.neural.utils import device_from_value, parse_mesh_ids, seed_everything, seed_worker
 
 
 def save_resolved_config(path: Path, *, config: HybridDirectConfig, args: argparse.Namespace) -> None:
@@ -139,7 +109,7 @@ def _load_model(args: argparse.Namespace, device: torch.device) -> tuple[DCCVTHy
 def _build_dataset(args: argparse.Namespace, config: HybridDirectConfig) -> HybridDirectDataset:
     cache_files = resolve_cache_files(
         args.cache_root,
-        mesh_ids=_parse_mesh_ids(args.mesh_ids),
+        mesh_ids=parse_mesh_ids(args.mesh_ids),
         split_file=args.split_file,
     )
     return HybridDirectDataset(
@@ -160,7 +130,7 @@ def _build_dataset(args: argparse.Namespace, config: HybridDirectConfig) -> Hybr
 def main(argv: Optional[list[str]] = None) -> None:
     args = build_arg_parser().parse_args(argv)
     seed_everything(args.seed)
-    device = _device(args.device)
+    device = device_from_value(args.device)
 
     model, resume_checkpoint = _load_model(args, device)
     dataset = _build_dataset(args, model.config_obj)
@@ -172,7 +142,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=(device.type == "cuda"),
-        worker_init_fn=_seed_worker,
+        worker_init_fn=seed_worker,
         generator=data_generator,
     )
 

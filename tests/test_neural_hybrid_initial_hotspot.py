@@ -2,7 +2,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from dccvt.neural.hybrid_initial import build_initial_hotspot_field
+from dccvt.neural.extraction.hybrid_initial import build_initial_hotspot_field
 
 
 def test_initial_hotspot_field_samples_linear_sdf_on_canonical_sites():

@@ -5,7 +5,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from dccvt.neural.sparse_refine import (
+from dccvt.neural.extraction.sparse_refine import (
     HybridSparseRefineConfig,
     build_sparse_base_field,
     extract_sparse_refine_cache,

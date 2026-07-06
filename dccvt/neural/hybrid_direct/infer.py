@@ -13,12 +13,7 @@ import torch
 
 from dccvt.neural.grid import build_hybrid_input_channels_np
 from dccvt.neural.models import DCCVTHybridDirectNet, HybridDirectConfig
-
-
-def _device(value: str) -> torch.device:
-    if value == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(value)
+from dccvt.neural.utils import device_from_value, load_npz_cache
 
 
 def _load_checkpoint(path: str | Path, device: torch.device) -> tuple[DCCVTHybridDirectNet, dict]:
@@ -28,11 +23,6 @@ def _load_checkpoint(path: str | Path, device: torch.device) -> tuple[DCCVTHybri
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     return model, checkpoint
-
-
-def _load_cache(path: str | Path) -> dict:
-    with np.load(path, allow_pickle=False) as data:
-        return {key: data[key] for key in data.files}
 
 
 def run_inference(
@@ -47,13 +37,13 @@ def run_inference(
     seed: int = 69,
     command_args: Optional[dict] = None,
 ) -> dict:
-    device = _device(device_value)
+    device = device_from_value(device_value)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
     model, checkpoint = _load_checkpoint(checkpoint_path, device)
-    cache = _load_cache(cache_path)
+    cache = load_npz_cache(cache_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

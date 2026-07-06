@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dccvt.neural.iter_refine import initial_extract_main
+from dccvt.neural.iterative.initial_extract import main
 
 
 if __name__ == "__main__":
-    initial_extract_main()
+    main()

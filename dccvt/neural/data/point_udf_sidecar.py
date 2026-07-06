@@ -11,7 +11,7 @@ from typing import Any, Optional, Sequence
 import numpy as np
 import torch
 
-from dccvt.neural.dataset import resolve_cache_files
+from dccvt.neural.data.datasets import resolve_cache_files
 from dccvt.neural.grid import make_coord_grid, validate_grid_n
 
 

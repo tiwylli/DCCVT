@@ -13,11 +13,9 @@ from typing import Optional, Sequence
 import numpy as np
 import torch
 
-from dccvt.neural.abc_hybrid import (
-    ABCHybridExperimentConfig,
+from dccvt.neural.abc.config import ABCHybridExperimentConfig, load_abc_hybrid_config, read_model_ids
+from dccvt.neural.abc.udf import (
     exact_point_udf_grid,
-    load_abc_hybrid_config,
-    read_model_ids,
     udf_sidecar_path,
     validate_udf_sidecar,
     write_udf_sidecar,

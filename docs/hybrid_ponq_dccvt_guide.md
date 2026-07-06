@@ -20,9 +20,9 @@ SDF values from HotSpot downstream. The hybrid direct model predicts all
 
 Code references:
 
-- Hybrid config and channel names: [models.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models.py:23), [models.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models.py:26)
-- Older active-cell baseline: [models.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models.py:119)
-- Hybrid direct model: [models.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models.py:221)
+- Hybrid config and channel names: [models/](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models/)
+- Older active-cell baseline: [models/](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models/)
+- Hybrid direct model: [hybrid_direct.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models/hybrid_direct.py)
 
 ## Method Overview
 
@@ -108,7 +108,7 @@ The encoder follows the PoNQ dense-grid pattern:
 
 The `kernel_size=2` first convolution is the key vertex-to-site-grid step. It
 turns dense SDF vertex features into features aligned with the `32^3` DCCVT
-field. The hybrid encoder and heads are defined in [models.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models.py:221) and [models.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models.py:234).
+field. The hybrid encoder and heads are defined in [models/](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models/) and [models/](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models/).
 
 The encoder exists to build one learned feature vector per DCCVT site. The
 `33^3` input grid stores values at vertices, while the `32^3` DCCVT field has
@@ -177,7 +177,7 @@ into the variables it needs without changing the `32^3` layout.
 The residual form helps the head learn small corrections without forcing every
 layer to relearn an identity mapping. In practical terms, it keeps the decoder
 simple: spatial mixing happens in the encoder, and per-site variable conversion
-happens in the heads. The reusable decoder block is [models.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models.py:80), and the per-cell decoder wrapper is [models.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models.py:94).
+happens in the heads. The reusable decoder block is [models/](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models/), and the per-cell decoder wrapper is [models/](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models/).
 
 ### Output Heads
 
@@ -208,7 +208,7 @@ sites_sdf = trilinear_hotspot_sdf(sdf_grid, sites)
             + 0.50 * tanh(raw_sdf_residual)
 ```
 
-The forward pass and residual composition are in [models.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models.py:280). Trilinear SDF sampling is implemented in [grid.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/grid.py:230).
+The forward pass and residual composition are in [models/](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/models/). Trilinear SDF sampling is implemented in [grid.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/grid.py:230).
 
 This design keeps the prediction anchored to HotSpot and the canonical DCCVT
 initialization, while still allowing the network to correct both geometry and
@@ -220,7 +220,7 @@ SDF values.
 
 `HybridDirectDataset` pairs each HotSpot SDF cache with an optimized DCCVT label
 file. Cache resolution and split-file handling are shared with the older neural
-pipeline. Label file resolution is in [dataset.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/dataset.py:107), and the hybrid dataset is in [dataset.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/dataset.py:128).
+pipeline. Label file resolution is in [data/datasets.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/data/datasets.py), and the hybrid dataset is in [data/datasets.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/data/datasets.py).
 
 For each mesh, the dataset loads:
 
@@ -360,7 +360,7 @@ mesh quality.
 
 Stage B exists in code but has not been evaluated for this experiment. It uses
 the full predicted site/SDF field, computes DCCVT clipped-mesh geometry, and
-adds Chamfer, CVT, and SDF smoothness losses. The hook is [losses.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/losses.py:247), and training enables it with `--stage mesh` in [hybrid_train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_train.py:212).
+adds Chamfer, CVT, and SDF smoothness losses. The hook is [losses.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/losses.py:247), and training enables it with `--stage mesh` in [hybrid_direct/train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/train.py).
 
 The mesh-stage objective is:
 
@@ -418,17 +418,17 @@ mesh quality, not just supervised label fit.
 
 ### Training Entry Point And Metadata
 
-Training is implemented in `dccvt/neural/hybrid_train.py` and exposed through
+Training is implemented in `dccvt/neural/hybrid_direct/train.py` and exposed through
 `scripts/train_dccvt_hybrid_direct.py`.
 
 Important code references:
 
-- Reproducibility seed: [hybrid_train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_train.py:32)
-- Resolved config writer: [hybrid_train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_train.py:49)
-- Checkpoint payload: [hybrid_train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_train.py:59)
-- CLI arguments: [hybrid_train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_train.py:81)
-- Dataset construction: [hybrid_train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_train.py:134)
-- Main training loop: [hybrid_train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_train.py:154)
+- Reproducibility seed: [hybrid_direct/train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/train.py)
+- Resolved config writer: [hybrid_direct/train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/train.py)
+- Checkpoint payload: [hybrid_direct/train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/train.py)
+- CLI arguments: [hybrid_direct/train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/train.py)
+- Dataset construction: [hybrid_direct/train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/train.py)
+- Main training loop: [hybrid_direct/train.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/train.py)
 
 Checkpoints and `resolved_config.json` save the resolved model config, seed,
 channel list, command arguments, and training stats. Training passes
@@ -437,16 +437,16 @@ the checkpoint and rebuilds the same input layout.
 
 ### Inference, Prediction Files, And Extraction
 
-Inference is implemented in `dccvt/neural/hybrid_infer.py` and exposed through
+Inference is implemented in `dccvt/neural/hybrid_direct/infer.py` and exposed through
 `scripts/infer_dccvt_hybrid_direct.py`.
 
 Important code references:
 
-- Inference API: [hybrid_infer.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_infer.py:38)
-- Hybrid input channel reconstruction: [hybrid_infer.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_infer.py:65)
-- Prediction `.npz` writer: [hybrid_infer.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_infer.py:89)
-- Extraction guard and call: [hybrid_infer.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_infer.py:111)
-- Inference CLI: [hybrid_infer.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_infer.py:143)
+- Inference API: [hybrid_direct/infer.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/infer.py)
+- Hybrid input channel reconstruction: [hybrid_direct/infer.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/infer.py)
+- Prediction `.npz` writer: [hybrid_direct/infer.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/infer.py)
+- Extraction guard and call: [hybrid_direct/infer.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/infer.py)
+- Inference CLI: [hybrid_direct/infer.py](/export/livia/home/vision/Wcharawi/dev/DCCVT/dccvt/neural/hybrid_direct/infer.py)
 
 The prediction `.npz` stores:
 

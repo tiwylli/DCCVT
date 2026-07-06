@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dccvt.neural.hybrid_initial import main
+from dccvt.neural.extraction.hybrid_initial import main
 
 
 if __name__ == "__main__":

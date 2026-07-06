@@ -7,7 +7,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from dccvt.neural.abc_hybrid import (
+from dccvt.neural.abc import (
     ABCHybridDataset,
     ABCUDFConfig,
     build_abc_hybrid_model,

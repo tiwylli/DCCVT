@@ -17,16 +17,10 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
 from dccvt.io_utils import save_obj_mesh
-from dccvt.neural.abc_hybrid import (
-    ABCHybridDataset,
-    ABCHybridExperimentConfig,
-    build_abc_hybrid_model,
-    deterministic_subset,
-    load_abc_hybrid_config,
-    read_model_ids,
-    udf_sidecar_path,
-    validate_udf_sidecar,
-)
+from dccvt.neural.abc.config import ABCHybridExperimentConfig, load_abc_hybrid_config, read_model_ids
+from dccvt.neural.abc.data import ABCHybridDataset
+from dccvt.neural.abc.modeling import build_abc_hybrid_model, deterministic_subset
+from dccvt.neural.abc.udf import udf_sidecar_path, validate_udf_sidecar
 from dccvt.neural.models import DCCVTHybridDirectNet
 
 

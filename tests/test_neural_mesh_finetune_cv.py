@@ -11,7 +11,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from dccvt.neural.losses import hybrid_direct_mesh_loss
-from dccvt.neural.mesh_finetune_cv import (
+from dccvt.neural.experiments.mesh_finetune_cv import (
     ROOT,
     QualificationConfig,
     assign_folds,

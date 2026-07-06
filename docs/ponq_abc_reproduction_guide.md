@@ -90,9 +90,9 @@ connectivity from the predicted sites.
 - `scripts/train_hybrid_ponq_abc.py`: Python-3.9-compatible PoNQ DDP training.
 - `scripts/train_hybrid_dccvt_abc.py`: DCCVT pilot/full training, extraction,
   metrics, qualification, and checkpoint resume.
-- `dccvt/neural/abc_hybrid.py`: typed config, ABC dataset, sidecar validation,
+- `dccvt/neural/abc/`: typed config, ABC dataset, sidecar validation,
   and encoder-transfer logic.
-- `dccvt/neural/abc_dccvt_train.py`: step-based DDP training and evaluation.
+- `dccvt/neural/abc/cli.py`: step-based DDP training and evaluation.
 
 The DCCVT environment requires `h5py==3.14.0` in addition to its existing
 PyTorch3D and geometry runtime:

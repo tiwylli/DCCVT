@@ -14,8 +14,13 @@ from dccvt.neural.grid import (
     trilinear_interpolate_sdf,
     validate_hybrid_channel_names,
 )
-from dccvt.neural.hybrid_initial import HybridInitialHotSpotConfig, build_initial_hotspot_field
-from dccvt.neural.iter_refine import (
+from dccvt.neural.extraction.hybrid_initial import HybridInitialHotSpotConfig, build_initial_hotspot_field
+from dccvt.neural.extraction.sparse_refine import (
+    HybridSparseRefineConfig,
+    build_sparse_base_field,
+    refine_sparse_field,
+)
+from dccvt.neural.iterative import (
     DCCVTHybridIterRefineNet,
     HybridIterRefineConfig,
     HybridIterRefineDataset,
@@ -24,7 +29,6 @@ from dccvt.neural.iter_refine import (
     select_procedural_refinement_parents,
 )
 from dccvt.neural.models import DCCVTHybridDirectNet, DCCVTPoNQNet, HybridDirectConfig
-from dccvt.neural.sparse_refine import HybridSparseRefineConfig, build_sparse_base_field, refine_sparse_field
 
 __all__ = [
     "DCCVTHybridDirectNet",

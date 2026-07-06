@@ -12,12 +12,7 @@ import torch
 
 from dccvt.neural.grid import make_gt_activity_mask_np, make_near_surface_mask_np, trilinear_interpolate_sdf
 from dccvt.neural.models import DCCVTPoNQNet
-
-
-def _device(value: str) -> torch.device:
-    if value == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(value)
+from dccvt.neural.utils import device_from_value
 
 
 def _load_checkpoint(path: str | Path, device: torch.device) -> tuple[DCCVTPoNQNet, dict]:
@@ -103,7 +98,7 @@ def run_inference(
     w_sdfsmooth: float = 100.0,
     selection_mode: str = "activity",
 ) -> dict:
-    device = _device(device_value)
+    device = device_from_value(device_value)
     model, checkpoint = _load_checkpoint(checkpoint_path, device)
     if cache_record is None:
         if cache_path is None:
@@ -228,7 +223,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     if args.cache is None:
         if args.mesh is None or args.hotspot_weights is None:
             raise ValueError("Provide --cache, or provide both --mesh and --hotspot-weights.")
-        from dccvt.neural.precompute import build_hotspot_cache_record
+        from dccvt.neural.data.precompute import build_hotspot_cache_record
 
         cache_record = build_hotspot_cache_record(
             mesh_path=args.mesh,

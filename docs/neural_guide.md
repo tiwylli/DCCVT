@@ -55,6 +55,23 @@ Stage 2 training adds a differentiable DCCVT fine-tuning term:
 By default, Stage 2 freezes the encoder and activity head and trains only the
 site head. Pass `--stage2-train-encoder` to train the whole network.
 
+## Package Map
+
+The neural implementation is organized by responsibility:
+
+| Package | Purpose |
+| --- | --- |
+| `dccvt/neural/grid.py` | Normalized grid conventions, masks, hybrid input channels, and SDF interpolation. |
+| `dccvt/neural/losses.py` | PoNQ warm-start losses and differentiable DCCVT mesh losses. |
+| `dccvt/neural/models/` | Shared blocks, `DCCVTPoNQNet`, and the hybrid-direct model/config. |
+| `dccvt/neural/data/` | HotSpot cache datasets, SDF precompute CLI, and point-UDF sidecars. |
+| `dccvt/neural/ponq/` | PoNQ-style train/infer entry points. |
+| `dccvt/neural/hybrid_direct/` | Hybrid-direct train/infer entry points. |
+| `dccvt/neural/iterative/` | Iterative refinement config, initialization, graph parent selection, model, train/infer/export CLIs. |
+| `dccvt/neural/extraction/` | Initial HotSpot and sparse-refinement extraction baselines. |
+| `dccvt/neural/abc/` | ABC config, dataset, UDF sidecars, model initialization, train/eval, and UDF precompute. |
+| `dccvt/neural/experiments/mesh_finetune_cv/` | Five-fold mesh-loss adaptation orchestration. |
+
 ## File-by-File Explanation
 
 ### `dccvt/neural/__init__.py`
@@ -85,15 +102,15 @@ Important behavior:
 - `make_gt_activity_mask_np()` marks cells containing target samples
 - `trilinear_interpolate_sdf()` samples dense SDF values at predicted sites
 
-### `dccvt/neural/models.py`
+### `dccvt/neural/models/`
 
-Defines the PoNQ-style dense 3D CNN.
+Defines the neural model classes and shared blocks.
 
 Important classes:
 
-- `ResNetBlock`: small 1x1x1 residual block.
-- `CellDecoder`: decodes per-cell values from dense cell features.
-- `DCCVTPoNQNet`: consumes `(B, 1, G, G, G)` or `(B, G, G, G)` SDF grids and
+- `models.blocks.ResNetBlock`: small 1x1x1 residual block.
+- `models.blocks.CellDecoder`: decodes per-cell values from dense cell features.
+- `models.ponq.DCCVTPoNQNet`: consumes `(B, 1, G, G, G)` or `(B, G, G, G)` SDF grids and
   returns:
   - `sites`: shape `(B, (G - 1)^3, K, 3)`
   - `raw_offsets`: unbounded offset logits
@@ -105,7 +122,7 @@ Important classes:
 The first convolution has `kernel_size=2`, so vertex-grid input with side
 length `G` becomes a cell grid with side length `G - 1`.
 
-### `dccvt/neural/dataset.py`
+### `dccvt/neural/data/datasets.py`
 
 Loads cached `.npz` records created by precompute.
 
@@ -120,7 +137,7 @@ Important functions/classes:
 `target_subsample` randomly subsamples target points with `numpy.random.choice`.
 No local seed is set in this dataset.
 
-### `dccvt/neural/precompute.py`
+### `dccvt/neural/data/precompute.py`
 
 Builds dense SDF cache records by loading a HotSpot model and evaluating it on a
 regular SDF grid.
@@ -148,7 +165,7 @@ Important functions:
 - `dccvt_finetune_loss(...)`: calls the existing DCCVT geometry code and adds
   differentiable Chamfer plus CVT losses.
 
-### `dccvt/neural/train.py`
+### `dccvt/neural/ponq/train.py`
 
 Training CLI and checkpointing.
 
@@ -169,7 +186,7 @@ Checkpoint payload keys:
 - `args`
 - `stats`
 
-### `dccvt/neural/infer.py`
+### `dccvt/neural/ponq/infer.py`
 
 Inference and optional mesh extraction.
 
@@ -186,11 +203,11 @@ Important functions:
 
 ### Script Wrappers
 
-- `scripts/precompute_hotspot_sdf.py`: wrapper for `dccvt.neural.precompute`.
-- `scripts/train_dccvt_neural.py`: wrapper for `dccvt.neural.train`.
-- `scripts/train_dccvt_ponq.py`: alias wrapper for `dccvt.neural.train`.
-- `scripts/infer_dccvt_neural.py`: wrapper for `dccvt.neural.infer`.
-- `scripts/infer_dccvt_ponq.py`: alias wrapper for `dccvt.neural.infer`.
+- `scripts/precompute_hotspot_sdf.py`: wrapper for `dccvt.neural.data.precompute`.
+- `scripts/train_dccvt_neural.py`: wrapper for `dccvt.neural.ponq.train`.
+- `scripts/train_dccvt_ponq.py`: alias wrapper for `dccvt.neural.ponq.train`.
+- `scripts/infer_dccvt_neural.py`: wrapper for `dccvt.neural.ponq.infer`.
+- `scripts/infer_dccvt_ponq.py`: alias wrapper for `dccvt.neural.ponq.infer`.
 - `scripts/generate_neural_labels.py`: auxiliary script that runs full DCCVT
   optimization to create fixed-size labels under `outputs/neural_labels/n32`.
   The current dense-SDF trainer does not consume these labels.
@@ -444,7 +461,7 @@ Generated outputs:
 
 This command runs full DCCVT optimization and modifies files under
 `--output-root`. It is an auxiliary label-generation script; the current
-`dccvt.neural.train` code trains from dense HotSpot SDF caches, not these label
+`dccvt.neural.ponq.train` code trains from dense HotSpot SDF caches, not these label
 folders.
 
 Parameters:
@@ -563,7 +580,7 @@ mesh extraction.
 - The model predicts sites only. SDF values are sampled from the cache at
   inference time.
 - There is no explicit validation loop or held-out metric in
-  `dccvt.neural.train`.
+  `dccvt.neural.ponq.train`.
 - There are no neural YAML/JSON config files in this repository. The neural
   implementation is configured through argparse flags.
 - Training does not currently save a resolved standalone config file; it stores
@@ -575,6 +592,6 @@ mesh extraction.
 - `make_near_surface_mask_np()` marks cells only when all eight SDF corners are
   within the near-surface threshold. It is not a sign-change mask.
 - `scripts/generate_neural_labels.py` creates full-DCCVT label outputs but is
-  not wired into `dccvt.neural.train`.
+  not wired into `dccvt.neural.ponq.train`.
 - If a behavior is not described above, it needs verification from code before
   relying on it for an experiment.

@@ -3,7 +3,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from dccvt.neural.grid import build_hybrid_input_channels, make_canonical_sites
-from dccvt.neural.hybrid_infer import _load_checkpoint
+from dccvt.neural.hybrid_direct.infer import _load_checkpoint
 from dccvt.neural.models import DCCVTHybridDirectNet, HybridDirectConfig
 from scripts.run_hybrid_direct_channel_ablation import (
     ABLATIONS,

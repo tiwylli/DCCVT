@@ -6,23 +6,21 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from dccvt.neural.iter_refine import (
-    DCCVTHybridIterRefineNet,
-    HybridIterRefineConfig,
-    _resolve_resume_config,
-    _save_initialization_field,
-    _save_prediction,
+from dccvt.neural.iterative.config import HybridIterRefineConfig, load_iter_refine_config
+from dccvt.neural.iterative.graph import (
     build_directed_edges_from_simplices,
-    build_hotspot_near_surface_initialization,
-    build_train_arg_parser,
     delaunay_edge_features,
     fourier_site_position_encoding,
-    load_iter_refine_config,
     local_knn_parent_features,
     select_procedural_refinement_parents,
 )
+from dccvt.neural.iterative.infer import run_inference
+from dccvt.neural.iterative.initial_extract import extract_initialization_cache
+from dccvt.neural.iterative.initialization import build_hotspot_near_surface_initialization
+from dccvt.neural.iterative.model import DCCVTHybridIterRefineNet
+from dccvt.neural.iterative.train import build_train_arg_parser, main as train_main
 from dccvt.neural.losses import hybrid_direct_mesh_loss
-from dccvt.neural.point_udf_sidecar import (
+from dccvt.neural.data.point_udf_sidecar import (
     exact_point_udf_grid,
     load_point_udf_sidecar,
     validate_point_udf_sidecar,
@@ -272,24 +270,25 @@ def test_iter_refine_initialization_export_has_zero_rounds_and_full_default_site
         / "configs/neural_hybrid_iter_refine_initial_v2_hotspot_point_udf.json"
     )
     sdf_grid = _linear_sdf_grid(config.hotspot_grid_n)
-    initialization = build_hotspot_near_surface_initialization(sdf_grid, config)
     target_points = np.zeros((4, 3), dtype=np.float32)
-    input_grid = np.zeros(
-        (config.input_channels, config.hotspot_grid_n, config.hotspot_grid_n, config.hotspot_grid_n),
-        dtype=np.float32,
-    )
-
-    field_file = _save_initialization_field(
-        tmp_path,
-        mesh_id="unit_mesh",
-        initialization=initialization,
-        input_grid=input_grid,
+    cache_path = tmp_path / "unit_mesh.npz"
+    np.savez_compressed(
+        cache_path,
         sdf_grid=sdf_grid.numpy().astype(np.float32),
         target_points=target_points,
+        grid_n=np.array(config.hotspot_grid_n, dtype=np.int64),
+        mesh_id=np.array("unit_mesh"),
+    )
+
+    result = extract_initialization_cache(
+        cache_path,
+        tmp_path / "out",
         config=config,
         seed=69,
+        extract=False,
         command_args={"seed": 69},
     )
+    field_file = Path(result["field_file"])
 
     with np.load(field_file, allow_pickle=False) as data:
         assert data["sites"].shape == (3748, 3)
@@ -489,20 +488,34 @@ def test_legacy_config_and_resume_mode_compatibility():
     assert legacy.initialization_mode == "canonical"
     assert legacy.background_jitter_scale == 0.0
     assert legacy.child_stencil_scale == 0.0
+
+
+def test_train_main_rejects_legacy_resume_mode_mismatch(tmp_path):
+    legacy = HybridIterRefineConfig.from_dict({"hotspot_grid_n": 33, "base_grid_n": 17})
+    requested = HybridIterRefineConfig()
+    config_path = tmp_path / "requested.json"
+    checkpoint_path = tmp_path / "legacy.pt"
+    config_path.write_text(json.dumps(requested.to_dict()), encoding="utf-8")
+    torch.save({"model_config": legacy.to_dict()}, checkpoint_path)
+
     with pytest.raises(ValueError, match="different initialization mode"):
-        _resolve_resume_config(requested, {"model_config": legacy.to_dict()})
+        train_main(["--config", str(config_path), "--resume", str(checkpoint_path), "--device", "cpu", "--epochs", "0"])
 
 
-def test_resume_rejects_different_base_grid_for_same_initialization():
+def test_train_main_rejects_different_base_grid_for_same_initialization(tmp_path):
     requested = HybridIterRefineConfig.from_dict(
         {"initialization_mode": "hotspot_near_surface", "base_grid_n": 17}
     )
     checkpoint_config = HybridIterRefineConfig.from_dict(
         {"initialization_mode": "hotspot_near_surface", "base_grid_n": 9}
     )
+    config_path = tmp_path / "requested.json"
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    config_path.write_text(json.dumps(requested.to_dict()), encoding="utf-8")
+    torch.save({"model_config": checkpoint_config.to_dict()}, checkpoint_path)
 
     with pytest.raises(ValueError, match="different base grid"):
-        _resolve_resume_config(requested, {"model_config": checkpoint_config.to_dict()})
+        train_main(["--config", str(config_path), "--resume", str(checkpoint_path), "--device", "cpu", "--epochs", "0"])
 
 
 def test_iter_refine_cvt_loss_has_finite_gradients():
@@ -540,21 +553,36 @@ def test_iter_refine_prediction_export_contains_round_metadata(tmp_path):
     config = _small_config(rounds=1)
     model = DCCVTHybridIterRefineNet(config)
     sdf_grid = _linear_sdf_grid(config.hotspot_grid_n)
-    input_grid = sdf_grid[None, None, ...]
-    outputs = model(input_grid, sdf_grid[None, None, ...])
-    checkpoint = {"model_config": config.to_dict(), "epoch": 0, "seed": 123}
     target_points = np.zeros((4, 3), dtype=np.float32)
-
-    prediction_file = _save_prediction(
-        tmp_path,
-        mesh_id="unit_mesh",
-        outputs=outputs,
-        input_grid=input_grid[0].numpy().astype(np.float32),
+    cache_path = tmp_path / "unit_mesh.npz"
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    np.savez_compressed(
+        cache_path,
         sdf_grid=sdf_grid.numpy().astype(np.float32),
         target_points=target_points,
-        checkpoint=checkpoint,
+        grid_n=np.array(config.hotspot_grid_n, dtype=np.int64),
+        mesh_id=np.array("unit_mesh"),
+    )
+    torch.save(
+        {
+            "model_config": config.to_dict(),
+            "model_state_dict": model.state_dict(),
+            "epoch": 0,
+            "seed": 123,
+        },
+        checkpoint_path,
+    )
+
+    result = run_inference(
+        checkpoint_path=checkpoint_path,
+        cache_path=cache_path,
+        output_dir=tmp_path / "prediction",
+        device_value="cpu",
+        extract=False,
+        seed=123,
         command_args={"seed": 123},
     )
+    prediction_file = Path(result["prediction_file"])
 
     with np.load(prediction_file, allow_pickle=False) as data:
         assert data["sites"].shape[1] == 3

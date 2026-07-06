@@ -3,7 +3,7 @@
 ## Purpose
 
 This guide documents the final HotSpot near-surface iterative refinement model
-implemented in `dccvt/neural/iter_refine.py`. It is written for future
+implemented in `dccvt/neural/iterative/`. It is written for future
 implementers who need to understand the research idea, numerical assumptions,
 gradient path, code structure, and reproducible workflow well enough to modify
 the method safely.
@@ -50,7 +50,7 @@ ground-truth mesh surface sampling is introduced.
 
 Primary code references:
 
-- [`dccvt/neural/iter_refine.py`](../dccvt/neural/iter_refine.py): config,
+- [`dccvt/neural/iterative/`](../dccvt/neural/iterative/): config,
   initialization, parent selection, model, training, inference, and export.
 - [`configs/neural_hybrid_iter_refine_v1.json`](../configs/neural_hybrid_iter_refine_v1.json):
   historical four-channel v1 defaults.
@@ -62,7 +62,7 @@ Primary code references:
 - `configs/neural_hybrid_iter_refine_v4_delaunay_gcnn_udf65_knn_r2_p128.json`:
   fair v3 ablation that replaces the dense feature path with Delaunay graph
   message passing.
-- [`dccvt/neural/point_udf_sidecar.py`](../dccvt/neural/point_udf_sidecar.py):
+- [`dccvt/neural/data/point_udf_sidecar.py`](../dccvt/neural/data/point_udf_sidecar.py):
   exact point-UDF sidecar generation and validation.
 - [`tests/test_neural_iter_refine.py`](../tests/test_neural_iter_refine.py):
   executable behavioral specification.
@@ -810,9 +810,9 @@ initialization once in the main process.
 
 | File | Ownership |
 | --- | --- |
-| [`dccvt/neural/iter_refine.py`](../dccvt/neural/iter_refine.py) | Typed config, initialization, parent selection, dataset, model, train loop, inference, checkpointing, and prediction export. |
+| [`dccvt/neural/iterative/`](../dccvt/neural/iterative/) | Typed config, initialization, parent selection, dataset, model, train loop, inference, checkpointing, and prediction export. |
 | [`dccvt/neural/grid.py`](../dccvt/neural/grid.py) | Canonical grids, hybrid input channels, point UDF/confidence, and differentiable SDF interpolation. |
-| [`dccvt/neural/point_udf_sidecar.py`](../dccvt/neural/point_udf_sidecar.py) | Exact point-UDF sidecar generation, validation, and loading for v3 local features. |
+| [`dccvt/neural/data/point_udf_sidecar.py`](../dccvt/neural/data/point_udf_sidecar.py) | Exact point-UDF sidecar generation, validation, and loading for v3 local features. |
 | [`dccvt/neural/losses.py`](../dccvt/neural/losses.py) | Symmetric Chamfer and clipped-mesh training objective. |
 | [`dccvt/geometry.py`](../dccvt/geometry.py) | Delaunay wrapper, clipped geometry, CVT geometry, and differentiable projections. |
 | [`dccvt/sdf_gradients.py`](../dccvt/sdf_gradients.py) | Site/tetrahedron SDF gradients, eikonal, curvature, and smoothing support. |

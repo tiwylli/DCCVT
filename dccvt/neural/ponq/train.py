@@ -9,21 +9,10 @@ from typing import Optional
 import torch
 from torch.utils.data import DataLoader
 
-from dccvt.neural.dataset import HotspotSDFDataset, resolve_cache_files
+from dccvt.neural.data.datasets import HotspotSDFDataset, resolve_cache_files
 from dccvt.neural.losses import dccvt_finetune_loss, stage1_site_loss
 from dccvt.neural.models import DCCVTPoNQNet
-
-
-def _parse_mesh_ids(value: Optional[str]) -> Optional[list[str]]:
-    if not value:
-        return None
-    return [part for part in value.replace(",", " ").split() if part]
-
-
-def _device(value: str) -> torch.device:
-    if value == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(value)
+from dccvt.neural.utils import device_from_value, parse_mesh_ids
 
 
 def save_checkpoint(
@@ -104,11 +93,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         initialize_runtime()
         device = dccvt_device
     else:
-        device = _device(args.device)
+        device = device_from_value(args.device)
 
     cache_files = resolve_cache_files(
         args.cache_root,
-        mesh_ids=_parse_mesh_ids(args.mesh_ids),
+        mesh_ids=parse_mesh_ids(args.mesh_ids),
         split_file=args.split_file,
     )
     dataset = HotspotSDFDataset(cache_files, target_subsample=args.target_subsample)

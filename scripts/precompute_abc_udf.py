@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dccvt.neural.abc_udf_precompute import main
+from dccvt.neural.abc.udf_precompute import main
 
 
 if __name__ == "__main__":
