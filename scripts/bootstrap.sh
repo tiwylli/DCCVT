@@ -14,6 +14,7 @@ WITH_ACCEL=1
 WITH_GDEL3D=1
 WITH_PYTORCH3D=1
 WITH_KAOLIN=1
+WITH_PARAGRAM=0
 BUILD_JOBS="${BUILD_JOBS:-}"
 
 TORCH_VARIANT="${TORCH_VARIANT:-auto}" # auto|cu118|cu124|cu126
@@ -73,6 +74,7 @@ Options:
   --open3d-package <pkg>  wheel name (default: open3d-cpu)
 
   --with-gdel3d           install `pygdel3d` (requires nvcc / CUDA toolchain)
+  --with-paragram         install Paragram from its upstream GitHub main branch
   --with-pytorch3d        install `pytorch3d` (requires torch)
   --with-kaolin           install `kaolin` (requires torch)
   --with-all              enable all of the above
@@ -136,6 +138,10 @@ while [[ $# -gt 0 ]]; do
       WITH_GDEL3D=1
       shift
       ;;
+    --with-paragram)
+      WITH_PARAGRAM=1
+      shift
+      ;;
     --with-pytorch3d)
       WITH_PYTORCH3D=1
       shift
@@ -146,6 +152,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --with-all)
       WITH_GDEL3D=1
+      WITH_PARAGRAM=1
       WITH_PYTORCH3D=1
       WITH_KAOLIN=1
       shift
@@ -385,6 +392,18 @@ if [[ $WITH_GDEL3D -eq 1 ]]; then
     echo "[bootstrap] Installing gDel3D python bindings (pygdel3d)..."
     # gDel3D's pyproject.toml does not declare cmake; avoid build isolation.
     $PIP install -e "$ROOT/3rdparty/gDel3D/python_bindings" --no-build-isolation "${PIP_LOCAL_FLAGS[@]}"
+  fi
+fi
+
+if [[ $WITH_PARAGRAM -eq 1 ]]; then
+  if [[ $OFFLINE -eq 1 ]]; then
+    echo "[bootstrap] Skipping Paragram: --offline was requested."
+  elif ! command -v nvcc >/dev/null 2>&1; then
+    echo "[bootstrap] Skipping Paragram: nvcc not found in PATH."
+  else
+    ensure_cuda_env
+    echo "[bootstrap] Installing Paragram from upstream GitHub main..."
+    $PIP install "git+https://github.com/zenseact/paragram.git"
   fi
 fi
 

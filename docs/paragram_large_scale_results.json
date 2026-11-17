@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "status": "partial_capacity_sweep",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 3080",
+    "total_vram_mib": 10240,
+    "free_vram_before_sweep_mib": 6597,
+    "compute_capability": "8.6"
+  },
+  "software": {
+    "paragram_commit": "4f36b1f2c8738912c5efc056a06023d4c1d2da07",
+    "paragram_version": "0.1.0",
+    "torch": "2.7.1+cu126",
+    "cuda_toolkit": "12.0"
+  },
+  "method": {
+    "common_output_conversion": false,
+    "memory_trials": false,
+    "warm_start": false,
+    "seed": 69,
+    "cluster_count": 10,
+    "cluster_std": 0.08,
+    "paper_reproduction": false,
+    "note": "Capacity probes at 6M and above and all gDel3D probes use one measured call. The 2M and 5M Paragram uniform and 5M clustered results use five measured calls after two warmups."
+  },
+  "runs": [
+    {
+      "distribution": "uniform",
+      "sites": 2000000,
+      "backend": "paragram",
+      "raw_wall_ms": 1932.5545970059466,
+      "end_to_end_ms": 1977.6840500126127,
+      "repetitions": 5,
+      "warmups": 2,
+      "non_success_cells": 112,
+      "status": "ok"
+    },
+    {
+      "distribution": "uniform",
+      "sites": 2000000,
+      "backend": "gdel3d",
+      "raw_wall_ms": 900.8113760064589,
+      "solver_reported_ms": 662.942,
+      "repetitions": 1,
+      "warmups": 0,
+      "status": "ok"
+    },
+    {
+      "distribution": "uniform",
+      "sites": 5000000,
+      "backend": "paragram",
+      "raw_wall_ms": 4837.145932004205,
+      "end_to_end_ms": 4969.1329120105365,
+      "repetitions": 5,
+      "warmups": 2,
+      "non_success_cells": 319,
+      "status": "ok"
+    },
+    {
+      "distribution": "uniform",
+      "sites": 5000000,
+      "backend": "gdel3d",
+      "raw_wall_ms": 2160.019545990508,
+      "solver_reported_ms": 1597.465,
+      "repetitions": 1,
+      "warmups": 0,
+      "status": "ok"
+    },
+    {
+      "distribution": "uniform",
+      "sites": 6000000,
+      "backend": "paragram",
+      "raw_wall_ms": 4990.563932005898,
+      "end_to_end_ms": 5151.419296991662,
+      "repetitions": 1,
+      "warmups": 0,
+      "paragram_num_chunks": 4,
+      "non_success_cells": 405,
+      "status": "ok"
+    },
+    {
+      "distribution": "uniform",
+      "sites": 8000000,
+      "backend": "paragram",
+      "raw_wall_ms": 7327.659201007918,
+      "end_to_end_ms": 7552.7768960018875,
+      "repetitions": 1,
+      "warmups": 0,
+      "paragram_num_chunks": 12,
+      "pytorch_cuda_alloc_conf": "expandable_segments:True",
+      "non_success_cells": 508,
+      "status": "ok"
+    },
+    {
+      "distribution": "uniform",
+      "sites": 9000000,
+      "backend": "paragram",
+      "raw_wall_ms": 8524.08003799792,
+      "end_to_end_ms": 8767.084242994315,
+      "repetitions": 1,
+      "warmups": 0,
+      "paragram_num_chunks": 16,
+      "pytorch_cuda_alloc_conf": "expandable_segments:True",
+      "non_success_cells": 540,
+      "status": "ok"
+    },
+    {
+      "distribution": "uniform",
+      "sites": 10000000,
+      "backend": "paragram",
+      "attempts": [
+        "automatic chunking: illegal CUDA memory access",
+        "4 chunks: OOM allocating 6.11 GiB",
+        "8 chunks: OOM allocating 3.06 GiB",
+        "16 chunks: OOM allocating 2.38 GiB",
+        "16 chunks with expandable segments: illegal CUDA memory access"
+      ],
+      "status": "error"
+    },
+    {
+      "distribution": "uniform",
+      "sites": 10000000,
+      "backend": "gdel3d",
+      "error": "Native process exited after Thrust failed to allocate 648 MB; no result JSON was recoverable.",
+      "status": "native_exit"
+    },
+    {
+      "distribution": "clustered",
+      "sites": 5000000,
+      "backend": "paragram",
+      "raw_wall_ms": 2849.2410619946895,
+      "end_to_end_ms": 2979.8977930040564,
+      "repetitions": 5,
+      "warmups": 2,
+      "non_success_cells": 38,
+      "status": "ok"
+    },
+    {
+      "distribution": "clustered",
+      "sites": 5000000,
+      "backend": "gdel3d",
+      "raw_wall_ms": 2363.3941849984694,
+      "solver_reported_ms": 1799.153,
+      "repetitions": 1,
+      "warmups": 0,
+      "status": "ok"
+    },
+    {
+      "distribution": "clustered",
+      "sites": 9000000,
+      "backend": "paragram",
+      "raw_wall_ms": 4937.115894994349,
+      "end_to_end_ms": 5187.225172994658,
+      "repetitions": 1,
+      "warmups": 0,
+      "paragram_num_chunks": 16,
+      "pytorch_cuda_alloc_conf": "expandable_segments:True",
+      "non_success_cells": 72,
+      "status": "ok"
+    },
+    {
+      "distribution": "clustered",
+      "sites": 9000000,
+      "backend": "gdel3d",
+      "error": "Native process exited from CudaWrapper with 'invalid argument'; no result JSON was recoverable.",
+      "status": "native_exit"
+    }
+  ]
+}

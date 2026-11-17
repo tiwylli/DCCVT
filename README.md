@@ -35,6 +35,7 @@ GPU requirement: DCCVT uses `pygdel3d` (gDel3D) for Delaunay tetrahedralization.
 - `metrics_figs_scripts/`: metrics and rendering helpers.
 - `accel/`: `voronoiaccel` extension used by metrics/utilities.
 - `scripts/`: bootstrapping and patch helpers.
+- `docs/paragram_evaluation.md`: RTX 3080 evaluation of Paragram adjacency versus gDel3D.
 
 ## Quickstart (recommended)
 
@@ -47,6 +48,17 @@ python DCCVT.py --args-file argfiles/DCCVT_figs_teaser.args --mesh-ids 313444
 ```
 
 CPU-only installs are not supported because `pygdel3d` requires CUDA.
+
+### Optional Paragram benchmark
+
+Paragram is not used by the production DCCVT geometry path. Install it and run the reproducible adjacency benchmark with:
+
+```bash
+bash scripts/bootstrap.sh --with-paragram
+python scripts/benchmark_paragram.py --output outputs/paragram_benchmark/results.json
+```
+
+See [the evaluation report](docs/paragram_evaluation.md) for the measured results and the tetrahedra-versus-adjacency compatibility limitation.
 
 Dry-run the arg expansion without running experiments:
 
