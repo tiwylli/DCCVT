@@ -57,10 +57,10 @@ def _compute_sdfsmooth_loss(
         sites_sdf_grads, _, W = compute_sdf_gradients_sites_tets(sites, sites_sdf, _as_tet_tensor(d3dsimplices))
     if epoch % 100 == 0 and epoch <= 500:
         eps_H = estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 5).detach()
-        print("Estimated eps_H: ", eps_H)
+        # print("Estimated eps_H: ", eps_H)
     elif epoch % 100 == 0 and epoch <= 800:
         eps_H = estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 2).detach()
-        print("Estimated eps_H: ", eps_H)
+        # print("Estimated eps_H: ", eps_H)
     elif eps_H is None:
         eps_H = estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 2).detach()
 
@@ -128,7 +128,7 @@ def _maybe_upsample(
         if d3dsimplices is None:
             d3dsimplices = compute_delaunay_simplices(sites)
         eps_H = estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 3).detach()
-        print("Estimated eps_H: ", eps_H)
+        # print("Estimated eps_H: ", eps_H)
         return True, upsampled, sites, sites_sdf, optimizer, d3dsimplices, sites_sdf_grads, W, eps_H
 
     d3dsimplices, sites_sdf, sites_sdf_grads, W = _prepare_upsample_inputs(
@@ -149,7 +149,7 @@ def _maybe_upsample(
     d3dsimplices = compute_delaunay_simplices(sites)
     optimizer, sites_sdf = _setup_optimizer(sites, sites_sdf, args.lr_sites)
     eps_H = estimate_eps_H(sites, d3dsimplices, multiplier=1.5 * 5).detach()
-    print("Estimated eps_H: ", eps_H)
+    # print("Estimated eps_H: ", eps_H)
     sites_sdf_grads = None
     W = None
 
